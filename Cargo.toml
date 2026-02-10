@@ -9,12 +9,15 @@ license = "MIT"
 debug = ["iced/hot"]
 
 [dependencies]
+env_logger = "0.11.8"
 iced = { version = "0.14.0", default-features = false, features = [
+  "linux-theme-detection",
   "thread-pool",
   "tiny-skia",
   "wayland",
   "x11"
 ] }
+log = "0.4.29"
 
 [profile.release]
 opt-level = "z"
