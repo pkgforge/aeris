@@ -4,7 +4,7 @@ use iced::{
 };
 
 use crate::{
-    app::message::{UpdatesMessage, Message},
+    app::message::{Message, UpdatesMessage},
     core::package::Update,
 };
 use soar_utils::bytes::format_bytes;
@@ -16,31 +16,33 @@ pub struct UpdatesState {
     pub checked: bool,
     pub error: Option<String>,
     pub result_version: u64,
+    pub updating: Option<String>,
 }
 
 pub fn view<'a>(state: &'a UpdatesState) -> Element<'a, Message> {
-    let mut header_row = row![
-        text("Updates").size(20),
-        space().width(Length::Fill),
-    ]
-    .align_y(iced::Alignment::Center)
-    .width(Length::Fill);
+    let mut header_row = row![text("Updates").size(20), space().width(Length::Fill),]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+
+    let is_busy = state.updating.is_some() || state.loading;
 
     if !state.updates.is_empty() {
-        header_row = header_row.push(
-            button(text("Update All").size(12).center())
-                .padding([6, 14])
-                .style(button::primary)
-                .on_press(Message::Updates(UpdatesMessage::UpdateAll)),
-        );
+        let mut update_all_btn = button(text("Update All").size(12).center())
+            .padding([6, 14])
+            .style(button::primary);
+        if !is_busy {
+            update_all_btn = update_all_btn.on_press(Message::Updates(UpdatesMessage::UpdateAll));
+        }
+        header_row = header_row.push(update_all_btn);
     }
 
-    header_row = header_row.push(
-        button(text("Check").size(12).center())
-            .padding([6, 14])
-            .style(button::secondary)
-            .on_press(Message::Updates(UpdatesMessage::CheckUpdates)),
-    );
+    let mut check_btn = button(text("Check").size(12).center())
+        .padding([6, 14])
+        .style(button::secondary);
+    if !is_busy {
+        check_btn = check_btn.on_press(Message::Updates(UpdatesMessage::CheckUpdates));
+    }
+    header_row = header_row.push(check_btn);
 
     let content: Element<'_, Message> = if state.loading {
         container(text("Checking for updates...").size(14))
@@ -65,9 +67,10 @@ pub fn view<'a>(state: &'a UpdatesState) -> Element<'a, Message> {
     } else {
         let version = state.result_version;
         let updates = state.updates.clone();
+        let updating = state.updating.clone();
         lazy(version, move |_| {
             let cards: Vec<Element<'_, Message>> =
-                updates.iter().map(|u| update_card(u)).collect();
+                updates.iter().map(|u| update_card(u, &updating)).collect();
 
             scrollable(column(cards).spacing(8).width(Length::Fill)).height(Length::Fill)
         })
@@ -86,7 +89,7 @@ pub fn view<'a>(state: &'a UpdatesState) -> Element<'a, Message> {
     .into()
 }
 
-fn update_card(update: &Update) -> Element<'static, Message> {
+fn update_card(update: &Update, updating: &Option<String>) -> Element<'static, Message> {
     let name = text(update.package.name.clone()).size(16);
     let version_info = text(format!(
         "{} → {}",
@@ -114,12 +117,23 @@ fn update_card(update: &Update) -> Element<'static, Message> {
 
     let info_row = row(info_parts).spacing(12);
 
-    let update_btn = button(text("Update").size(12).center())
-        .padding([4, 12])
-        .style(button::primary)
-        .on_press(Message::Updates(UpdatesMessage::UpdatePackage(
-            update.package.clone(),
-        )));
+    let is_updating_this = updating.as_deref() == Some(&update.package.id);
+    let is_updating_all = updating.as_deref() == Some("__all__");
+    let update_btn = if is_updating_this || is_updating_all {
+        button(text("Updating...").size(12).center())
+            .padding([4, 12])
+            .style(button::secondary)
+    } else {
+        let mut btn = button(text("Update").size(12).center())
+            .padding([4, 12])
+            .style(button::primary);
+        if updating.is_none() {
+            btn = btn.on_press(Message::Updates(UpdatesMessage::UpdatePackage(
+                update.package.clone(),
+            )));
+        }
+        btn
+    };
 
     let left = column![header, info_row].spacing(4).width(Length::Fill);
 

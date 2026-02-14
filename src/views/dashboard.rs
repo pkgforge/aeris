@@ -3,8 +3,8 @@ use iced::{
     widget::{button, column, container, row, text},
 };
 
-use crate::app::message::{InstalledMessage, Message, UpdatesMessage};
 use crate::app::View;
+use crate::app::message::{InstalledMessage, Message, UpdatesMessage};
 
 pub struct DashboardStats {
     pub installed_count: usize,
@@ -15,8 +15,18 @@ pub fn view<'a>(stats: &DashboardStats) -> Element<'a, Message> {
     let header = text("Dashboard").size(20);
 
     let stat_cards = row![
-        stat_card("Installed", &stats.installed_count.to_string(), "View", Message::NavigateTo(View::Installed)),
-        stat_card("Repositories", &stats.repo_count.to_string(), "Browse", Message::NavigateTo(View::Browse)),
+        stat_card(
+            "Installed",
+            &stats.installed_count.to_string(),
+            "View",
+            Message::NavigateTo(View::Installed)
+        ),
+        stat_card(
+            "Repositories",
+            &stats.repo_count.to_string(),
+            "Browse",
+            Message::NavigateTo(View::Browse)
+        ),
     ]
     .spacing(12)
     .width(Length::Fill);

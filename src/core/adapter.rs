@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::{
     capabilities::Capabilities,
     config::{AdapterConfig, ConfigSchema},
-    package::{InstalledPackage, InstallResult, Package, PackageDetail, Update},
+    package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
     profile::Profile,
     repository::Repository,
 };

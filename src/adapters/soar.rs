@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use soar_config::config::Config;
 use soar_events::{EventSinkHandle, NullSink};
-use soar_operations::SoarContext;
+use soar_operations::{
+    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove, update,
+};
 
 use crate::core::{
     adapter::{Adapter, AdapterError, AdapterInfo, ProgressSender, Result},
     capabilities::Capabilities,
     config::{AdapterConfig, ConfigSchema},
-    package::{InstalledPackage, InstallResult, Package, PackageDetail, Update},
+    package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
     profile::Profile,
     repository::Repository,
 };
@@ -21,6 +23,122 @@ pub struct SoarAdapter {
 impl SoarAdapter {
     pub fn repo_count(&self) -> usize {
         self.ctx.config().repositories.len()
+    }
+
+    pub async fn install_package(&self, query: &str) -> Result<()> {
+        let options = InstallOptions::default();
+        let results = install::resolve_packages(&self.ctx, &[query.to_string()], &options)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        let mut targets = Vec::new();
+        for result in results {
+            match result {
+                ResolveResult::Resolved(t) => targets.extend(t),
+                ResolveResult::AlreadyInstalled { pkg_name, .. } => {
+                    return Err(AdapterError::Other(format!(
+                        "{pkg_name} is already installed"
+                    )));
+                }
+                ResolveResult::NotFound(q) => {
+                    return Err(AdapterError::Other(format!("Package not found: {q}")));
+                }
+                ResolveResult::Ambiguous(amb) => {
+                    return Err(AdapterError::Other(format!(
+                        "Ambiguous package query: {}",
+                        amb.query
+                    )));
+                }
+            }
+        }
+
+        if targets.is_empty() {
+            return Err(AdapterError::Other("No packages to install".into()));
+        }
+
+        let report = install::perform_installation(&self.ctx, targets, &options)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if let Some(failed) = report.failed.first() {
+            return Err(AdapterError::Other(failed.error.clone()));
+        }
+
+        Ok(())
+    }
+
+    pub async fn remove_package(&self, query: &str) -> Result<()> {
+        let results = remove::resolve_removals(&self.ctx, &[query.to_string()], false)
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        let mut to_remove = Vec::new();
+        for result in results {
+            match result {
+                RemoveResolveResult::Resolved(pkgs) => to_remove.extend(pkgs),
+                RemoveResolveResult::NotInstalled(q) => {
+                    return Err(AdapterError::Other(format!("Package not installed: {q}")));
+                }
+                RemoveResolveResult::Ambiguous { query, .. } => {
+                    return Err(AdapterError::Other(format!(
+                        "Ambiguous package query: {query}"
+                    )));
+                }
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Err(AdapterError::Other("No packages to remove".into()));
+        }
+
+        let report = remove::perform_removal(&self.ctx, to_remove)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if let Some(failed) = report.failed.first() {
+            return Err(AdapterError::Other(failed.error.clone()));
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_package(&self, query: &str) -> Result<()> {
+        let updates = update::check_updates(&self.ctx, Some(&[query.to_string()]))
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if updates.is_empty() {
+            return Err(AdapterError::Other("No updates available".into()));
+        }
+
+        let report = update::perform_update(&self.ctx, updates, false)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if let Some(failed) = report.failed.first() {
+            return Err(AdapterError::Other(failed.error.clone()));
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_all(&self) -> Result<()> {
+        let updates = update::check_updates(&self.ctx, None)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let report = update::perform_update(&self.ctx, updates, false)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if let Some(failed) = report.failed.first() {
+            return Err(AdapterError::Other(failed.error.clone()));
+        }
+
+        Ok(())
     }
 
     pub fn new(config: Config) -> Result<Self> {
@@ -112,11 +230,7 @@ impl Adapter for SoarAdapter {
         Err(AdapterError::NotSupported)
     }
 
-    async fn remove(
-        &self,
-        _packages: &[Package],
-        _progress: Option<ProgressSender>,
-    ) -> Result<()> {
+    async fn remove(&self, _packages: &[Package], _progress: Option<ProgressSender>) -> Result<()> {
         Err(AdapterError::NotSupported)
     }
 
@@ -166,7 +280,35 @@ impl Adapter for SoarAdapter {
     }
 
     async fn list_updates(&self) -> Result<Vec<Update>> {
-        Err(AdapterError::NotSupported)
+        let updates = update::check_updates(&self.ctx, None)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        Ok(updates
+            .iter()
+            .map(|u| Update {
+                package: Package {
+                    id: format!("{}.{}", u.repo_name, u.pkg_id),
+                    name: u.pkg_name.clone(),
+                    version: u.current_version.clone(),
+                    adapter_id: "soar".into(),
+                    description: None,
+                    size: None,
+                    homepage: None,
+                    license: None,
+                    installed: true,
+                    update_available: true,
+                    category: None,
+                    tags: vec![],
+                    icon_url: None,
+                },
+                current_version: u.current_version.clone(),
+                new_version: u.new_version.clone(),
+                download_size: None,
+                is_security: false,
+                changelog_url: None,
+            })
+            .collect())
     }
 
     async fn sync(&self, _progress: Option<ProgressSender>) -> Result<()> {

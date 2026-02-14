@@ -16,6 +16,7 @@ pub struct InstalledState {
     pub loaded: bool,
     pub error: Option<String>,
     pub result_version: u64,
+    pub removing: Option<String>,
 }
 
 pub fn view<'a>(state: &'a InstalledState) -> Element<'a, Message> {
@@ -53,9 +54,12 @@ pub fn view<'a>(state: &'a InstalledState) -> Element<'a, Message> {
     } else {
         let version = state.result_version;
         let packages = state.packages.clone();
+        let removing = state.removing.clone();
         lazy(version, move |_| {
-            let cards: Vec<Element<'_, Message>> =
-                packages.iter().map(|pkg| installed_card(pkg)).collect();
+            let cards: Vec<Element<'_, Message>> = packages
+                .iter()
+                .map(|pkg| installed_card(pkg, &removing))
+                .collect();
 
             scrollable(column(cards).spacing(8).width(Length::Fill)).height(Length::Fill)
         })
@@ -74,7 +78,7 @@ pub fn view<'a>(state: &'a InstalledState) -> Element<'a, Message> {
     .into()
 }
 
-fn installed_card(pkg: &InstalledPackage) -> Element<'static, Message> {
+fn installed_card(pkg: &InstalledPackage, removing: &Option<String>) -> Element<'static, Message> {
     let name = text(pkg.package.name.clone()).size(16);
     let version = text(pkg.package.version.clone()).size(12);
     let adapter = text(format!("[{}]", pkg.package.adapter_id)).size(11);
@@ -90,7 +94,11 @@ fn installed_card(pkg: &InstalledPackage) -> Element<'static, Message> {
     let mut info_parts: Vec<Element<'_, Message>> = Vec::new();
 
     if pkg.install_size > 0 {
-        info_parts.push(text(format!("Size: {}", format_bytes(pkg.install_size, 2))).size(11).into());
+        info_parts.push(
+            text(format!("Size: {}", format_bytes(pkg.install_size, 2)))
+                .size(11)
+                .into(),
+        );
     }
 
     if let Some(ref path) = pkg.install_path {
@@ -107,12 +115,22 @@ fn installed_card(pkg: &InstalledPackage) -> Element<'static, Message> {
 
     let info_row = row(info_parts).spacing(12);
 
-    let remove_btn = button(text("Remove").size(12).center())
-        .padding([4, 12])
-        .style(button::danger)
-        .on_press(Message::Installed(InstalledMessage::RemovePackage(
-            pkg.package.clone(),
-        )));
+    let is_removing = removing.as_deref() == Some(&pkg.package.id);
+    let remove_btn = if is_removing {
+        button(text("Removing...").size(12).center())
+            .padding([4, 12])
+            .style(button::secondary)
+    } else {
+        let mut btn = button(text("Remove").size(12).center())
+            .padding([4, 12])
+            .style(button::danger);
+        if removing.is_none() {
+            btn = btn.on_press(Message::Installed(InstalledMessage::RemovePackage(
+                pkg.package.clone(),
+            )));
+        }
+        btn
+    };
 
     let left = column![header, info_row].spacing(4).width(Length::Fill);
 

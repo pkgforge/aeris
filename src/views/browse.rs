@@ -17,6 +17,7 @@ pub struct BrowseState {
     pub has_searched: bool,
     pub error: Option<String>,
     pub result_version: u64,
+    pub installing: Option<String>,
 }
 
 pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
@@ -49,14 +50,14 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
     } else {
         let version = state.result_version;
         let results = state.search_results.clone();
+        let installing = state.installing.clone();
         lazy(version, move |_| {
             let cards: Vec<Element<'_, Message>> = results
                 .iter()
-                .map(|pkg| package_card(pkg))
+                .map(|pkg| package_card(pkg, &installing))
                 .collect();
 
-            scrollable(column(cards).spacing(8).width(Length::Fill))
-                .height(Length::Fill)
+            scrollable(column(cards).spacing(8).width(Length::Fill)).height(Length::Fill)
         })
         .into()
     };
@@ -73,15 +74,21 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
     .into()
 }
 
-fn package_card(pkg: &Package) -> Element<'static, Message> {
+fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, Message> {
     let name = text(pkg.name.clone()).size(16);
     let version = text(pkg.version.clone()).size(12);
     let adapter = text(format!("[{}]", pkg.adapter_id)).size(11);
 
-    let header = row![name, version, adapter].spacing(8).align_y(iced::Alignment::Center);
+    let header = row![name, version, adapter]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
 
-    let description =
-        text(pkg.description.clone().unwrap_or_else(|| "No description".into())).size(13);
+    let description = text(
+        pkg.description
+            .clone()
+            .unwrap_or_else(|| "No description".into()),
+    )
+    .size(13);
 
     let mut info_parts: Vec<Element<'_, Message>> = Vec::new();
     if let Some(size) = pkg.size {
@@ -92,15 +99,27 @@ fn package_card(pkg: &Package) -> Element<'static, Message> {
     }
     let info_row = row(info_parts).spacing(12);
 
-    let install_btn = if pkg.installed {
+    let is_installing = installing.as_deref() == Some(&pkg.id);
+    let install_btn = if pkg.installed && pkg.update_available {
+        button(text("Update Available").size(12).center())
+            .padding([4, 12])
+            .style(button::secondary)
+    } else if pkg.installed {
         button(text("Installed").size(12).center())
             .padding([4, 12])
             .style(button::secondary)
-    } else {
-        button(text("Install").size(12).center())
+    } else if is_installing {
+        button(text("Installing...").size(12).center())
             .padding([4, 12])
-            .style(button::primary)
-            .on_press(Message::Browse(BrowseMessage::InstallPackage(pkg.clone())))
+            .style(button::secondary)
+    } else {
+        let mut btn = button(text("Install").size(12).center())
+            .padding([4, 12])
+            .style(button::primary);
+        if installing.is_none() {
+            btn = btn.on_press(Message::Browse(BrowseMessage::InstallPackage(pkg.clone())));
+        }
+        btn
     };
 
     let left = column![header, description, info_row]
@@ -117,5 +136,3 @@ fn package_card(pkg: &Package) -> Element<'static, Message> {
         .style(container::bordered_box)
         .into()
 }
-
-

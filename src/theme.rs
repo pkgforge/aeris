@@ -1,5 +1,5 @@
-use iced::theme::Palette;
 use iced::Theme;
+use iced::theme::Palette;
 
 use crate::app::AppTheme;
 

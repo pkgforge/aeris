@@ -6,6 +6,14 @@ use crate::core::{
 use super::{AppTheme, View};
 
 #[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    Install(Package),
+    Remove(Package),
+    Update(Package),
+    UpdateAll,
+}
+
+#[derive(Debug, Clone)]
 pub enum Message {
     NavigateTo(View),
     ThemeChanged(AppTheme),
@@ -14,6 +22,9 @@ pub enum Message {
     Installed(InstalledMessage),
     Updates(UpdatesMessage),
     Adapters(AdaptersMessage),
+
+    ConfirmAction,
+    CancelAction,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +36,7 @@ pub enum BrowseMessage {
     SelectPackage(String),
     PackageDetailLoaded(Result<Box<PackageDetail>, String>),
     InstallPackage(Package),
+    InstallComplete(Result<(), String>),
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +46,7 @@ pub enum InstalledMessage {
     FilterChanged(String),
     SourceFilterChanged(Option<String>),
     RemovePackage(Package),
+    RemoveComplete(Result<(), String>),
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +54,7 @@ pub enum UpdatesMessage {
     CheckUpdates,
     UpdatesLoaded(Result<Vec<Update>, String>),
     UpdatePackage(Package),
+    UpdateComplete(Result<(), String>),
     UpdateAll,
 }
 

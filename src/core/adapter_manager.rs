@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{
     adapter::{Adapter, AdapterId, AdapterInfo, ProgressSender, Result},
-    package::{InstalledPackage, InstallResult, Package, Update},
+    package::{InstallResult, InstalledPackage, Package, Update},
 };
 
 pub struct AdapterManager {

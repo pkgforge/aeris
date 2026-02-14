@@ -4,6 +4,19 @@ use super::adapter::AdapterId;
 
 pub type PackageId = String;
 
+impl Package {
+    /// Extract (repo_name, pkg_id) from the package id format "repo_name.pkg_id"
+    pub fn soar_query_parts(&self) -> Option<(&str, &str)> {
+        self.id.split_once('.')
+    }
+
+    /// Build a soar query string "name#pkg_id:repo_name"
+    pub fn soar_query(&self) -> Option<String> {
+        let (repo_name, pkg_id) = self.soar_query_parts()?;
+        Some(format!("{}#{}:{}", self.name, pkg_id, repo_name))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub id: PackageId,
