@@ -25,6 +25,8 @@ pub enum Message {
 
     ConfirmAction,
     CancelAction,
+
+    ProgressTick,
 }
 
 #[derive(Debug, Clone)]

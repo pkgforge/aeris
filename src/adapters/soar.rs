@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use soar_config::config::Config;
-use soar_events::{EventSinkHandle, NullSink};
+use soar_events::{ChannelSink, EventSinkHandle, SoarEvent};
 use soar_operations::{
     InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove, update,
 };
@@ -141,44 +141,48 @@ impl SoarAdapter {
         Ok(())
     }
 
-    pub fn new(config: Config) -> Result<Self> {
-        let events: EventSinkHandle = Arc::new(NullSink);
+    pub fn new(config: Config) -> Result<(Self, std::sync::mpsc::Receiver<SoarEvent>)> {
+        let (sink, receiver) = ChannelSink::new();
+        let events: EventSinkHandle = Arc::new(sink);
         let ctx = SoarContext::new(config, events);
 
-        Ok(Self {
-            ctx,
-            info: AdapterInfo {
-                id: "soar".into(),
-                name: "Soar".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                capabilities: Capabilities {
-                    can_search: true,
-                    can_install: true,
-                    can_remove: true,
-                    can_update: true,
-                    can_list: true,
-                    can_sync: true,
-                    can_run: true,
-                    can_add_repo: true,
-                    can_remove_repo: true,
-                    can_list_repos: true,
-                    has_profiles: false,
-                    has_size_info: true,
-                    has_package_detail: true,
-                    supports_verification: true,
-                    supports_portable: true,
-                    supports_hooks: true,
-                    supports_build_from_source: true,
-                    supports_batch_install: true,
-                    ..Capabilities::default()
+        Ok((
+            Self {
+                ctx,
+                info: AdapterInfo {
+                    id: "soar".into(),
+                    name: "Soar".into(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    capabilities: Capabilities {
+                        can_search: true,
+                        can_install: true,
+                        can_remove: true,
+                        can_update: true,
+                        can_list: true,
+                        can_sync: true,
+                        can_run: true,
+                        can_add_repo: true,
+                        can_remove_repo: true,
+                        can_list_repos: true,
+                        has_profiles: false,
+                        has_size_info: true,
+                        has_package_detail: true,
+                        supports_verification: true,
+                        supports_portable: true,
+                        supports_hooks: true,
+                        supports_build_from_source: true,
+                        supports_batch_install: true,
+                        ..Capabilities::default()
+                    },
+                    enabled: true,
+                    is_builtin: true,
+                    plugin_path: None,
+                    description: "Native package manager for portable packages".into(),
+                    icon: None,
                 },
-                enabled: true,
-                is_builtin: true,
-                plugin_path: None,
-                description: "Native package manager for portable packages".into(),
-                icon: None,
             },
-        })
+            receiver,
+        ))
     }
 }
 
