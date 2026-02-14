@@ -12,16 +12,26 @@ debug = ["iced/hot"]
 async-trait = "0.1.89"
 env_logger = "0.11.8"
 iced = { version = "0.14.0", default-features = false, features = [
+  "lazy",
   "linux-theme-detection",
   "tiny-skia",
   "tokio",
   "wayland",
+  "wgpu",
   "x11",
 ] }
 log = "0.4.29"
 serde = { version = "1.0.228", features = ["derive"] }
+soar-config = { path = "../soar/crates/soar-config" }
+soar-core = { path = "../soar/crates/soar-core" }
+soar-events = { path = "../soar/crates/soar-events" }
+soar-operations = { path = "../soar/crates/soar-operations" }
+soar-utils = { path = "../soar/crates/soar-utils" }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["sync"] }
+
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 opt-level = "z"

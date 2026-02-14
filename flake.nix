@@ -27,6 +27,7 @@
             libXrandr
             lld
             pkg-config
+            vulkan-loader
             wayland
           ];
 

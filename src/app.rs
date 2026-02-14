@@ -1,11 +1,13 @@
 pub mod message;
 
+use std::sync::Arc;
+
 use iced::{
     Element, Length, Task,
     widget::{button, column, container, row, rule, space, text},
 };
 
-use crate::views;
+use crate::{adapters::soar::SoarAdapter, core::adapter::Adapter, views};
 
 pub use message::Message;
 
@@ -54,11 +56,24 @@ impl std::fmt::Display for View {
     }
 }
 
-#[derive(Default)]
 pub struct App {
     selected_theme: AppTheme,
     current_view: View,
     browse: views::browse::BrowseState,
+    adapter: Arc<SoarAdapter>,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        let config = soar_config::config::get_config();
+        let adapter = SoarAdapter::new(config).expect("Failed to initialize Soar adapter");
+        Self {
+            selected_theme: AppTheme::default(),
+            current_view: View::default(),
+            browse: views::browse::BrowseState::default(),
+            adapter: Arc::new(adapter),
+        }
+    }
 }
 
 impl App {
@@ -88,8 +103,40 @@ impl App {
                 self.browse.search_query = query;
             }
             message::BrowseMessage::SearchSubmit => {
+                if self.browse.search_query.trim().is_empty() {
+                    return Task::none();
+                }
                 self.browse.loading = true;
-                log::info!("Search: {}", self.browse.search_query);
+                let query = self.browse.search_query.clone();
+                let adapter = self.adapter.clone();
+                return Task::perform(
+                    async move {
+                        adapter
+                            .search(&query, None)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::Browse(message::BrowseMessage::SearchResults(result)),
+                );
+            }
+            message::BrowseMessage::SearchResults(result) => {
+                self.browse.loading = false;
+                self.browse.has_searched = true;
+                self.browse.result_version += 1;
+                match result {
+                    Ok(packages) => {
+                        self.browse.error = None;
+                        self.browse.search_results = packages;
+                    }
+                    Err(e) => {
+                        log::error!("Search failed: {e}");
+                        self.browse.error = Some(e);
+                        self.browse.search_results.clear();
+                    }
+                }
+            }
+            message::BrowseMessage::InstallPackage(ref pkg) => {
+                log::info!("Install requested: {} ({})", pkg.name, pkg.id);
             }
             _ => {}
         }
