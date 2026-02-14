@@ -9,15 +9,19 @@ license = "MIT"
 debug = ["iced/hot"]
 
 [dependencies]
+async-trait = "0.1.89"
 env_logger = "0.11.8"
 iced = { version = "0.14.0", default-features = false, features = [
   "linux-theme-detection",
-  "thread-pool",
   "tiny-skia",
+  "tokio",
   "wayland",
-  "x11"
+  "x11",
 ] }
 log = "0.4.29"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["sync"] }
 
 [profile.release]
 opt-level = "z"

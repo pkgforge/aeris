@@ -1,5 +1,7 @@
 mod app;
+mod core;
 mod theme;
+mod views;
 
 use iced::application;
 
