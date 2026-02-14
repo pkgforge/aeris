@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ConfigValue {
     String(String),
     Bool(bool),
@@ -17,6 +17,7 @@ pub struct ConfigField {
     pub description: Option<String>,
     pub field_type: ConfigFieldType,
     pub default: Option<ConfigValue>,
+    pub section: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,8 @@
 use iced::{
     Element, Length,
-    widget::{button, column, container, lazy, row, scrollable, text, text_input},
+    widget::{
+        button, column, container, lazy, mouse_area, row, rule, scrollable, text, text_input,
+    },
 };
 
 use crate::{
@@ -18,6 +20,7 @@ pub struct BrowseState {
     pub error: Option<String>,
     pub result_version: u64,
     pub installing: Option<String>,
+    pub selected_package: Option<Package>,
 }
 
 pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
@@ -51,7 +54,7 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
         let version = state.result_version;
         let results = state.search_results.clone();
         let installing = state.installing.clone();
-        lazy(version, move |_| {
+        lazy(("browse", version), move |_| {
             let cards: Vec<Element<'_, Message>> = results
                 .iter()
                 .map(|pkg| package_card(pkg, &installing))
@@ -75,6 +78,7 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
 }
 
 fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, Message> {
+    let pkg_id = pkg.id.clone();
     let name = text(pkg.name.clone()).size(16);
     let version = text(pkg.version.clone()).size(12);
     let adapter = text(format!("[{}]", pkg.adapter_id)).size(11);
@@ -130,9 +134,84 @@ fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, 
         .spacing(12)
         .align_y(iced::Alignment::Center);
 
-    container(card)
+    let card_container: Element<'static, Message> = container(card)
         .padding(12)
         .width(Length::Fill)
         .style(container::bordered_box)
+        .into();
+
+    mouse_area(card_container)
+        .on_press(Message::Browse(BrowseMessage::SelectPackage(pkg_id)))
         .into()
+}
+
+pub fn package_detail_view(pkg: &Package) -> Element<'_, Message> {
+    let name = text(pkg.name.clone()).size(20);
+    let version = text(format!("v{}", pkg.version)).size(14);
+    let header = row![name, version]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+    let description = text(
+        pkg.description
+            .clone()
+            .unwrap_or_else(|| "No description available".into()),
+    )
+    .size(14);
+
+    let mut details: Vec<Element<'_, Message>> = Vec::new();
+
+    if let Some(ref homepage) = pkg.homepage {
+        details.push(detail_row("Homepage", homepage));
+    }
+    if let Some(ref license) = pkg.license {
+        details.push(detail_row("License", license));
+    }
+    if let Some(size) = pkg.size {
+        details.push(detail_row("Size", &format_bytes(size, 2)));
+    }
+    if let Some(ref category) = pkg.category {
+        details.push(detail_row("Category", category));
+    }
+    if !pkg.tags.is_empty() {
+        details.push(detail_row("Tags", &pkg.tags.join(", ")));
+    }
+
+    let status = if pkg.installed {
+        "Installed"
+    } else {
+        "Not installed"
+    };
+    details.push(detail_row("Status", status));
+
+    let close_btn = button(text("Close").size(13))
+        .padding([6, 14])
+        .style(button::secondary)
+        .on_press(Message::Browse(BrowseMessage::CloseDetail));
+
+    let mut content = column![header, description, rule::horizontal(1)]
+        .spacing(10)
+        .padding(24);
+
+    for detail in details {
+        content = content.push(detail);
+    }
+
+    content = content.push(
+        row![iced::widget::space().width(Length::Fill), close_btn].align_y(iced::Alignment::Center),
+    );
+
+    container(content)
+        .style(container::rounded_box)
+        .width(400)
+        .into()
+}
+
+fn detail_row<'a>(label: &str, value: &str) -> Element<'a, Message> {
+    row![
+        text(label.to_string()).size(13).width(100),
+        text(value.to_string()).size(13),
+    ]
+    .spacing(8)
+    .into()
 }

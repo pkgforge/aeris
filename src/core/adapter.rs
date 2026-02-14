@@ -153,6 +153,10 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    fn initial_config(&self) -> Option<AdapterConfig> {
+        None
+    }
+
     async fn get_config(&self) -> Result<AdapterConfig> {
         Err(AdapterError::NotSupported)
     }

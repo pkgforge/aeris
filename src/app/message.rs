@@ -1,5 +1,5 @@
 use crate::core::{
-    adapter::AdapterInfo,
+    config::ConfigValue,
     package::{InstalledPackage, Package, PackageDetail, Update},
 };
 
@@ -16,12 +16,12 @@ pub enum ConfirmAction {
 #[derive(Debug, Clone)]
 pub enum Message {
     NavigateTo(View),
-    ThemeChanged(AppTheme),
 
     Browse(BrowseMessage),
     Installed(InstalledMessage),
     Updates(UpdatesMessage),
-    Adapters(AdaptersMessage),
+    Settings(SettingsMessage),
+    Repositories(RepositoriesMessage),
 
     ConfirmAction,
     CancelAction,
@@ -39,6 +39,7 @@ pub enum BrowseMessage {
     PackageDetailLoaded(Result<Box<PackageDetail>, String>),
     InstallPackage(Package),
     InstallComplete(Result<(), String>),
+    CloseDetail,
 }
 
 #[derive(Debug, Clone)]
@@ -61,11 +62,38 @@ pub enum UpdatesMessage {
 }
 
 #[derive(Debug, Clone)]
-pub enum AdaptersMessage {
+pub enum SettingsMessage {
+    ThemeChanged(AppTheme),
+    StartupViewChanged(View),
+    NotificationsToggled(bool),
+    SaveAeris,
+    SaveAerisResult(Result<(), String>),
+    AdapterFieldChanged(String, ConfigValue),
+    BrowseAdapterField(String),
+    BrowseAdapterFieldResult(String, String),
+    RevertAdapterField(String),
+    SaveAdapter,
+    SaveAdapterResult(Result<(), String>),
+}
+
+#[derive(Debug, Clone)]
+pub enum RepositoriesMessage {
     Refresh,
-    AdaptersLoaded(Vec<AdapterInfo>),
-    ToggleAdapter(String),
-    SyncAdapter(String),
+    Loaded(Result<Vec<RepoInfo>, String>),
+    SyncRepo(String),
     SyncAll,
-    SyncComplete(String, Result<(), String>),
+    SyncComplete(Result<(), String>),
+    ToggleEnabled(String, bool),
+    ToggleResult(Result<(), String>),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RepoInfo {
+    pub name: String,
+    pub url: String,
+    pub enabled: bool,
+    pub desktop_integration: bool,
+    pub has_pubkey: bool,
+    pub signature_verification: bool,
+    pub sync_interval: Option<String>,
 }

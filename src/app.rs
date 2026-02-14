@@ -11,7 +11,15 @@ use iced::{
 };
 use soar_events::{InstallStage, RemoveStage, SoarEvent, VerifyStage};
 
-use crate::{adapters::soar::SoarAdapter, core::adapter::Adapter, views};
+use crate::{
+    adapters::soar::SoarAdapter,
+    config::AerisConfig,
+    core::{
+        adapter::Adapter,
+        config::{AdapterConfig, ConfigFieldType, ConfigValue},
+    },
+    views,
+};
 
 pub use message::Message;
 
@@ -47,6 +55,18 @@ pub enum View {
     Browse,
     Installed,
     Updates,
+    Repositories,
+    AdapterInfo,
+    Settings,
+}
+
+impl View {
+    pub const ALL: [View; 4] = [
+        View::Dashboard,
+        View::Browse,
+        View::Installed,
+        View::Updates,
+    ];
 }
 
 impl std::fmt::Display for View {
@@ -56,6 +76,9 @@ impl std::fmt::Display for View {
             View::Browse => write!(f, "Browse"),
             View::Installed => write!(f, "Installed"),
             View::Updates => write!(f, "Updates"),
+            View::Repositories => write!(f, "Repositories"),
+            View::AdapterInfo => write!(f, "Adapter"),
+            View::Settings => write!(f, "Settings"),
         }
     }
 }
@@ -132,6 +155,9 @@ pub struct App {
     browse: views::browse::BrowseState,
     installed: views::installed::InstalledState,
     updates: views::updates::UpdatesState,
+    settings: views::settings::SettingsState,
+    repositories: views::repositories::RepositoriesState,
+    aeris_config: AerisConfig,
     adapter: Arc<SoarAdapter>,
     confirm_dialog: Option<message::ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
@@ -140,10 +166,18 @@ pub struct App {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
-        let config = soar_config::config::get_config();
+        let aeris_config = AerisConfig::load();
+        soar_config::config::init().expect("Failed to load soar config");
+        let soar_config = soar_config::config::get_config();
+
+        let selected_theme = aeris_config.theme();
+        let startup_view = aeris_config.startup_view();
+
         let (adapter, event_receiver) =
-            SoarAdapter::new(config).expect("Failed to initialize Soar adapter");
+            SoarAdapter::new(soar_config).expect("Failed to initialize Soar adapter");
         let adapter = Arc::new(adapter);
+
+        let settings = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
 
         let load_adapter = adapter.clone();
         let init_task = Task::perform(
@@ -158,14 +192,17 @@ impl App {
 
         (
             Self {
-                selected_theme: AppTheme::default(),
-                current_view: View::default(),
+                selected_theme,
+                current_view: startup_view,
                 browse: views::browse::BrowseState::default(),
                 installed: views::installed::InstalledState {
                     loading: true,
                     ..Default::default()
                 },
                 updates: views::updates::UpdatesState::default(),
+                settings,
+                repositories: views::repositories::RepositoriesState::default(),
+                aeris_config,
                 adapter,
                 confirm_dialog: None,
                 event_receiver,
@@ -185,16 +222,15 @@ impl App {
                 self.current_view = view;
                 return match view {
                     View::Installed if !self.installed.loaded => self.load_installed(),
+                    View::Repositories if !self.repositories.loaded => self.load_repositories(),
                     _ => Task::none(),
                 };
-            }
-            Message::ThemeChanged(theme) => {
-                self.selected_theme = theme;
             }
             Message::Browse(msg) => return self.update_browse(msg),
             Message::Installed(msg) => return self.update_installed(msg),
             Message::Updates(msg) => return self.update_updates(msg),
-            Message::Adapters(_msg) => {}
+            Message::Settings(msg) => return self.update_settings(msg),
+            Message::Repositories(msg) => return self.update_repositories(msg),
             Message::CancelAction => {
                 self.confirm_dialog = None;
             }
@@ -249,6 +285,17 @@ impl App {
                         self.browse.search_results.clear();
                     }
                 }
+            }
+            message::BrowseMessage::SelectPackage(id) => {
+                self.browse.selected_package = self
+                    .browse
+                    .search_results
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned();
+            }
+            message::BrowseMessage::CloseDetail => {
+                self.browse.selected_package = None;
             }
             message::BrowseMessage::InstallPackage(pkg) => {
                 self.confirm_dialog = Some(message::ConfirmAction::Install(pkg));
@@ -430,6 +477,270 @@ impl App {
         Task::none()
     }
 
+    fn update_settings(&mut self, msg: message::SettingsMessage) -> Task<Message> {
+        match msg {
+            message::SettingsMessage::ThemeChanged(theme) => {
+                self.settings.selected_theme = theme;
+                self.selected_theme = theme;
+                self.settings.aeris_dirty = true;
+                self.settings.aeris_save_success = false;
+            }
+            message::SettingsMessage::StartupViewChanged(view) => {
+                self.settings.startup_view = view;
+                self.settings.aeris_dirty = true;
+                self.settings.aeris_save_success = false;
+            }
+            message::SettingsMessage::NotificationsToggled(v) => {
+                self.settings.notifications = v;
+                self.settings.aeris_dirty = true;
+                self.settings.aeris_save_success = false;
+            }
+            message::SettingsMessage::SaveAeris => {
+                self.settings.saving = true;
+                self.settings.aeris_save_error = None;
+                self.settings.aeris_save_success = false;
+
+                let theme_str = match self.settings.selected_theme {
+                    AppTheme::System => "system",
+                    AppTheme::Light => "light",
+                    AppTheme::Dark => "dark",
+                }
+                .to_string();
+
+                let view_str = match self.settings.startup_view {
+                    View::Dashboard => "dashboard",
+                    View::Browse => "browse",
+                    View::Installed => "installed",
+                    View::Updates => "updates",
+                    _ => "dashboard",
+                }
+                .to_string();
+
+                let notifications = self.settings.notifications;
+
+                self.aeris_config.theme = Some(theme_str);
+                self.aeris_config.startup_view = Some(view_str);
+                self.aeris_config.notifications = Some(notifications);
+
+                let config = self.aeris_config.clone();
+                return Task::perform(async move { config.save() }, |result| {
+                    Message::Settings(message::SettingsMessage::SaveAerisResult(result))
+                });
+            }
+            message::SettingsMessage::SaveAerisResult(result) => {
+                self.settings.saving = false;
+                match result {
+                    Ok(()) => {
+                        self.settings.aeris_dirty = false;
+                        self.settings.aeris_save_success = true;
+                    }
+                    Err(e) => {
+                        self.settings.aeris_save_error = Some(e);
+                    }
+                }
+            }
+            message::SettingsMessage::AdapterFieldChanged(key, value) => {
+                self.settings.adapter_config.values.insert(key, value);
+                self.settings.adapter_dirty = true;
+                self.settings.adapter_save_success = false;
+            }
+            message::SettingsMessage::BrowseAdapterField(key) => {
+                return Task::perform(
+                    async move {
+                        let handle = rfd::AsyncFileDialog::new().pick_folder().await;
+                        handle.map(|h| (key, h.path().to_string_lossy().to_string()))
+                    },
+                    |result| match result {
+                        Some((key, path)) => Message::Settings(
+                            message::SettingsMessage::BrowseAdapterFieldResult(key, path),
+                        ),
+                        None => {
+                            Message::Settings(message::SettingsMessage::BrowseAdapterFieldResult(
+                                String::new(),
+                                String::new(),
+                            ))
+                        }
+                    },
+                );
+            }
+            message::SettingsMessage::BrowseAdapterFieldResult(key, path) => {
+                if !key.is_empty() && !path.is_empty() {
+                    self.settings
+                        .adapter_config
+                        .values
+                        .insert(key, ConfigValue::String(path));
+                    self.settings.adapter_dirty = true;
+                    self.settings.adapter_save_success = false;
+                }
+            }
+            message::SettingsMessage::RevertAdapterField(key) => {
+                if let Some(original) = self.settings.adapter_config_original.values.get(&key) {
+                    self.settings
+                        .adapter_config
+                        .values
+                        .insert(key, original.clone());
+                } else {
+                    self.settings.adapter_config.values.remove(&key);
+                }
+                let has_changes =
+                    self.settings.adapter_config.values.iter().any(|(k, v)| {
+                        self.settings.adapter_config_original.values.get(k) != Some(v)
+                    });
+                self.settings.adapter_dirty = has_changes;
+            }
+            message::SettingsMessage::SaveAdapter => {
+                self.settings.saving = true;
+                self.settings.adapter_save_error = None;
+                self.settings.adapter_save_success = false;
+
+                let save_config = self.prepare_adapter_config_for_save();
+                let adapter = self.adapter.clone();
+
+                return Task::perform(
+                    async move {
+                        adapter
+                            .set_config(&save_config)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::Settings(message::SettingsMessage::SaveAdapterResult(result)),
+                );
+            }
+            message::SettingsMessage::SaveAdapterResult(result) => {
+                self.settings.saving = false;
+                match result {
+                    Ok(()) => {
+                        self.settings.adapter_dirty = false;
+                        self.settings.adapter_save_success = true;
+                    }
+                    Err(e) => {
+                        self.settings.adapter_save_error = Some(e);
+                    }
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn prepare_adapter_config_for_save(&self) -> AdapterConfig {
+        let schema = self.settings.adapter_schema.as_ref();
+        let mut save = self.settings.adapter_config.clone();
+
+        if let Some(schema) = schema {
+            for field in &schema.fields {
+                if matches!(field.field_type, ConfigFieldType::Number) {
+                    if let Some(ConfigValue::String(s)) = save.values.get(&field.key) {
+                        if let Ok(n) = s.trim().parse::<i64>() {
+                            save.values
+                                .insert(field.key.clone(), ConfigValue::Integer(n));
+                        }
+                    }
+                }
+            }
+        }
+
+        save
+    }
+
+    fn load_repositories(&mut self) -> Task<Message> {
+        self.repositories.loading = true;
+        Task::perform(
+            async move {
+                let config = soar_config::config::get_config();
+                let repos: Vec<message::RepoInfo> = config
+                    .repositories
+                    .iter()
+                    .map(|r| message::RepoInfo {
+                        name: r.name.clone(),
+                        url: r.url.clone(),
+                        enabled: r.enabled.unwrap_or(true),
+                        desktop_integration: r.desktop_integration.unwrap_or(false),
+                        has_pubkey: r.pubkey.is_some(),
+                        signature_verification: r.signature_verification.unwrap_or(false),
+                        sync_interval: r.sync_interval.clone(),
+                    })
+                    .collect();
+                Ok(repos)
+            },
+            |result| Message::Repositories(message::RepositoriesMessage::Loaded(result)),
+        )
+    }
+
+    fn update_repositories(&mut self, msg: message::RepositoriesMessage) -> Task<Message> {
+        match msg {
+            message::RepositoriesMessage::Refresh => {
+                return self.load_repositories();
+            }
+            message::RepositoriesMessage::Loaded(result) => {
+                self.repositories.loading = false;
+                self.repositories.loaded = true;
+                self.repositories.result_version += 1;
+                match result {
+                    Ok(repos) => {
+                        self.repositories.error = None;
+                        self.repositories.repositories = repos;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load repositories: {e}");
+                        self.repositories.error = Some(e);
+                    }
+                }
+            }
+            message::RepositoriesMessage::SyncRepo(_name) => {
+                // Soar syncs all repos at once; treat single-repo sync the same
+                self.repositories.syncing = Some("__all__".into());
+                self.repositories.sync_error = None;
+                self.repositories.result_version += 1;
+                let adapter = self.adapter.clone();
+                return Task::perform(
+                    async move { adapter.sync(None).await.map_err(|e| e.to_string()) },
+                    |result| {
+                        Message::Repositories(message::RepositoriesMessage::SyncComplete(result))
+                    },
+                );
+            }
+            message::RepositoriesMessage::SyncAll => {
+                self.repositories.syncing = Some("__all__".into());
+                self.repositories.sync_error = None;
+                self.repositories.result_version += 1;
+                let adapter = self.adapter.clone();
+                return Task::perform(
+                    async move { adapter.sync(None).await.map_err(|e| e.to_string()) },
+                    |result| {
+                        Message::Repositories(message::RepositoriesMessage::SyncComplete(result))
+                    },
+                );
+            }
+            message::RepositoriesMessage::SyncComplete(result) => {
+                self.repositories.syncing = None;
+                self.repositories.result_version += 1;
+                match result {
+                    Ok(()) => {
+                        log::info!("Repository sync completed");
+                    }
+                    Err(e) => {
+                        log::error!("Sync failed: {e}");
+                        self.repositories.sync_error = Some(e);
+                    }
+                }
+            }
+            message::RepositoriesMessage::ToggleEnabled(name, enabled) => {
+                let repo_name = name.clone();
+                return Task::perform(
+                    async move { crate::config::save_repo_enabled(&repo_name, enabled) },
+                    |result| {
+                        Message::Repositories(message::RepositoriesMessage::ToggleResult(result))
+                    },
+                );
+            }
+            message::RepositoriesMessage::ToggleResult(result) => match result {
+                Ok(()) => return self.load_repositories(),
+                Err(e) => self.repositories.sync_error = Some(e),
+            },
+        }
+        Task::none()
+    }
+
     fn execute_confirmed(&mut self, action: message::ConfirmAction) -> Task<Message> {
         match action {
             message::ConfirmAction::Install(ref pkg) => {
@@ -528,6 +839,9 @@ impl App {
             View::Browse => views::browse::view(&self.browse),
             View::Installed => views::installed::view(&self.installed),
             View::Updates => views::updates::view(&self.updates),
+            View::Settings => views::settings::view(&self.settings),
+            View::Repositories => views::repositories::view(&self.repositories),
+            View::AdapterInfo => views::adapter_info::view(self.adapter.info()),
         };
 
         let main: Element<'_, Message> = if let Some(ref op) = self.active_operation {
@@ -546,6 +860,12 @@ impl App {
                 base,
                 self.confirm_dialog_view(action),
                 Message::CancelAction,
+            )
+        } else if let Some(ref pkg) = self.browse.selected_package {
+            modal(
+                base,
+                views::browse::package_detail_view(pkg),
+                Message::Browse(message::BrowseMessage::CloseDetail),
             )
         } else {
             base.into()
@@ -607,6 +927,8 @@ impl App {
             (View::Browse, "Browse"),
             (View::Installed, "Installed"),
             (View::Updates, "Updates"),
+            (View::Repositories, "Repositories"),
+            (View::AdapterInfo, "Adapter"),
         ];
 
         let mut nav = column![].spacing(4).padding(8);
@@ -627,17 +949,20 @@ impl App {
             nav = nav.push(btn);
         }
 
-        let theme_selector = column![
-            text("Theme").size(12),
-            iced::widget::pick_list(
-                &AppTheme::ALL[..],
-                Some(self.selected_theme),
-                Message::ThemeChanged,
-            )
-            .width(Length::Fill),
-        ]
-        .spacing(4)
-        .padding(8);
+        // Settings button at the bottom
+        let is_settings_active = self.current_view == View::Settings;
+        let settings_btn = button(text("Settings").size(14).width(Length::Fill).center())
+            .on_press(Message::NavigateTo(View::Settings))
+            .width(Length::Fill)
+            .padding([8, 12]);
+
+        let settings_btn = if is_settings_active {
+            settings_btn.style(button::primary)
+        } else {
+            settings_btn.style(button::text)
+        };
+
+        let settings_section = column![].spacing(4).padding(8).push(settings_btn);
 
         container(
             column![
@@ -646,7 +971,7 @@ impl App {
                 nav,
                 space(),
                 rule::horizontal(1),
-                theme_selector,
+                settings_section,
             ]
             .spacing(8)
             .height(Length::Fill),

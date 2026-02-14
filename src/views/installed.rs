@@ -55,7 +55,7 @@ pub fn view<'a>(state: &'a InstalledState) -> Element<'a, Message> {
         let version = state.result_version;
         let packages = state.packages.clone();
         let removing = state.removing.clone();
-        lazy(version, move |_| {
+        lazy(("installed", version), move |_| {
             let cards: Vec<Element<'_, Message>> = packages
                 .iter()
                 .map(|pkg| installed_card(pkg, &removing))

@@ -9,7 +9,7 @@ use soar_operations::{
 use crate::core::{
     adapter::{Adapter, AdapterError, AdapterInfo, ProgressSender, Result},
     capabilities::Capabilities,
-    config::{AdapterConfig, ConfigSchema},
+    config::{AdapterConfig, ConfigField, ConfigFieldType, ConfigSchema, ConfigValue},
     package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
     profile::Profile,
     repository::Repository,
@@ -110,7 +110,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No updates available".into()));
         }
 
-        let report = update::perform_update(&self.ctx, updates, false)
+        let report = update::perform_update(&self.ctx, updates, false, false)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -130,7 +130,7 @@ impl SoarAdapter {
             return Ok(());
         }
 
-        let report = update::perform_update(&self.ctx, updates, false)
+        let report = update::perform_update(&self.ctx, updates, false, false)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -139,6 +139,194 @@ impl SoarAdapter {
         }
 
         Ok(())
+    }
+
+    fn build_config_schema(&self) -> ConfigSchema {
+        let profile_keys: Vec<String> = self.ctx.config().profile.keys().cloned().collect();
+
+        ConfigSchema {
+            adapter_id: "soar".into(),
+            fields: vec![
+                ConfigField {
+                    key: "parallel".into(),
+                    label: "Parallel downloads".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Toggle,
+                    default: Some(ConfigValue::Bool(true)),
+                    section: None,
+                },
+                ConfigField {
+                    key: "parallel_limit".into(),
+                    label: "Parallel limit".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Number,
+                    default: Some(ConfigValue::Integer(4)),
+                    section: None,
+                },
+                ConfigField {
+                    key: "search_limit".into(),
+                    label: "Search result limit".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Number,
+                    default: Some(ConfigValue::Integer(20)),
+                    section: None,
+                },
+                ConfigField {
+                    key: "signature_verification".into(),
+                    label: "Signature verification".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Toggle,
+                    default: Some(ConfigValue::Bool(true)),
+                    section: None,
+                },
+                ConfigField {
+                    key: "desktop_integration".into(),
+                    label: "Desktop integration".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Toggle,
+                    default: Some(ConfigValue::Bool(false)),
+                    section: None,
+                },
+                ConfigField {
+                    key: "bin_path".into(),
+                    label: "Bin path".into(),
+                    description: None,
+                    field_type: ConfigFieldType::PathList,
+                    default: None,
+                    section: Some("Paths".into()),
+                },
+                ConfigField {
+                    key: "cache_path".into(),
+                    label: "Cache path".into(),
+                    description: None,
+                    field_type: ConfigFieldType::PathList,
+                    default: None,
+                    section: Some("Paths".into()),
+                },
+                ConfigField {
+                    key: "db_path".into(),
+                    label: "DB path".into(),
+                    description: None,
+                    field_type: ConfigFieldType::PathList,
+                    default: None,
+                    section: Some("Paths".into()),
+                },
+                ConfigField {
+                    key: "desktop_path".into(),
+                    label: "Desktop path".into(),
+                    description: None,
+                    field_type: ConfigFieldType::PathList,
+                    default: None,
+                    section: Some("Paths".into()),
+                },
+                ConfigField {
+                    key: "repositories_path".into(),
+                    label: "Repos path".into(),
+                    description: None,
+                    field_type: ConfigFieldType::PathList,
+                    default: None,
+                    section: Some("Paths".into()),
+                },
+                ConfigField {
+                    key: "portable_dirs".into(),
+                    label: "Portable dirs".into(),
+                    description: None,
+                    field_type: ConfigFieldType::PathList,
+                    default: None,
+                    section: Some("Paths".into()),
+                },
+                ConfigField {
+                    key: "ghcr_concurrency".into(),
+                    label: "GHCR concurrency".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Number,
+                    default: Some(ConfigValue::Integer(8)),
+                    section: Some("Advanced".into()),
+                },
+                ConfigField {
+                    key: "sync_interval".into(),
+                    label: "Sync interval".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Text,
+                    default: None,
+                    section: Some("Advanced".into()),
+                },
+                ConfigField {
+                    key: "default_profile".into(),
+                    label: "Default profile".into(),
+                    description: None,
+                    field_type: ConfigFieldType::Select(profile_keys),
+                    default: Some(ConfigValue::String("default".into())),
+                    section: Some("Advanced".into()),
+                },
+            ],
+        }
+    }
+
+    fn build_initial_config(&self) -> AdapterConfig {
+        use std::collections::HashMap;
+
+        let cfg = self.ctx.config();
+        let mut values = HashMap::new();
+
+        values.insert(
+            "parallel".into(),
+            ConfigValue::Bool(cfg.parallel.unwrap_or(true)),
+        );
+        values.insert(
+            "parallel_limit".into(),
+            ConfigValue::String(cfg.parallel_limit.unwrap_or(4).to_string()),
+        );
+        values.insert(
+            "search_limit".into(),
+            ConfigValue::String(cfg.search_limit.unwrap_or(20).to_string()),
+        );
+        values.insert(
+            "signature_verification".into(),
+            ConfigValue::Bool(cfg.signature_verification.unwrap_or(true)),
+        );
+        values.insert(
+            "desktop_integration".into(),
+            ConfigValue::Bool(cfg.desktop_integration.unwrap_or(false)),
+        );
+        values.insert(
+            "bin_path".into(),
+            ConfigValue::String(cfg.bin_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "cache_path".into(),
+            ConfigValue::String(cfg.cache_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "db_path".into(),
+            ConfigValue::String(cfg.db_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "desktop_path".into(),
+            ConfigValue::String(cfg.desktop_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "repositories_path".into(),
+            ConfigValue::String(cfg.repositories_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "portable_dirs".into(),
+            ConfigValue::String(cfg.portable_dirs.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "ghcr_concurrency".into(),
+            ConfigValue::String(cfg.ghcr_concurrency.unwrap_or(8).to_string()),
+        );
+        values.insert(
+            "sync_interval".into(),
+            ConfigValue::String(cfg.sync_interval.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "default_profile".into(),
+            ConfigValue::String(cfg.default_profile.clone()),
+        );
+
+        AdapterConfig { values }
     }
 
     pub fn new(config: Config) -> Result<(Self, std::sync::mpsc::Receiver<SoarEvent>)> {
@@ -354,14 +542,59 @@ impl Adapter for SoarAdapter {
     }
 
     fn config_schema(&self) -> Option<ConfigSchema> {
-        None
+        Some(self.build_config_schema())
+    }
+
+    fn initial_config(&self) -> Option<AdapterConfig> {
+        Some(self.build_initial_config())
     }
 
     async fn get_config(&self) -> Result<AdapterConfig> {
-        Err(AdapterError::NotSupported)
+        self.initial_config().ok_or(AdapterError::NotSupported)
     }
 
-    async fn set_config(&self, _config: &AdapterConfig) -> Result<()> {
-        Err(AdapterError::NotSupported)
+    async fn set_config(&self, config: &AdapterConfig) -> Result<()> {
+        use toml_edit::DocumentMut;
+
+        let config_path = soar_config::config::CONFIG_PATH
+            .read()
+            .unwrap()
+            .to_path_buf();
+
+        let mut doc = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| s.parse::<DocumentMut>().ok())
+            .unwrap_or_default();
+
+        for (key, value) in &config.values {
+            match value {
+                ConfigValue::Bool(v) => {
+                    doc[key.as_str()] = toml_edit::value(*v);
+                }
+                ConfigValue::Integer(v) => {
+                    doc[key.as_str()] = toml_edit::value(*v);
+                }
+                ConfigValue::String(s) => {
+                    if s.trim().is_empty() {
+                        doc.remove(key.as_str());
+                    } else {
+                        doc[key.as_str()] = toml_edit::value(s.as_str());
+                    }
+                }
+                ConfigValue::StringList(list) => {
+                    let mut arr = toml_edit::Array::new();
+                    for item in list {
+                        arr.push(item.as_str());
+                    }
+                    doc[key.as_str()] = toml_edit::value(arr);
+                }
+            }
+        }
+
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| AdapterError::Other(e.to_string()))?;
+        }
+        std::fs::write(&config_path, doc.to_string())
+            .map_err(|e| AdapterError::Other(e.to_string()))
     }
 }

@@ -68,7 +68,7 @@ pub fn view<'a>(state: &'a UpdatesState) -> Element<'a, Message> {
         let version = state.result_version;
         let updates = state.updates.clone();
         let updating = state.updating.clone();
-        lazy(version, move |_| {
+        lazy(("updates", version), move |_| {
             let cards: Vec<Element<'_, Message>> =
                 updates.iter().map(|u| update_card(u, &updating)).collect();
 
