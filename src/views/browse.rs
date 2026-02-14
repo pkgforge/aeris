@@ -18,6 +18,7 @@ pub struct BrowseState {
     pub loading: bool,
     pub has_searched: bool,
     pub error: Option<String>,
+    pub install_error: Option<String>,
     pub result_version: u64,
     pub installing: Option<String>,
     pub selected_package: Option<Package>,
@@ -30,7 +31,7 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
         .padding(10)
         .size(16);
 
-    let content: Element<'_, Message> = if state.loading {
+    let results_content: Element<'_, Message> = if state.loading {
         container(text("Searching...").size(14))
             .center_x(Length::Fill)
             .center_y(Length::Fill)
@@ -65,16 +66,48 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
         .into()
     };
 
-    container(
-        column![row![search_bar].width(Length::Fill), content,]
-            .spacing(12)
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .padding(20)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    let mut content = column![row![search_bar].width(Length::Fill)]
+        .spacing(12)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    if let Some(ref err) = state.install_error {
+        let error_banner = row![
+            text(format!("Install failed: {err}")).size(13),
+            button(text("Dismiss").size(12))
+                .on_press(Message::Browse(BrowseMessage::DismissInstallError))
+                .style(button::secondary)
+                .padding([2, 8]),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        content = content.push(
+            container(error_banner)
+                .padding([6, 12])
+                .width(Length::Fill)
+                .style(|theme: &iced::Theme| {
+                    let palette = theme.extended_palette();
+                    container::Style {
+                        background: Some(palette.danger.weak.color.into()),
+                        border: iced::Border {
+                            width: 1.0,
+                            color: palette.danger.base.color,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                }),
+        );
+    }
+
+    content = content.push(results_content);
+
+    container(content)
+        .padding(20)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, Message> {

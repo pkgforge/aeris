@@ -314,9 +314,13 @@ impl App {
                     }
                     Err(e) => {
                         log::error!("Install failed: {e}");
-                        self.browse.error = Some(e);
+                        self.browse.install_error = Some(e);
                     }
                 }
+            }
+            message::BrowseMessage::DismissInstallError => {
+                self.browse.install_error = None;
+                self.browse.result_version += 1;
             }
             _ => {}
         }

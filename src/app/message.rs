@@ -39,6 +39,7 @@ pub enum BrowseMessage {
     PackageDetailLoaded(Result<Box<PackageDetail>, String>),
     InstallPackage(Package),
     InstallComplete(Result<(), String>),
+    DismissInstallError,
     CloseDetail,
 }
 
