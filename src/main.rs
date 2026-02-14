@@ -21,7 +21,7 @@ fn main() -> iced::Result {
 
     log::info!("Starting {APP_NAME}");
 
-    application(App::default, App::update, App::view)
+    application(App::new, App::update, App::view)
         .theme(App::theme)
         .title(App::title)
         .run()

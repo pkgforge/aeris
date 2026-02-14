@@ -60,23 +60,44 @@ pub struct App {
     selected_theme: AppTheme,
     current_view: View,
     browse: views::browse::BrowseState,
+    installed: views::installed::InstalledState,
+    updates: views::updates::UpdatesState,
     adapter: Arc<SoarAdapter>,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    pub fn new() -> (Self, Task<Message>) {
         let config = soar_config::config::get_config();
         let adapter = SoarAdapter::new(config).expect("Failed to initialize Soar adapter");
-        Self {
-            selected_theme: AppTheme::default(),
-            current_view: View::default(),
-            browse: views::browse::BrowseState::default(),
-            adapter: Arc::new(adapter),
-        }
-    }
-}
+        let adapter = Arc::new(adapter);
 
-impl App {
+        let load_adapter = adapter.clone();
+        let init_task = Task::perform(
+            async move {
+                load_adapter
+                    .list_installed()
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
+        );
+
+        (
+            Self {
+                selected_theme: AppTheme::default(),
+                current_view: View::default(),
+                browse: views::browse::BrowseState::default(),
+                installed: views::installed::InstalledState {
+                    loading: true,
+                    ..Default::default()
+                },
+                updates: views::updates::UpdatesState::default(),
+                adapter,
+            },
+            init_task,
+        )
+    }
+
     pub fn title(&self) -> String {
         format!("{APP_NAME} - {}", self.current_view)
     }
@@ -85,13 +106,19 @@ impl App {
         match message {
             Message::NavigateTo(view) => {
                 self.current_view = view;
+                return match view {
+                    View::Installed if !self.installed.loaded => {
+                        self.load_installed()
+                    }
+                    _ => Task::none(),
+                };
             }
             Message::ThemeChanged(theme) => {
                 self.selected_theme = theme;
             }
             Message::Browse(msg) => return self.update_browse(msg),
-            Message::Installed(_msg) => {}
-            Message::Updates(_msg) => {}
+            Message::Installed(msg) => return self.update_installed(msg),
+            Message::Updates(msg) => return self.update_updates(msg),
             Message::Adapters(_msg) => {}
         }
         Task::none()
@@ -143,13 +170,103 @@ impl App {
         Task::none()
     }
 
+    fn load_installed(&mut self) -> Task<Message> {
+        self.installed.loading = true;
+        let adapter = self.adapter.clone();
+        Task::perform(
+            async move {
+                adapter
+                    .list_installed()
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
+        )
+    }
+
+    fn update_installed(&mut self, msg: message::InstalledMessage) -> Task<Message> {
+        match msg {
+            message::InstalledMessage::Refresh => {
+                return self.load_installed();
+            }
+            message::InstalledMessage::PackagesLoaded(result) => {
+                self.installed.loading = false;
+                self.installed.loaded = true;
+                self.installed.result_version += 1;
+                match result {
+                    Ok(packages) => {
+                        self.installed.error = None;
+                        self.installed.packages = packages;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load installed packages: {e}");
+                        self.installed.error = Some(e);
+                        self.installed.packages.clear();
+                    }
+                }
+            }
+            message::InstalledMessage::RemovePackage(ref pkg) => {
+                log::info!("Remove requested: {} ({})", pkg.name, pkg.id);
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    fn update_updates(&mut self, msg: message::UpdatesMessage) -> Task<Message> {
+        match msg {
+            message::UpdatesMessage::CheckUpdates => {
+                self.updates.loading = true;
+                let adapter = self.adapter.clone();
+                return Task::perform(
+                    async move {
+                        adapter
+                            .list_updates()
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::Updates(message::UpdatesMessage::UpdatesLoaded(result)),
+                );
+            }
+            message::UpdatesMessage::UpdatesLoaded(result) => {
+                self.updates.loading = false;
+                self.updates.checked = true;
+                self.updates.result_version += 1;
+                match result {
+                    Ok(updates) => {
+                        self.updates.error = None;
+                        self.updates.updates = updates;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to check updates: {e}");
+                        self.updates.error = Some(e);
+                        self.updates.updates.clear();
+                    }
+                }
+            }
+            message::UpdatesMessage::UpdatePackage(ref pkg) => {
+                log::info!("Update requested: {} ({})", pkg.name, pkg.id);
+            }
+            message::UpdatesMessage::UpdateAll => {
+                log::info!("Update all requested");
+            }
+        }
+        Task::none()
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let sidebar = self.sidebar_view();
         let content = match self.current_view {
-            View::Dashboard => views::dashboard::view(),
+            View::Dashboard => {
+                let stats = views::dashboard::DashboardStats {
+                    installed_count: self.installed.packages.len(),
+                    repo_count: self.adapter.repo_count(),
+                };
+                views::dashboard::view(&stats)
+            }
             View::Browse => views::browse::view(&self.browse),
-            View::Installed => views::installed::view(),
-            View::Updates => views::updates::view(),
+            View::Installed => views::installed::view(&self.installed),
+            View::Updates => views::updates::view(&self.updates),
         };
 
         row![sidebar, content].into()

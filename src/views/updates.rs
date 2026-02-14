@@ -1,20 +1,135 @@
 use iced::{
     Element, Length,
-    widget::{column, container, text},
+    widget::{button, column, container, lazy, row, scrollable, space, text},
 };
 
-use crate::app::message::Message;
+use crate::{
+    app::message::{UpdatesMessage, Message},
+    core::package::Update,
+};
+use soar_utils::bytes::format_bytes;
 
-pub fn view<'a>() -> Element<'a, Message> {
+#[derive(Debug, Default)]
+pub struct UpdatesState {
+    pub updates: Vec<Update>,
+    pub loading: bool,
+    pub checked: bool,
+    pub error: Option<String>,
+    pub result_version: u64,
+}
+
+pub fn view<'a>(state: &'a UpdatesState) -> Element<'a, Message> {
+    let mut header_row = row![
+        text("Updates").size(20),
+        space().width(Length::Fill),
+    ]
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill);
+
+    if !state.updates.is_empty() {
+        header_row = header_row.push(
+            button(text("Update All").size(12).center())
+                .padding([6, 14])
+                .style(button::primary)
+                .on_press(Message::Updates(UpdatesMessage::UpdateAll)),
+        );
+    }
+
+    header_row = header_row.push(
+        button(text("Check").size(12).center())
+            .padding([6, 14])
+            .style(button::secondary)
+            .on_press(Message::Updates(UpdatesMessage::CheckUpdates)),
+    );
+
+    let content: Element<'_, Message> = if state.loading {
+        container(text("Checking for updates...").size(14))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    } else if let Some(ref err) = state.error {
+        container(text(format!("Failed: {err}")).size(14))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    } else if state.updates.is_empty() {
+        let msg = if state.checked {
+            "All packages are up to date"
+        } else {
+            "Click Check to look for updates"
+        };
+        container(text(msg).size(14))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    } else {
+        let version = state.result_version;
+        let updates = state.updates.clone();
+        lazy(version, move |_| {
+            let cards: Vec<Element<'_, Message>> =
+                updates.iter().map(|u| update_card(u)).collect();
+
+            scrollable(column(cards).spacing(8).width(Length::Fill)).height(Length::Fill)
+        })
+        .into()
+    };
+
     container(
-        column![
-            text("Updates").size(24),
-            text("No updates available").size(14),
-        ]
-        .spacing(12),
+        column![header_row, content]
+            .spacing(12)
+            .width(Length::Fill)
+            .height(Length::Fill),
     )
     .padding(20)
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+fn update_card(update: &Update) -> Element<'static, Message> {
+    let name = text(update.package.name.clone()).size(16);
+    let version_info = text(format!(
+        "{} → {}",
+        update.current_version, update.new_version
+    ))
+    .size(12);
+
+    let header = row![name, version_info]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+    let mut info_parts: Vec<Element<'_, Message>> = Vec::new();
+
+    if let Some(size) = update.download_size {
+        info_parts.push(
+            text(format!("Download: {}", format_bytes(size, 2)))
+                .size(11)
+                .into(),
+        );
+    }
+
+    if update.is_security {
+        info_parts.push(text("Security update").size(11).into());
+    }
+
+    let info_row = row(info_parts).spacing(12);
+
+    let update_btn = button(text("Update").size(12).center())
+        .padding([4, 12])
+        .style(button::primary)
+        .on_press(Message::Updates(UpdatesMessage::UpdatePackage(
+            update.package.clone(),
+        )));
+
+    let left = column![header, info_row].spacing(4).width(Length::Fill);
+
+    let card = row![left, update_btn]
+        .spacing(12)
+        .align_y(iced::Alignment::Center);
+
+    container(card)
+        .padding(12)
+        .width(Length::Fill)
+        .style(container::bordered_box)
+        .into()
 }

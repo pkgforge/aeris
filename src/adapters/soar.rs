@@ -19,6 +19,10 @@ pub struct SoarAdapter {
 }
 
 impl SoarAdapter {
+    pub fn repo_count(&self) -> usize {
+        self.ctx.config().repositories.len()
+    }
+
     pub fn new(config: Config) -> Result<Self> {
         let events: EventSinkHandle = Arc::new(NullSink);
         let ctx = SoarContext::new(config, events);
@@ -154,6 +158,7 @@ impl Adapter for SoarAdapter {
                     install_path: Some(pkg.installed_path.clone()),
                     pinned: pkg.pinned,
                     auto_installed: false,
+                    is_healthy: entry.is_healthy,
                     profile: Some(pkg.profile.clone()),
                 }
             })

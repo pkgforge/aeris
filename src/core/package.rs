@@ -62,6 +62,7 @@ pub struct InstalledPackage {
     pub install_path: Option<String>,
     pub pinned: bool,
     pub auto_installed: bool,
+    pub is_healthy: bool,
     pub profile: Option<String>,
 }
 
