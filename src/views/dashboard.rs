@@ -5,18 +5,25 @@ use iced::{
 
 use crate::app::View;
 use crate::app::message::{InstalledMessage, Message, UpdatesMessage};
+use crate::core::privilege::PackageMode;
 
 pub struct DashboardStats {
     pub installed_count: usize,
     pub repo_count: usize,
+    pub current_mode: PackageMode,
 }
 
 pub fn view<'a>(stats: &DashboardStats) -> Element<'a, Message> {
     let header = text("Dashboard").size(20);
 
+    let installed_label = match stats.current_mode {
+        PackageMode::User => "Installed (User)",
+        PackageMode::System => "Installed (System)",
+    };
+
     let stat_cards = row![
         stat_card(
-            "Installed",
+            installed_label,
             &stats.installed_count.to_string(),
             "View",
             Message::NavigateTo(View::Installed)

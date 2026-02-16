@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use soar_config::config::Config;
-use soar_events::{ChannelSink, EventSinkHandle, SoarEvent};
+use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
 use soar_operations::{
     InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove, update,
 };
@@ -18,6 +18,7 @@ use crate::core::{
 
 pub struct SoarAdapter {
     user_ctx: SoarContext,
+    system_ctx: Option<SoarContext>,
     has_system: bool,
     info: AdapterInfo,
 }
@@ -25,6 +26,10 @@ pub struct SoarAdapter {
 impl SoarAdapter {
     pub fn repo_count(&self) -> usize {
         self.user_ctx.config().repositories.len()
+    }
+
+    pub fn repo_count_for_mode(&self, mode: PackageMode) -> usize {
+        self.config_for_mode(mode).repositories.len()
     }
 
     pub fn supports_system(&self) -> bool {
@@ -35,11 +40,10 @@ impl SoarAdapter {
         &self,
         query: &str,
         mode: PackageMode,
-        settings: &std::collections::HashMap<String, String>,
+        settings: &HashMap<String, String>,
     ) -> Result<()> {
         if mode == PackageMode::System {
-            let executable_path = settings.get("executable_path").map(|s| s.as_str());
-            return self.install_system_package(query, executable_path).await;
+            return self.install_system_package(query, settings).await;
         }
 
         let options = InstallOptions::default();
@@ -86,29 +90,10 @@ impl SoarAdapter {
     async fn install_system_package(
         &self,
         query: &str,
-        configured_path: Option<&str>,
+        settings: &HashMap<String, String>,
     ) -> Result<()> {
-        let soar_path = configured_path
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_string())
-            .unwrap_or_else(Self::find_executable_path);
-
-        let output = crate::core::privilege::run_elevated(
-            PackageMode::System,
-            &soar_path,
-            &["install", "--system", query],
-        )
-        .map_err(|e| AdapterError::Other(e.to_string()))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AdapterError::Other(format!(
-                "Installation failed: {}",
-                stderr
-            )));
-        }
-
-        Ok(())
+        self.run_system_command(settings, &["install", "--system", query])
+            .await
     }
 
     fn find_executable_path() -> String {
@@ -135,28 +120,79 @@ impl SoarAdapter {
     }
 
     async fn list_installed_system(&self) -> Result<Vec<InstalledPackage>> {
-        Ok(vec![])
+        let ctx = match &self.system_ctx {
+            Some(ctx) => ctx,
+            None => return Ok(vec![]),
+        };
+
+        let result = soar_operations::list::list_installed(ctx, None)
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        Ok(result
+            .packages
+            .iter()
+            .map(|entry| {
+                let pkg = &entry.package;
+                InstalledPackage {
+                    package: Package {
+                        id: format!("{}.{}", pkg.repo_name, pkg.pkg_id),
+                        name: pkg.pkg_name.clone(),
+                        version: pkg.version.clone(),
+                        adapter_id: "soar".into(),
+                        description: None,
+                        size: Some(pkg.size),
+                        homepage: None,
+                        license: None,
+                        installed: true,
+                        update_available: false,
+                        category: None,
+                        tags: vec![],
+                        icon_url: None,
+                    },
+                    installed_at: pkg.installed_date.clone(),
+                    install_size: entry.disk_size,
+                    install_path: Some(pkg.installed_path.clone()),
+                    pinned: pkg.pinned,
+                    auto_installed: false,
+                    is_healthy: entry.is_healthy,
+                    profile: Some(pkg.profile.clone()),
+                }
+            })
+            .collect())
     }
 
-    async fn remove_system_package(&self, packages: &[Package]) -> Result<()> {
-        let soar_path = Self::find_executable_path();
+    pub async fn remove_system_package(
+        &self,
+        packages: &[Package],
+        settings: &HashMap<String, String>,
+    ) -> Result<()> {
         let pkg_names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
-        let mut args = vec!["remove", "--system"];
+        let mut args = vec!["remove", "--system", "--yes"];
         args.extend(pkg_names.iter().map(|s| s.as_str()));
+        self.run_system_command(settings, &args).await
+    }
 
-        let output = crate::core::privilege::run_elevated(
-            PackageMode::System,
-            &soar_path,
-            &args,
-        )
-        .map_err(|e| AdapterError::Other(e.to_string()))?;
+    pub async fn run_system_remove(
+        &self,
+        pkg_name: &str,
+        settings: &HashMap<String, String>,
+    ) -> Result<()> {
+        self.run_system_command(settings, &["remove", "--system", "--yes", pkg_name])
+            .await
+    }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AdapterError::Other(format!("Remove failed: {}", stderr)));
-        }
+    pub async fn update_system_package(
+        &self,
+        query: &str,
+        settings: &HashMap<String, String>,
+    ) -> Result<()> {
+        self.run_system_command(settings, &["update", "--system", query])
+            .await
+    }
 
-        Ok(())
+    pub async fn update_all_system(&self, settings: &HashMap<String, String>) -> Result<()> {
+        self.run_system_command(settings, &["update", "--system"])
+            .await
     }
 
     pub async fn remove_package(&self, query: &str) -> Result<()> {
@@ -443,9 +479,17 @@ impl SoarAdapter {
 
         let has_system = Self::can_run_system();
 
+        // Create system context for read operations (listing installed, checking updates)
+        let system_ctx = if has_system {
+            Self::create_system_context()
+        } else {
+            None
+        };
+
         Ok((
             Self {
                 user_ctx,
+                system_ctx,
                 has_system,
                 info: AdapterInfo {
                     id: "soar".into(),
@@ -487,6 +531,160 @@ impl SoarAdapter {
 
     fn can_run_system() -> bool {
         crate::core::privilege::PrivilegeManager::detect_elevator().is_some()
+    }
+
+    fn create_system_context() -> Option<SoarContext> {
+        let system_config_path = PathBuf::from("/etc/soar/config.toml");
+        let config = Config::new_for_mode(&system_config_path, true).ok()?;
+        let events: EventSinkHandle = Arc::new(NullSink);
+        Some(SoarContext::new(config, events))
+    }
+
+    pub fn system_config(&self) -> Option<&Config> {
+        self.system_ctx.as_ref().map(|ctx| ctx.config())
+    }
+
+    /// Get the config for the given mode
+    pub fn config_for_mode(&self, mode: PackageMode) -> &Config {
+        match mode {
+            PackageMode::System => self
+                .system_ctx
+                .as_ref()
+                .map(|ctx| ctx.config())
+                .unwrap_or_else(|| self.user_ctx.config()),
+            PackageMode::User => self.user_ctx.config(),
+        }
+    }
+
+    /// Build initial config values for the given mode
+    pub fn build_initial_config_for_mode(&self, mode: PackageMode) -> AdapterConfig {
+        let cfg = self.config_for_mode(mode);
+        let mut values = HashMap::new();
+
+        values.insert(
+            "parallel".into(),
+            ConfigValue::Bool(cfg.parallel.unwrap_or(true)),
+        );
+        values.insert(
+            "parallel_limit".into(),
+            ConfigValue::String(cfg.parallel_limit.unwrap_or(4).to_string()),
+        );
+        values.insert(
+            "search_limit".into(),
+            ConfigValue::String(cfg.search_limit.unwrap_or(20).to_string()),
+        );
+        values.insert(
+            "signature_verification".into(),
+            ConfigValue::Bool(cfg.signature_verification.unwrap_or(true)),
+        );
+        values.insert(
+            "desktop_integration".into(),
+            ConfigValue::Bool(cfg.desktop_integration.unwrap_or(false)),
+        );
+        values.insert(
+            "bin_path".into(),
+            ConfigValue::String(cfg.bin_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "cache_path".into(),
+            ConfigValue::String(cfg.cache_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "db_path".into(),
+            ConfigValue::String(cfg.db_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "desktop_path".into(),
+            ConfigValue::String(cfg.desktop_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "repositories_path".into(),
+            ConfigValue::String(cfg.repositories_path.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "portable_dirs".into(),
+            ConfigValue::String(cfg.portable_dirs.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "ghcr_concurrency".into(),
+            ConfigValue::String(cfg.ghcr_concurrency.unwrap_or(8).to_string()),
+        );
+        values.insert(
+            "sync_interval".into(),
+            ConfigValue::String(cfg.sync_interval.clone().unwrap_or_default()),
+        );
+        values.insert(
+            "default_profile".into(),
+            ConfigValue::String(cfg.default_profile.clone()),
+        );
+        values.insert(
+            "default_package_mode".into(),
+            ConfigValue::String(
+                if mode == PackageMode::System {
+                    "system"
+                } else {
+                    "user"
+                }
+                .into(),
+            ),
+        );
+
+        AdapterConfig { values }
+    }
+
+    /// Search using the context for the given mode
+    pub async fn search_with_mode(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        mode: PackageMode,
+    ) -> Result<Vec<Package>> {
+        let ctx = match mode {
+            PackageMode::System => match &self.system_ctx {
+                Some(ctx) => ctx,
+                None => return Ok(vec![]),
+            },
+            PackageMode::User => &self.user_ctx,
+        };
+
+        let result = soar_operations::search::search_packages(ctx, query, false, limit)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        Ok(result
+            .packages
+            .iter()
+            .map(|entry| soar_pkg_to_aeris(&entry.package, entry.installed))
+            .collect())
+    }
+
+    fn resolve_executable_path(settings: &HashMap<String, String>) -> String {
+        settings
+            .get("executable_path")
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .unwrap_or_else(Self::find_executable_path)
+    }
+
+    async fn run_system_command(
+        &self,
+        settings: &HashMap<String, String>,
+        args: &[&str],
+    ) -> Result<()> {
+        let soar_path = Self::resolve_executable_path(settings);
+
+        let output = crate::core::privilege::run_elevated(PackageMode::System, &soar_path, args)
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AdapterError::Other(format!(
+                "System operation failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(())
     }
 }
 
@@ -538,11 +736,16 @@ impl Adapter for SoarAdapter {
         Err(AdapterError::NotSupported)
     }
 
-    async fn remove(&self, packages: &[Package], _progress: Option<ProgressSender>, mode: PackageMode) -> Result<()> {
+    async fn remove(
+        &self,
+        packages: &[Package],
+        _progress: Option<ProgressSender>,
+        mode: PackageMode,
+    ) -> Result<()> {
         if mode == PackageMode::System {
-            return self.remove_system_package(packages).await;
+            return self.remove_system_package(packages, &HashMap::new()).await;
         }
-        
+
         let pkg_ids: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
         let results = remove::resolve_removals(&self.user_ctx, &pkg_ids, false)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
@@ -588,7 +791,7 @@ impl Adapter for SoarAdapter {
         if mode == PackageMode::System {
             return self.list_installed_system().await;
         }
-        
+
         let result = soar_operations::list::list_installed(&self.user_ctx, None)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -626,11 +829,16 @@ impl Adapter for SoarAdapter {
     }
 
     async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
-        if mode == PackageMode::System {
-            return Ok(vec![]);
-        }
-        
-        let updates = update::check_updates(&self.user_ctx, None)
+        let ctx = if mode == PackageMode::System {
+            match &self.system_ctx {
+                Some(ctx) => ctx,
+                None => return Ok(vec![]),
+            }
+        } else {
+            &self.user_ctx
+        };
+
+        let updates = update::check_updates(ctx, None)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -712,12 +920,19 @@ impl Adapter for SoarAdapter {
     }
 
     async fn set_config(&self, config: &AdapterConfig) -> Result<()> {
+        self.set_config_for_mode(config, PackageMode::User).await
+    }
+
+    async fn set_config_for_mode(&self, config: &AdapterConfig, mode: PackageMode) -> Result<()> {
         use toml_edit::DocumentMut;
 
-        let config_path = soar_config::config::CONFIG_PATH
-            .read()
-            .unwrap()
-            .to_path_buf();
+        let config_path = match mode {
+            PackageMode::User => soar_config::config::CONFIG_PATH
+                .read()
+                .unwrap()
+                .to_path_buf(),
+            PackageMode::System => PathBuf::from("/etc/soar/config.toml"),
+        };
 
         let mut doc = std::fs::read_to_string(&config_path)
             .ok()
@@ -749,10 +964,68 @@ impl Adapter for SoarAdapter {
             }
         }
 
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| AdapterError::Other(e.to_string()))?;
+        // Preserve repositories if not already in the document
+        if doc.get("repositories").is_none() {
+            let cfg = self.config_for_mode(mode);
+            if !cfg.repositories.is_empty() {
+                let mut repos = toml_edit::ArrayOfTables::new();
+                for repo in &cfg.repositories {
+                    let mut table = toml_edit::Table::new();
+                    table["name"] = toml_edit::value(&repo.name);
+                    table["url"] = toml_edit::value(&repo.url);
+                    if let Some(enabled) = repo.enabled {
+                        table["enabled"] = toml_edit::value(enabled);
+                    }
+                    if let Some(desktop) = repo.desktop_integration {
+                        table["desktop_integration"] = toml_edit::value(desktop);
+                    }
+                    if let Some(ref pubkey) = repo.pubkey {
+                        table["pubkey"] = toml_edit::value(pubkey.as_str());
+                    }
+                    if let Some(sig) = repo.signature_verification {
+                        table["signature_verification"] = toml_edit::value(sig);
+                    }
+                    if let Some(ref interval) = repo.sync_interval {
+                        table["sync_interval"] = toml_edit::value(interval.as_str());
+                    }
+                    repos.push(table);
+                }
+                doc["repositories"] = toml_edit::Item::ArrayOfTables(repos);
+            }
         }
-        std::fs::write(&config_path, doc.to_string())
-            .map_err(|e| AdapterError::Other(e.to_string()))
+
+        match mode {
+            PackageMode::User => {
+                if let Some(parent) = config_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| AdapterError::Other(e.to_string()))?;
+                }
+                std::fs::write(&config_path, doc.to_string())
+                    .map_err(|e| AdapterError::Other(e.to_string()))
+            }
+            PackageMode::System => {
+                let tmp_path = std::env::temp_dir().join("aeris-system-config.toml");
+                std::fs::write(&tmp_path, doc.to_string())
+                    .map_err(|e| AdapterError::Other(e.to_string()))?;
+                let output = crate::core::privilege::run_elevated(
+                    PackageMode::System,
+                    "install",
+                    &[
+                        "-Dm644",
+                        &tmp_path.to_string_lossy(),
+                        &config_path.to_string_lossy(),
+                    ],
+                )
+                .map_err(|e| AdapterError::Other(e.to_string()))?;
+                let _ = std::fs::remove_file(&tmp_path);
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(AdapterError::Other(format!(
+                        "Failed to write system config: {stderr}"
+                    )));
+                }
+                Ok(())
+            }
+        }
     }
 }

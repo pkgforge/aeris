@@ -16,6 +16,7 @@ use crate::{
     core::{
         adapter::Adapter,
         config::{AdapterConfig, ConfigFieldType, ConfigSchema, ConfigValue},
+        privilege::PackageMode,
     },
 };
 
@@ -269,7 +270,7 @@ fn render_config_field<'a>(
     }
 }
 
-pub fn view(state: &SettingsState) -> Element<'_, Message> {
+pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Message> {
     let header = text("Settings").size(22);
 
     let appearance_header = text("Appearance").size(16);
@@ -331,7 +332,12 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         if let Some(first) = capitalized.get_mut(0..1) {
             first.make_ascii_uppercase();
         }
-        adapter_section = adapter_section.push(text(format!("Adapter: {capitalized}")).size(16));
+        let mode_label = match mode {
+            PackageMode::User => "User",
+            PackageMode::System => "System",
+        };
+        adapter_section =
+            adapter_section.push(text(format!("Adapter: {capitalized} ({mode_label})")).size(16));
 
         let mut last_section: Option<Option<&String>> = None;
 

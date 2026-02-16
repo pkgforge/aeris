@@ -3,7 +3,10 @@ use iced::{
     widget::{button, column, container, lazy, row, scrollable, text},
 };
 
-use crate::app::message::{Message, RepoInfo, RepositoriesMessage};
+use crate::{
+    app::message::{Message, RepoInfo, RepositoriesMessage},
+    core::privilege::PackageMode,
+};
 
 #[derive(Debug, Default)]
 pub struct RepositoriesState {
@@ -16,8 +19,12 @@ pub struct RepositoriesState {
     pub sync_error: Option<String>,
 }
 
-pub fn view(state: &RepositoriesState) -> Element<'_, Message> {
-    let mut header_row = row![text("Repositories").size(22)].spacing(8);
+pub fn view<'a>(state: &'a RepositoriesState, mode: PackageMode) -> Element<'a, Message> {
+    let title = match mode {
+        PackageMode::User => "Repositories (User)",
+        PackageMode::System => "Repositories (System)",
+    };
+    let mut header_row = row![text(title).size(22)].spacing(8);
 
     let sync_all_btn = if state.syncing.is_some() {
         button(text("Syncing...").size(13))

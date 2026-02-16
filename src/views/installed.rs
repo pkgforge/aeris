@@ -5,7 +5,7 @@ use iced::{
 
 use crate::{
     app::message::{InstalledMessage, Message},
-    core::package::InstalledPackage,
+    core::{package::InstalledPackage, privilege::PackageMode},
 };
 use soar_utils::bytes::format_bytes;
 
@@ -19,9 +19,13 @@ pub struct InstalledState {
     pub removing: Option<String>,
 }
 
-pub fn view<'a>(state: &'a InstalledState) -> Element<'a, Message> {
+pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Message> {
+    let title = match mode {
+        PackageMode::User => "Installed Packages (User)",
+        PackageMode::System => "Installed Packages (System)",
+    };
     let header = row![
-        text("Installed Packages").size(20),
+        text(title).size(20),
         space().width(Length::Fill),
         button(text("Refresh").size(12).center())
             .padding([6, 14])

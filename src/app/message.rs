@@ -9,14 +9,15 @@ use super::{AppTheme, View};
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
     Install(Package, PackageMode),
-    Remove(Package),
-    Update(Package),
-    UpdateAll,
+    Remove(Package, PackageMode),
+    Update(Package, PackageMode),
+    UpdateAll(PackageMode),
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     NavigateTo(View),
+    PackageModeChanged(PackageMode),
 
     Browse(BrowseMessage),
     Installed(InstalledMessage),

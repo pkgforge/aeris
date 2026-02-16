@@ -172,6 +172,10 @@ pub trait Adapter: Send + Sync {
         Err(AdapterError::NotSupported)
     }
 
+    async fn set_config_for_mode(&self, config: &AdapterConfig, _mode: PackageMode) -> Result<()> {
+        self.set_config(config).await
+    }
+
     async fn run_package(&self, _package: &Package, _args: &[String]) -> Result<()> {
         Err(AdapterError::NotSupported)
     }

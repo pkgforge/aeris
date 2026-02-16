@@ -5,8 +5,8 @@ use std::sync::Arc;
 use iced::{
     Color, Element, Length, Subscription, Task,
     widget::{
-        button, center, column, container, mouse_area, opaque, progress_bar, row, rule, space,
-        stack, text,
+        button, center, column, container, mouse_area, opaque, pick_list, progress_bar, row, rule,
+        space, stack, text,
     },
 };
 use soar_events::{InstallStage, RemoveStage, SoarEvent, VerifyStage};
@@ -245,6 +245,32 @@ impl App {
                     _ => Task::none(),
                 };
             }
+            Message::PackageModeChanged(mode) => {
+                if mode != self.current_mode {
+                    self.current_mode = mode;
+                    self.selected_install_mode = mode;
+                    self.installed.loaded = false;
+                    self.updates.checked = false;
+                    self.repositories.loaded = false;
+                    // Clear browse results since repos differ between modes
+                    self.browse.search_results.clear();
+                    self.browse.has_searched = false;
+                    self.browse.result_version += 1;
+                    // Reload settings adapter config for the new mode
+                    let new_config = self.adapter.build_initial_config_for_mode(mode);
+                    self.settings.adapter_config = new_config.clone();
+                    self.settings.adapter_config_original = new_config;
+                    self.settings.adapter_dirty = false;
+                    self.settings.adapter_save_success = false;
+                    self.settings.adapter_save_error = None;
+                    // Reload data for the current view
+                    let mut tasks = vec![self.load_installed()];
+                    if self.current_view == View::Repositories {
+                        tasks.push(self.load_repositories());
+                    }
+                    return Task::batch(tasks);
+                }
+            }
             Message::Browse(msg) => return self.update_browse(msg),
             Message::Installed(msg) => return self.update_installed(msg),
             Message::Updates(msg) => return self.update_updates(msg),
@@ -279,10 +305,11 @@ impl App {
                 self.browse.loading = true;
                 let query = self.browse.search_query.clone();
                 let adapter = self.adapter.clone();
+                let mode = self.current_mode;
                 return Task::perform(
                     async move {
                         adapter
-                            .search(&query, None)
+                            .search_with_mode(&query, None, mode)
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -361,7 +388,12 @@ impl App {
         let adapter = self.adapter.clone();
         let mode = self.current_mode;
         Task::perform(
-            async move { adapter.list_installed(mode).await.map_err(|e| e.to_string()) },
+            async move {
+                adapter
+                    .list_installed(mode)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
             |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
         )
     }
@@ -425,7 +457,7 @@ impl App {
                 }
             }
             message::InstalledMessage::RemovePackage(pkg) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Remove(pkg));
+                self.confirm_dialog = Some(message::ConfirmAction::Remove(pkg, self.current_mode));
             }
             message::InstalledMessage::RemoveComplete(result) => {
                 self.active_operation = None;
@@ -478,7 +510,7 @@ impl App {
                 }
             }
             message::UpdatesMessage::UpdatePackage(pkg) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Update(pkg));
+                self.confirm_dialog = Some(message::ConfirmAction::Update(pkg, self.current_mode));
             }
             message::UpdatesMessage::UpdateComplete(result) => {
                 self.active_operation = None;
@@ -506,7 +538,7 @@ impl App {
                 if self.updates.updates.is_empty() || self.updates.updating.is_some() {
                     return Task::none();
                 }
-                self.confirm_dialog = Some(message::ConfirmAction::UpdateAll);
+                self.confirm_dialog = Some(message::ConfirmAction::UpdateAll(self.current_mode));
             }
         }
         Task::none()
@@ -668,7 +700,7 @@ impl App {
 
                 let mut aeris_config = self.aeris_config.clone();
                 let mut save_adapter_config = false;
-                let mut adapter_config_to_save = self.settings.adapter_config.clone();
+                let mut adapter_config_to_save = self.prepare_adapter_config_for_save();
 
                 if let Some(ref schema) = self.settings.adapter_schema {
                     for field in &schema.fields {
@@ -697,10 +729,11 @@ impl App {
 
                 if save_adapter_config {
                     let adapter = self.adapter.clone();
+                    let mode = self.current_mode;
                     return Task::perform(
                         async move {
                             adapter
-                                .set_config(&adapter_config_to_save)
+                                .set_config_for_mode(&adapter_config_to_save, mode)
                                 .await
                                 .map_err(|e| e.to_string())
                         },
@@ -752,26 +785,23 @@ impl App {
 
     fn load_repositories(&mut self) -> Task<Message> {
         self.repositories.loading = true;
-        Task::perform(
-            async move {
-                let config = soar_config::config::get_config();
-                let repos: Vec<message::RepoInfo> = config
-                    .repositories
-                    .iter()
-                    .map(|r| message::RepoInfo {
-                        name: r.name.clone(),
-                        url: r.url.clone(),
-                        enabled: r.enabled.unwrap_or(true),
-                        desktop_integration: r.desktop_integration.unwrap_or(false),
-                        has_pubkey: r.pubkey.is_some(),
-                        signature_verification: r.signature_verification.unwrap_or(false),
-                        sync_interval: r.sync_interval.clone(),
-                    })
-                    .collect();
-                Ok(repos)
-            },
-            |result| Message::Repositories(message::RepositoriesMessage::Loaded(result)),
-        )
+        let config = self.adapter.config_for_mode(self.current_mode);
+        let repos: Vec<message::RepoInfo> = config
+            .repositories
+            .iter()
+            .map(|r| message::RepoInfo {
+                name: r.name.clone(),
+                url: r.url.clone(),
+                enabled: r.enabled.unwrap_or(true),
+                desktop_integration: r.desktop_integration.unwrap_or(false),
+                has_pubkey: r.pubkey.is_some(),
+                signature_verification: r.signature_verification.unwrap_or(false),
+                sync_interval: r.sync_interval.clone(),
+            })
+            .collect();
+        Task::perform(async move { Ok::<_, String>(repos) }, |result| {
+            Message::Repositories(message::RepositoriesMessage::Loaded(result))
+        })
     }
 
     fn update_repositories(&mut self, msg: message::RepositoriesMessage) -> Task<Message> {
@@ -878,7 +908,7 @@ impl App {
                     );
                 }
             }
-            message::ConfirmAction::Remove(ref pkg) => {
+            message::ConfirmAction::Remove(ref pkg, mode) => {
                 if let Some(query) = pkg.soar_query() {
                     self.active_operation = Some(ActiveOperation {
                         operation_type: OperationType::Remove,
@@ -887,6 +917,27 @@ impl App {
                     });
                     self.installed.removing = Some(pkg.id.clone());
                     self.installed.result_version += 1;
+
+                    if mode == PackageMode::System {
+                        let _ = PrivilegeManager::detect_elevator();
+                        let adapter = self.adapter.clone();
+                        let settings = self.settings.adapter_settings.clone();
+                        let pkg_name = pkg.name.clone();
+                        return Task::perform(
+                            async move {
+                                adapter
+                                    .run_system_remove(&pkg_name, &settings)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            },
+                            |result| {
+                                Message::Installed(message::InstalledMessage::RemoveComplete(
+                                    result,
+                                ))
+                            },
+                        );
+                    }
+
                     let adapter = self.adapter.clone();
                     return Task::perform(
                         async move {
@@ -901,7 +952,7 @@ impl App {
                     );
                 }
             }
-            message::ConfirmAction::Update(ref pkg) => {
+            message::ConfirmAction::Update(ref pkg, mode) => {
                 if let Some(query) = pkg.soar_query() {
                     self.active_operation = Some(ActiveOperation {
                         operation_type: OperationType::Update,
@@ -910,6 +961,24 @@ impl App {
                     });
                     self.updates.updating = Some(pkg.id.clone());
                     self.updates.result_version += 1;
+
+                    if mode == PackageMode::System {
+                        let _ = PrivilegeManager::detect_elevator();
+                        let adapter = self.adapter.clone();
+                        let settings = self.settings.adapter_settings.clone();
+                        return Task::perform(
+                            async move {
+                                adapter
+                                    .update_system_package(&query, &settings)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            },
+                            |result| {
+                                Message::Updates(message::UpdatesMessage::UpdateComplete(result))
+                            },
+                        );
+                    }
+
                     let adapter = self.adapter.clone();
                     return Task::perform(
                         async move {
@@ -922,7 +991,7 @@ impl App {
                     );
                 }
             }
-            message::ConfirmAction::UpdateAll => {
+            message::ConfirmAction::UpdateAll(mode) => {
                 self.active_operation = Some(ActiveOperation {
                     operation_type: OperationType::UpdateAll,
                     package_name: "all packages".into(),
@@ -930,6 +999,22 @@ impl App {
                 });
                 self.updates.updating = Some("__all__".into());
                 self.updates.result_version += 1;
+
+                if mode == PackageMode::System {
+                    let _ = PrivilegeManager::detect_elevator();
+                    let adapter = self.adapter.clone();
+                    let settings = self.settings.adapter_settings.clone();
+                    return Task::perform(
+                        async move {
+                            adapter
+                                .update_all_system(&settings)
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
+                    );
+                }
+
                 let adapter = self.adapter.clone();
                 return Task::perform(
                     async move { adapter.update_all().await.map_err(|e| e.to_string()) },
@@ -946,15 +1031,16 @@ impl App {
             View::Dashboard => {
                 let stats = views::dashboard::DashboardStats {
                     installed_count: self.installed.packages.len(),
-                    repo_count: self.adapter.repo_count(),
+                    repo_count: self.adapter.repo_count_for_mode(self.current_mode),
+                    current_mode: self.current_mode,
                 };
                 views::dashboard::view(&stats)
             }
             View::Browse => views::browse::view(&self.browse),
-            View::Installed => views::installed::view(&self.installed),
-            View::Updates => views::updates::view(&self.updates),
-            View::Settings => views::settings::view(&self.settings),
-            View::Repositories => views::repositories::view(&self.repositories),
+            View::Installed => views::installed::view(&self.installed, self.current_mode),
+            View::Updates => views::updates::view(&self.updates, self.current_mode),
+            View::Settings => views::settings::view(&self.settings, self.current_mode),
+            View::Repositories => views::repositories::view(&self.repositories, self.current_mode),
             View::AdapterInfo => views::adapter_info::view(self.adapter.info()),
         };
 
@@ -987,17 +1073,23 @@ impl App {
     }
 
     fn confirm_dialog_view(&self, action: &message::ConfirmAction) -> Element<'_, Message> {
-        let is_destructive = matches!(action, message::ConfirmAction::Remove(_));
-        let is_install = matches!(action, message::ConfirmAction::Install(..));
+        let is_destructive = matches!(action, message::ConfirmAction::Remove(..));
 
         let has_system = self.adapter.info().capabilities.supports_system_packages;
         static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
+
+        let action_mode = match action {
+            message::ConfirmAction::Install(_, mode)
+            | message::ConfirmAction::Remove(_, mode)
+            | message::ConfirmAction::Update(_, mode)
+            | message::ConfirmAction::UpdateAll(mode) => *mode,
+        };
+        let is_system = action_mode == PackageMode::System;
 
         let (title, description, mode_section): (_, _, Element<'_, Message>) = match action {
             message::ConfirmAction::Install(pkg, mode) => {
                 let current_mode = *mode;
                 let has_multiple_modes = has_system;
-                let is_system = current_mode == PackageMode::System;
 
                 let mode_selector: Element<'_, Message> = if has_multiple_modes {
                     column![
@@ -1028,21 +1120,42 @@ impl App {
                     mode_selector,
                 )
             }
-            message::ConfirmAction::Remove(pkg) => (
-                "Remove Package",
-                format!("{} {}", pkg.name, pkg.version),
-                column![].into(),
-            ),
-            message::ConfirmAction::Update(pkg) => (
-                "Update Package",
-                format!("{} {}", pkg.name, pkg.version),
-                column![].into(),
-            ),
-            message::ConfirmAction::UpdateAll => (
-                "Update All",
-                "All packages with available updates will be updated.".to_string(),
-                column![].into(),
-            ),
+            message::ConfirmAction::Remove(pkg, _) => {
+                let hint: Element<'_, Message> = if is_system {
+                    text("Requires administrator privileges").size(11).into()
+                } else {
+                    column![].into()
+                };
+                (
+                    "Remove Package",
+                    format!("{} {}", pkg.name, pkg.version),
+                    hint,
+                )
+            }
+            message::ConfirmAction::Update(pkg, _) => {
+                let hint: Element<'_, Message> = if is_system {
+                    text("Requires administrator privileges").size(11).into()
+                } else {
+                    column![].into()
+                };
+                (
+                    "Update Package",
+                    format!("{} {}", pkg.name, pkg.version),
+                    hint,
+                )
+            }
+            message::ConfirmAction::UpdateAll(_) => {
+                let hint: Element<'_, Message> = if is_system {
+                    text("Requires administrator privileges").size(11).into()
+                } else {
+                    column![].into()
+                };
+                (
+                    "Update All",
+                    "All packages with available updates will be updated.".to_string(),
+                    hint,
+                )
+            }
         };
 
         let cancel_btn = button(text("Cancel").size(14))
@@ -1062,9 +1175,7 @@ impl App {
 
         let mut content = column![text(title).size(18), text(description).size(14),].spacing(12);
 
-        if is_install {
-            content = content.push(mode_section);
-        }
+        content = content.push(mode_section);
 
         content = content.push(row![cancel_btn, confirm_btn].spacing(8));
 
@@ -1107,6 +1218,25 @@ impl App {
             nav = nav.push(btn);
         }
 
+        // Mode toggle (only shown when system packages are supported)
+        let has_system = self.adapter.info().capabilities.supports_system_packages;
+        let mut bottom_section = column![].spacing(4).padding(8);
+
+        if has_system {
+            static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
+            let mode_toggle = column![
+                text("Package Mode").size(11),
+                pick_list(
+                    &MODES[..],
+                    Some(self.current_mode),
+                    Message::PackageModeChanged
+                )
+                .width(Length::Fill),
+            ]
+            .spacing(4);
+            bottom_section = bottom_section.push(mode_toggle);
+        }
+
         // Settings button at the bottom
         let is_settings_active = self.current_view == View::Settings;
         let settings_btn = button(text("Settings").size(14).width(Length::Fill).center())
@@ -1120,7 +1250,7 @@ impl App {
             settings_btn.style(button::text)
         };
 
-        let settings_section = column![].spacing(4).padding(8).push(settings_btn);
+        bottom_section = bottom_section.push(settings_btn);
 
         container(
             column![
@@ -1129,7 +1259,7 @@ impl App {
                 nav,
                 space(),
                 rule::horizontal(1),
-                settings_section,
+                bottom_section,
             ]
             .spacing(8)
             .height(Length::Fill),

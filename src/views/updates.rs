@@ -5,7 +5,7 @@ use iced::{
 
 use crate::{
     app::message::{Message, UpdatesMessage},
-    core::package::Update,
+    core::{package::Update, privilege::PackageMode},
 };
 use soar_utils::bytes::format_bytes;
 
@@ -19,8 +19,12 @@ pub struct UpdatesState {
     pub updating: Option<String>,
 }
 
-pub fn view<'a>(state: &'a UpdatesState) -> Element<'a, Message> {
-    let mut header_row = row![text("Updates").size(20), space().width(Length::Fill),]
+pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Message> {
+    let title = match mode {
+        PackageMode::User => "Updates (User)",
+        PackageMode::System => "Updates (System)",
+    };
+    let mut header_row = row![text(title).size(20), space().width(Length::Fill),]
         .align_y(iced::Alignment::Center)
         .width(Length::Fill);
 
