@@ -17,6 +17,7 @@ use crate::{
     core::{
         adapter::Adapter,
         config::{AdapterConfig, ConfigFieldType, ConfigValue},
+        privilege::{PackageMode, PrivilegeManager},
     },
     views,
 };
@@ -162,6 +163,8 @@ pub struct App {
     confirm_dialog: Option<message::ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
+    selected_install_mode: PackageMode,
+    current_mode: PackageMode,
 }
 
 impl App {
@@ -179,11 +182,25 @@ impl App {
 
         let settings = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
 
+        let default_mode = settings
+            .adapter_config
+            .values
+            .get("default_package_mode")
+            .and_then(|v| match v {
+                ConfigValue::String(s) => Some(if s == "system" {
+                    PackageMode::System
+                } else {
+                    PackageMode::User
+                }),
+                _ => Some(PackageMode::User),
+            })
+            .unwrap_or(PackageMode::User);
+
         let load_adapter = adapter.clone();
         let init_task = Task::perform(
             async move {
                 load_adapter
-                    .list_installed()
+                    .list_installed(default_mode)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -207,6 +224,8 @@ impl App {
                 confirm_dialog: None,
                 event_receiver,
                 active_operation: None,
+                selected_install_mode: default_mode,
+                current_mode: default_mode,
             },
             init_task,
         )
@@ -298,7 +317,17 @@ impl App {
                 self.browse.selected_package = None;
             }
             message::BrowseMessage::InstallPackage(pkg) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Install(pkg));
+                let mode = self.selected_install_mode;
+                self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
+            }
+            message::BrowseMessage::InstallPackageWithMode(pkg, mode) => {
+                self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
+            }
+            message::BrowseMessage::InstallModeChanged(mode) => {
+                self.selected_install_mode = mode;
+                if let Some(message::ConfirmAction::Install(pkg, _)) = &self.confirm_dialog {
+                    self.confirm_dialog = Some(message::ConfirmAction::Install(pkg.clone(), mode));
+                }
             }
             message::BrowseMessage::InstallComplete(result) => {
                 self.active_operation = None;
@@ -330,8 +359,9 @@ impl App {
     fn load_installed(&mut self) -> Task<Message> {
         self.installed.loading = true;
         let adapter = self.adapter.clone();
+        let mode = self.current_mode;
         Task::perform(
-            async move { adapter.list_installed().await.map_err(|e| e.to_string()) },
+            async move { adapter.list_installed(mode).await.map_err(|e| e.to_string()) },
             |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
         )
     }
@@ -425,8 +455,9 @@ impl App {
             message::UpdatesMessage::CheckUpdates => {
                 self.updates.loading = true;
                 let adapter = self.adapter.clone();
+                let mode = self.current_mode;
                 return Task::perform(
-                    async move { adapter.list_updates().await.map_err(|e| e.to_string()) },
+                    async move { adapter.list_updates(mode).await.map_err(|e| e.to_string()) },
                     |result| Message::Updates(message::UpdatesMessage::UpdatesLoaded(result)),
                 );
             }
@@ -548,6 +579,11 @@ impl App {
                 self.settings.adapter_dirty = true;
                 self.settings.adapter_save_success = false;
             }
+            message::SettingsMessage::AdapterAerisFieldChanged(key, value) => {
+                self.settings.adapter_settings.insert(key, value);
+                self.settings.adapter_dirty = true;
+                self.settings.adapter_save_success = false;
+            }
             message::SettingsMessage::BrowseAdapterField(key) => {
                 return Task::perform(
                     async move {
@@ -577,6 +613,35 @@ impl App {
                     self.settings.adapter_save_success = false;
                 }
             }
+            message::SettingsMessage::BrowseExecutableField(key) => {
+                return Task::perform(
+                    async move {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .add_filter("Executable", &["sh", "bash", ""])
+                            .pick_file()
+                            .await;
+                        handle.map(|h| (key, h.path().to_string_lossy().to_string()))
+                    },
+                    |result| match result {
+                        Some((key, path)) => Message::Settings(
+                            message::SettingsMessage::BrowseExecutableFieldResult(key, path),
+                        ),
+                        None => Message::Settings(
+                            message::SettingsMessage::BrowseExecutableFieldResult(
+                                String::new(),
+                                String::new(),
+                            ),
+                        ),
+                    },
+                );
+            }
+            message::SettingsMessage::BrowseExecutableFieldResult(key, path) => {
+                if !key.is_empty() && !path.is_empty() {
+                    self.settings.adapter_settings.insert(key, path);
+                    self.settings.adapter_dirty = true;
+                    self.settings.adapter_save_success = false;
+                }
+            }
             message::SettingsMessage::RevertAdapterField(key) => {
                 if let Some(original) = self.settings.adapter_config_original.values.get(&key) {
                     self.settings
@@ -592,23 +657,62 @@ impl App {
                     });
                 self.settings.adapter_dirty = has_changes;
             }
+            message::SettingsMessage::RevertAdapterAerisField(key) => {
+                self.settings.adapter_settings.remove(&key);
+                self.settings.adapter_dirty = true;
+            }
             message::SettingsMessage::SaveAdapter => {
                 self.settings.saving = true;
                 self.settings.adapter_save_error = None;
                 self.settings.adapter_save_success = false;
 
-                let save_config = self.prepare_adapter_config_for_save();
-                let adapter = self.adapter.clone();
+                let mut aeris_config = self.aeris_config.clone();
+                let mut save_adapter_config = false;
+                let mut adapter_config_to_save = self.settings.adapter_config.clone();
 
-                return Task::perform(
-                    async move {
-                        adapter
-                            .set_config(&save_config)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    |result| Message::Settings(message::SettingsMessage::SaveAdapterResult(result)),
-                );
+                if let Some(ref schema) = self.settings.adapter_schema {
+                    for field in &schema.fields {
+                        if field.aeris_managed {
+                            if let Some(value) = self.settings.adapter_settings.get(&field.key) {
+                                aeris_config.set_adapter_setting(
+                                    &schema.adapter_id,
+                                    &field.key,
+                                    value,
+                                );
+                            }
+                            adapter_config_to_save.values.remove(&field.key);
+                        }
+                    }
+                    save_adapter_config = adapter_config_to_save.values.iter().any(|(k, v)| {
+                        self.settings.adapter_config_original.values.get(k) != Some(v)
+                    });
+                }
+
+                if let Err(e) = aeris_config.save() {
+                    self.settings.adapter_save_error = Some(e);
+                    self.settings.saving = false;
+                    return Task::none();
+                }
+                self.aeris_config = aeris_config;
+
+                if save_adapter_config {
+                    let adapter = self.adapter.clone();
+                    return Task::perform(
+                        async move {
+                            adapter
+                                .set_config(&adapter_config_to_save)
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        |result| {
+                            Message::Settings(message::SettingsMessage::SaveAdapterResult(result))
+                        },
+                    );
+                } else {
+                    self.settings.saving = false;
+                    self.settings.adapter_dirty = false;
+                    self.settings.adapter_save_success = true;
+                }
             }
             message::SettingsMessage::SaveAdapterResult(result) => {
                 self.settings.saving = false;
@@ -747,7 +851,7 @@ impl App {
 
     fn execute_confirmed(&mut self, action: message::ConfirmAction) -> Task<Message> {
         match action {
-            message::ConfirmAction::Install(ref pkg) => {
+            message::ConfirmAction::Install(ref pkg, mode) => {
                 if let Some(query) = pkg.soar_query() {
                     self.active_operation = Some(ActiveOperation {
                         operation_type: OperationType::Install,
@@ -756,11 +860,17 @@ impl App {
                     });
                     self.browse.installing = Some(pkg.id.clone());
                     self.browse.result_version += 1;
+
+                    if mode == PackageMode::System {
+                        let _ = PrivilegeManager::detect_elevator();
+                    }
+
                     let adapter = self.adapter.clone();
+                    let settings = self.settings.adapter_settings.clone();
                     return Task::perform(
                         async move {
                             adapter
-                                .install_package(&query)
+                                .install_package(&query, mode, &settings)
                                 .await
                                 .map_err(|e| e.to_string())
                         },
@@ -877,23 +987,63 @@ impl App {
     }
 
     fn confirm_dialog_view(&self, action: &message::ConfirmAction) -> Element<'_, Message> {
-        let (title, description) = match action {
-            message::ConfirmAction::Install(pkg) => {
-                ("Install Package", format!("{} {}", pkg.name, pkg.version))
+        let is_destructive = matches!(action, message::ConfirmAction::Remove(_));
+        let is_install = matches!(action, message::ConfirmAction::Install(..));
+
+        let has_system = self.adapter.info().capabilities.supports_system_packages;
+        static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
+
+        let (title, description, mode_section): (_, _, Element<'_, Message>) = match action {
+            message::ConfirmAction::Install(pkg, mode) => {
+                let current_mode = *mode;
+                let has_multiple_modes = has_system;
+                let is_system = current_mode == PackageMode::System;
+
+                let mode_selector: Element<'_, Message> = if has_multiple_modes {
+                    column![
+                        row![
+                            text("Install mode:").size(13),
+                            iced::widget::pick_list(&MODES[..], Some(current_mode), |m| {
+                                Message::Browse(message::BrowseMessage::InstallModeChanged(m))
+                            },)
+                            .width(120),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                        if is_system {
+                            text("Requires administrator privileges").size(11)
+                        } else {
+                            text("").size(11)
+                        }
+                    ]
+                    .spacing(4)
+                    .into()
+                } else {
+                    column![].into()
+                };
+
+                (
+                    "Install Package",
+                    format!("{} {}", pkg.name, pkg.version),
+                    mode_selector,
+                )
             }
-            message::ConfirmAction::Remove(pkg) => {
-                ("Remove Package", format!("{} {}", pkg.name, pkg.version))
-            }
-            message::ConfirmAction::Update(pkg) => {
-                ("Update Package", format!("{} {}", pkg.name, pkg.version))
-            }
+            message::ConfirmAction::Remove(pkg) => (
+                "Remove Package",
+                format!("{} {}", pkg.name, pkg.version),
+                column![].into(),
+            ),
+            message::ConfirmAction::Update(pkg) => (
+                "Update Package",
+                format!("{} {}", pkg.name, pkg.version),
+                column![].into(),
+            ),
             message::ConfirmAction::UpdateAll => (
                 "Update All",
                 "All packages with available updates will be updated.".to_string(),
+                column![].into(),
             ),
         };
-
-        let is_destructive = matches!(action, message::ConfirmAction::Remove(_));
 
         let cancel_btn = button(text("Cancel").size(14))
             .on_press(Message::CancelAction)
@@ -910,18 +1060,22 @@ impl App {
             confirm_btn.style(button::primary)
         };
 
+        let mut content = column![text(title).size(18), text(description).size(14),].spacing(12);
+
+        if is_install {
+            content = content.push(mode_section);
+        }
+
+        content = content.push(row![cancel_btn, confirm_btn].spacing(8));
+
         container(
-            column![
-                text(title).size(18),
-                text(description).size(14),
-                row![cancel_btn, confirm_btn].spacing(8),
-            ]
-            .spacing(16)
-            .padding(24)
-            .align_x(iced::Alignment::Center),
+            content
+                .spacing(16)
+                .padding(24)
+                .align_x(iced::Alignment::Center),
         )
         .style(container::rounded_box)
-        .width(320)
+        .width(360)
         .into()
     }
 

@@ -1,8 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use super::{
-    adapter::{Adapter, AdapterId, AdapterInfo, ProgressSender, Result},
+    adapter::{Adapter, AdapterError, AdapterId, AdapterInfo, ProgressSender, Result},
     package::{InstallResult, InstalledPackage, Package, Update},
+    privilege::PackageMode,
 };
 
 pub struct AdapterManager {
@@ -55,10 +56,10 @@ impl AdapterManager {
         Ok(results)
     }
 
-    pub async fn list_installed(&self) -> Result<Vec<InstalledPackage>> {
+    pub async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {
         let mut results = Vec::new();
         for adapter in self.adapters.values().filter(|a| a.info().enabled) {
-            match adapter.list_installed().await {
+            match adapter.list_installed(mode).await {
                 Ok(pkgs) => results.extend(pkgs),
                 Err(e) => log::warn!("List failed for {}: {e}", adapter.info().id),
             }
@@ -66,10 +67,10 @@ impl AdapterManager {
         Ok(results)
     }
 
-    pub async fn list_updates(&self) -> Result<Vec<Update>> {
+    pub async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
         let mut results = Vec::new();
         for adapter in self.adapters.values().filter(|a| a.info().enabled) {
-            match adapter.list_updates().await {
+            match adapter.list_updates(mode).await {
                 Ok(updates) => results.extend(updates),
                 Err(e) => log::warn!("Update check failed for {}: {e}", adapter.info().id),
             }
@@ -104,6 +105,7 @@ impl AdapterManager {
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<()> {
         let mut by_adapter: HashMap<&str, Vec<&Package>> = HashMap::new();
         for pkg in packages {
@@ -113,7 +115,7 @@ impl AdapterManager {
         for (adapter_id, pkgs) in by_adapter {
             if let Some(adapter) = self.adapters.get(adapter_id) {
                 let owned: Vec<Package> = pkgs.into_iter().cloned().collect();
-                if let Err(e) = adapter.remove(&owned, progress.clone()).await {
+                if let Err(e) = adapter.remove(&owned, progress.clone(), mode).await {
                     log::error!("Remove failed for {adapter_id}: {e}");
                 }
             }
@@ -125,6 +127,7 @@ impl AdapterManager {
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         let mut by_adapter: HashMap<&str, Vec<&Package>> = HashMap::new();
         for pkg in packages {
@@ -135,7 +138,7 @@ impl AdapterManager {
         for (adapter_id, pkgs) in by_adapter {
             if let Some(adapter) = self.adapters.get(adapter_id) {
                 let owned: Vec<Package> = pkgs.into_iter().cloned().collect();
-                match adapter.update(&owned, progress.clone()).await {
+                match adapter.update(&owned, progress.clone(), mode).await {
                     Ok(r) => results.extend(r),
                     Err(e) => log::error!("Update failed for {adapter_id}: {e}"),
                 }

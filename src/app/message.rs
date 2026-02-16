@@ -1,13 +1,14 @@
 use crate::core::{
     config::ConfigValue,
     package::{InstalledPackage, Package, PackageDetail, Update},
+    privilege::PackageMode,
 };
 
 use super::{AppTheme, View};
 
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    Install(Package),
+    Install(Package, PackageMode),
     Remove(Package),
     Update(Package),
     UpdateAll,
@@ -38,9 +39,11 @@ pub enum BrowseMessage {
     SelectPackage(String),
     PackageDetailLoaded(Result<Box<PackageDetail>, String>),
     InstallPackage(Package),
+    InstallPackageWithMode(Package, PackageMode),
     InstallComplete(Result<(), String>),
     DismissInstallError,
     CloseDetail,
+    InstallModeChanged(PackageMode),
 }
 
 #[derive(Debug, Clone)]
@@ -70,9 +73,13 @@ pub enum SettingsMessage {
     SaveAeris,
     SaveAerisResult(Result<(), String>),
     AdapterFieldChanged(String, ConfigValue),
+    AdapterAerisFieldChanged(String, String),
     BrowseAdapterField(String),
     BrowseAdapterFieldResult(String, String),
+    BrowseExecutableField(String),
+    BrowseExecutableFieldResult(String, String),
     RevertAdapterField(String),
+    RevertAdapterAerisField(String),
     SaveAdapter,
     SaveAdapterResult(Result<(), String>),
 }

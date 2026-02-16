@@ -31,4 +31,7 @@ pub struct Capabilities {
     pub supports_build_from_source: bool,
     pub supports_declarative: bool,
     pub supports_snapshots: bool,
+
+    pub supports_user_packages: bool,
+    pub supports_system_packages: bool,
 }

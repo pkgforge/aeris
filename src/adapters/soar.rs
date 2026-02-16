@@ -11,23 +11,39 @@ use crate::core::{
     capabilities::Capabilities,
     config::{AdapterConfig, ConfigField, ConfigFieldType, ConfigSchema, ConfigValue},
     package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
+    privilege::PackageMode,
     profile::Profile,
     repository::Repository,
 };
 
 pub struct SoarAdapter {
-    ctx: SoarContext,
+    user_ctx: SoarContext,
+    has_system: bool,
     info: AdapterInfo,
 }
 
 impl SoarAdapter {
     pub fn repo_count(&self) -> usize {
-        self.ctx.config().repositories.len()
+        self.user_ctx.config().repositories.len()
     }
 
-    pub async fn install_package(&self, query: &str) -> Result<()> {
+    pub fn supports_system(&self) -> bool {
+        self.has_system
+    }
+
+    pub async fn install_package(
+        &self,
+        query: &str,
+        mode: PackageMode,
+        settings: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        if mode == PackageMode::System {
+            let executable_path = settings.get("executable_path").map(|s| s.as_str());
+            return self.install_system_package(query, executable_path).await;
+        }
+
         let options = InstallOptions::default();
-        let results = install::resolve_packages(&self.ctx, &[query.to_string()], &options)
+        let results = install::resolve_packages(&self.user_ctx, &[query.to_string()], &options)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -56,7 +72,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No packages to install".into()));
         }
 
-        let report = install::perform_installation(&self.ctx, targets, &options)
+        let report = install::perform_installation(&self.user_ctx, targets, &options)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -67,8 +83,84 @@ impl SoarAdapter {
         Ok(())
     }
 
+    async fn install_system_package(
+        &self,
+        query: &str,
+        configured_path: Option<&str>,
+    ) -> Result<()> {
+        let soar_path = configured_path
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string())
+            .unwrap_or_else(Self::find_executable_path);
+
+        let output = crate::core::privilege::run_elevated(
+            PackageMode::System,
+            &soar_path,
+            &["install", "--system", query],
+        )
+        .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AdapterError::Other(format!(
+                "Installation failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn find_executable_path() -> String {
+        let candidates = [
+            "/usr/local/bin/soar",
+            "/usr/bin/soar",
+            &format!(
+                "{}/.cargo/bin/soar",
+                std::env::var("HOME").unwrap_or_default()
+            ),
+            &format!(
+                "{}/.local/bin/soar",
+                std::env::var("HOME").unwrap_or_default()
+            ),
+        ];
+
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
+        }
+
+        "soar".to_string()
+    }
+
+    async fn list_installed_system(&self) -> Result<Vec<InstalledPackage>> {
+        Ok(vec![])
+    }
+
+    async fn remove_system_package(&self, packages: &[Package]) -> Result<()> {
+        let soar_path = Self::find_executable_path();
+        let pkg_names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+        let mut args = vec!["remove", "--system"];
+        args.extend(pkg_names.iter().map(|s| s.as_str()));
+
+        let output = crate::core::privilege::run_elevated(
+            PackageMode::System,
+            &soar_path,
+            &args,
+        )
+        .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AdapterError::Other(format!("Remove failed: {}", stderr)));
+        }
+
+        Ok(())
+    }
+
     pub async fn remove_package(&self, query: &str) -> Result<()> {
-        let results = remove::resolve_removals(&self.ctx, &[query.to_string()], false)
+        let results = remove::resolve_removals(&self.user_ctx, &[query.to_string()], false)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
         let mut to_remove = Vec::new();
@@ -90,7 +182,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No packages to remove".into()));
         }
 
-        let report = remove::perform_removal(&self.ctx, to_remove)
+        let report = remove::perform_removal(&self.user_ctx, to_remove)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -102,7 +194,7 @@ impl SoarAdapter {
     }
 
     pub async fn update_package(&self, query: &str) -> Result<()> {
-        let updates = update::check_updates(&self.ctx, Some(&[query.to_string()]))
+        let updates = update::check_updates(&self.user_ctx, Some(&[query.to_string()]))
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -110,7 +202,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No updates available".into()));
         }
 
-        let report = update::perform_update(&self.ctx, updates, false, false)
+        let report = update::perform_update(&self.user_ctx, updates, false, false)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -122,7 +214,7 @@ impl SoarAdapter {
     }
 
     pub async fn update_all(&self) -> Result<()> {
-        let updates = update::check_updates(&self.ctx, None)
+        let updates = update::check_updates(&self.user_ctx, None)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -130,7 +222,7 @@ impl SoarAdapter {
             return Ok(());
         }
 
-        let report = update::perform_update(&self.ctx, updates, false, false)
+        let report = update::perform_update(&self.user_ctx, updates, false, false)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -142,122 +234,133 @@ impl SoarAdapter {
     }
 
     fn build_config_schema(&self) -> ConfigSchema {
-        let profile_keys: Vec<String> = self.ctx.config().profile.keys().cloned().collect();
+        let profile_keys: Vec<String> = self.user_ctx.config().profile.keys().cloned().collect();
 
         ConfigSchema {
             adapter_id: "soar".into(),
             fields: vec![
                 ConfigField {
+                    key: "executable_path".into(),
+                    label: "Soar binary path".into(),
+                    description: Some(
+                        "Path to soar binary for system operations (auto-detected if empty)".into(),
+                    ),
+                    field_type: ConfigFieldType::ExecutablePath,
+                    aeris_managed: true,
+                    ..Default::default()
+                },
+                ConfigField {
                     key: "parallel".into(),
                     label: "Parallel downloads".into(),
-                    description: None,
                     field_type: ConfigFieldType::Toggle,
                     default: Some(ConfigValue::Bool(true)),
-                    section: None,
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "parallel_limit".into(),
                     label: "Parallel limit".into(),
-                    description: None,
                     field_type: ConfigFieldType::Number,
                     default: Some(ConfigValue::Integer(4)),
-                    section: None,
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "search_limit".into(),
                     label: "Search result limit".into(),
-                    description: None,
                     field_type: ConfigFieldType::Number,
                     default: Some(ConfigValue::Integer(20)),
-                    section: None,
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "signature_verification".into(),
                     label: "Signature verification".into(),
-                    description: None,
                     field_type: ConfigFieldType::Toggle,
                     default: Some(ConfigValue::Bool(true)),
-                    section: None,
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "desktop_integration".into(),
                     label: "Desktop integration".into(),
-                    description: None,
                     field_type: ConfigFieldType::Toggle,
                     default: Some(ConfigValue::Bool(false)),
-                    section: None,
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "bin_path".into(),
                     label: "Bin path".into(),
-                    description: None,
                     field_type: ConfigFieldType::PathList,
-                    default: None,
                     section: Some("Paths".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "cache_path".into(),
                     label: "Cache path".into(),
-                    description: None,
                     field_type: ConfigFieldType::PathList,
-                    default: None,
                     section: Some("Paths".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "db_path".into(),
                     label: "DB path".into(),
-                    description: None,
                     field_type: ConfigFieldType::PathList,
-                    default: None,
                     section: Some("Paths".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "desktop_path".into(),
                     label: "Desktop path".into(),
-                    description: None,
                     field_type: ConfigFieldType::PathList,
-                    default: None,
                     section: Some("Paths".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "repositories_path".into(),
                     label: "Repos path".into(),
-                    description: None,
                     field_type: ConfigFieldType::PathList,
-                    default: None,
                     section: Some("Paths".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "portable_dirs".into(),
                     label: "Portable dirs".into(),
-                    description: None,
                     field_type: ConfigFieldType::PathList,
-                    default: None,
                     section: Some("Paths".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "ghcr_concurrency".into(),
                     label: "GHCR concurrency".into(),
-                    description: None,
                     field_type: ConfigFieldType::Number,
                     default: Some(ConfigValue::Integer(8)),
                     section: Some("Advanced".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "sync_interval".into(),
                     label: "Sync interval".into(),
-                    description: None,
                     field_type: ConfigFieldType::Text,
-                    default: None,
                     section: Some("Advanced".into()),
+                    ..Default::default()
                 },
                 ConfigField {
                     key: "default_profile".into(),
                     label: "Default profile".into(),
-                    description: None,
                     field_type: ConfigFieldType::Select(profile_keys),
                     default: Some(ConfigValue::String("default".into())),
                     section: Some("Advanced".into()),
+                    ..Default::default()
+                },
+                ConfigField {
+                    key: "default_package_mode".into(),
+                    label: "Default package mode".into(),
+                    description: Some("Default mode for package operations".into()),
+                    field_type: ConfigFieldType::Select(if self.has_system {
+                        vec!["user".into(), "system".into()]
+                    } else {
+                        vec!["user".into()]
+                    }),
+                    default: Some(ConfigValue::String("user".into())),
+                    section: Some("Package Mode".into()),
+                    ..Default::default()
                 },
             ],
         }
@@ -266,7 +369,7 @@ impl SoarAdapter {
     fn build_initial_config(&self) -> AdapterConfig {
         use std::collections::HashMap;
 
-        let cfg = self.ctx.config();
+        let cfg = self.user_ctx.config();
         let mut values = HashMap::new();
 
         values.insert(
@@ -325,6 +428,10 @@ impl SoarAdapter {
             "default_profile".into(),
             ConfigValue::String(cfg.default_profile.clone()),
         );
+        values.insert(
+            "default_package_mode".into(),
+            ConfigValue::String("user".into()),
+        );
 
         AdapterConfig { values }
     }
@@ -332,11 +439,14 @@ impl SoarAdapter {
     pub fn new(config: Config) -> Result<(Self, std::sync::mpsc::Receiver<SoarEvent>)> {
         let (sink, receiver) = ChannelSink::new();
         let events: EventSinkHandle = Arc::new(sink);
-        let ctx = SoarContext::new(config, events);
+        let user_ctx = SoarContext::new(config, events);
+
+        let has_system = Self::can_run_system();
 
         Ok((
             Self {
-                ctx,
+                user_ctx,
+                has_system,
                 info: AdapterInfo {
                     id: "soar".into(),
                     name: "Soar".into(),
@@ -360,6 +470,8 @@ impl SoarAdapter {
                         supports_hooks: true,
                         supports_build_from_source: true,
                         supports_batch_install: true,
+                        supports_user_packages: true,
+                        supports_system_packages: has_system,
                         ..Capabilities::default()
                     },
                     enabled: true,
@@ -371,6 +483,10 @@ impl SoarAdapter {
             },
             receiver,
         ))
+    }
+
+    fn can_run_system() -> bool {
+        crate::core::privilege::PrivilegeManager::detect_elevator().is_some()
     }
 }
 
@@ -403,7 +519,7 @@ impl Adapter for SoarAdapter {
     }
 
     async fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<Package>> {
-        let result = soar_operations::search::search_packages(&self.ctx, query, false, limit)
+        let result = soar_operations::search::search_packages(&self.user_ctx, query, false, limit)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -422,20 +538,58 @@ impl Adapter for SoarAdapter {
         Err(AdapterError::NotSupported)
     }
 
-    async fn remove(&self, _packages: &[Package], _progress: Option<ProgressSender>) -> Result<()> {
-        Err(AdapterError::NotSupported)
+    async fn remove(&self, packages: &[Package], _progress: Option<ProgressSender>, mode: PackageMode) -> Result<()> {
+        if mode == PackageMode::System {
+            return self.remove_system_package(packages).await;
+        }
+        
+        let pkg_ids: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+        let results = remove::resolve_removals(&self.user_ctx, &pkg_ids, false)
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        let mut to_remove = Vec::new();
+        for result in results {
+            match result {
+                RemoveResolveResult::Resolved(pkgs) => to_remove.extend(pkgs),
+                RemoveResolveResult::NotInstalled(q) => {
+                    return Err(AdapterError::Other(format!("Package not installed: {}", q)));
+                }
+                RemoveResolveResult::Ambiguous { query, candidates } => {
+                    return Err(AdapterError::Other(format!(
+                        "Ambiguous package: {} ({} candidates)",
+                        query,
+                        candidates.len()
+                    )));
+                }
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Err(AdapterError::Other("No packages to remove".into()));
+        }
+
+        remove::perform_removal(&self.user_ctx, to_remove)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        Ok(())
     }
 
     async fn update(
         &self,
         _packages: &[Package],
         _progress: Option<ProgressSender>,
+        _mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         Err(AdapterError::NotSupported)
     }
 
-    async fn list_installed(&self) -> Result<Vec<InstalledPackage>> {
-        let result = soar_operations::list::list_installed(&self.ctx, None)
+    async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {
+        if mode == PackageMode::System {
+            return self.list_installed_system().await;
+        }
+        
+        let result = soar_operations::list::list_installed(&self.user_ctx, None)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
         Ok(result
@@ -471,8 +625,12 @@ impl Adapter for SoarAdapter {
             .collect())
     }
 
-    async fn list_updates(&self) -> Result<Vec<Update>> {
-        let updates = update::check_updates(&self.ctx, None)
+    async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
+        if mode == PackageMode::System {
+            return Ok(vec![]);
+        }
+        
+        let updates = update::check_updates(&self.user_ctx, None)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -504,7 +662,7 @@ impl Adapter for SoarAdapter {
     }
 
     async fn sync(&self, _progress: Option<ProgressSender>) -> Result<()> {
-        self.ctx
+        self.user_ctx
             .sync()
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))
@@ -512,7 +670,7 @@ impl Adapter for SoarAdapter {
 
     async fn list_repositories(&self) -> Result<Vec<Repository>> {
         Ok(self
-            .ctx
+            .user_ctx
             .config()
             .repositories
             .iter()

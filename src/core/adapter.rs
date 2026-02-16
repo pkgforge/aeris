@@ -4,6 +4,7 @@ use super::{
     capabilities::Capabilities,
     config::{AdapterConfig, ConfigSchema},
     package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
+    privilege::PackageMode,
     profile::Profile,
     repository::Repository,
 };
@@ -109,17 +110,23 @@ pub trait Adapter: Send + Sync {
         progress: Option<ProgressSender>,
     ) -> Result<Vec<InstallResult>>;
 
-    async fn remove(&self, packages: &[Package], progress: Option<ProgressSender>) -> Result<()>;
+    async fn remove(
+        &self,
+        packages: &[Package],
+        progress: Option<ProgressSender>,
+        mode: PackageMode,
+    ) -> Result<()>;
 
     async fn update(
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>>;
 
-    async fn list_installed(&self) -> Result<Vec<InstalledPackage>>;
+    async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>>;
 
-    async fn list_updates(&self) -> Result<Vec<Update>>;
+    async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>>;
 
     async fn sync(&self, _progress: Option<ProgressSender>) -> Result<()> {
         Err(AdapterError::NotSupported)

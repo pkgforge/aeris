@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,8 @@ pub struct AerisConfig {
     pub startup_view: Option<String>,
     pub default_adapter: Option<String>,
     pub notifications: Option<bool>,
+    #[serde(default)]
+    pub adapters: HashMap<String, HashMap<String, String>>,
 }
 
 impl AerisConfig {
@@ -34,17 +37,23 @@ impl AerisConfig {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
-        let mut doc = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| s.parse::<DocumentMut>().ok())
-            .unwrap_or_default();
+        let contents = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
 
-        set_opt_str(&mut doc, "theme", self.theme.as_deref());
-        set_opt_str(&mut doc, "startup_view", self.startup_view.as_deref());
-        set_opt_str(&mut doc, "default_adapter", self.default_adapter.as_deref());
-        set_opt_bool(&mut doc, "notifications", self.notifications);
+        std::fs::write(&path, contents).map_err(|e| e.to_string())
+    }
 
-        std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+    pub fn get_adapter_setting(&self, adapter_id: &str, key: &str) -> Option<&str> {
+        self.adapters
+            .get(adapter_id)
+            .and_then(|settings| settings.get(key))
+            .map(|s| s.as_str())
+    }
+
+    pub fn set_adapter_setting(&mut self, adapter_id: &str, key: &str, value: &str) {
+        self.adapters
+            .entry(adapter_id.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
     }
 
     pub fn theme(&self) -> AppTheme {

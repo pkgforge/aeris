@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use iced::{
     Element, Length,
     widget::{
@@ -29,6 +31,7 @@ pub struct SettingsState {
     pub adapter_schema: Option<ConfigSchema>,
     pub adapter_config: AdapterConfig,
     pub adapter_config_original: AdapterConfig,
+    pub adapter_settings: HashMap<String, String>,
     pub adapter_dirty: bool,
     pub adapter_save_error: Option<String>,
     pub adapter_save_success: bool,
@@ -37,6 +40,21 @@ pub struct SettingsState {
 
 impl SettingsState {
     pub fn load(aeris_config: &AerisConfig, adapter: &dyn Adapter) -> Self {
+        let schema = adapter.config_schema();
+        let mut adapter_settings = HashMap::new();
+
+        if let Some(ref schema) = schema {
+            for field in &schema.fields {
+                if field.aeris_managed {
+                    if let Some(value) =
+                        aeris_config.get_adapter_setting(&schema.adapter_id, &field.key)
+                    {
+                        adapter_settings.insert(field.key.clone(), value.to_string());
+                    }
+                }
+            }
+        }
+
         Self {
             selected_theme: aeris_config.theme(),
             startup_view: aeris_config.startup_view(),
@@ -45,9 +63,10 @@ impl SettingsState {
             aeris_save_error: None,
             aeris_save_success: false,
 
-            adapter_schema: adapter.config_schema(),
+            adapter_schema: schema,
             adapter_config: adapter.initial_config().unwrap_or_default(),
             adapter_config_original: adapter.initial_config().unwrap_or_default(),
+            adapter_settings,
             adapter_dirty: false,
             adapter_save_error: None,
             adapter_save_success: false,
@@ -70,6 +89,7 @@ fn render_config_field<'a>(
     value: Option<&ConfigValue>,
     default: Option<&ConfigValue>,
     original: Option<&ConfigValue>,
+    aeris_managed: bool,
 ) -> Element<'a, Message> {
     let key_owned = key.to_string();
 
@@ -155,6 +175,43 @@ fn render_config_field<'a>(
             }
             r.into()
         }
+        ConfigFieldType::ExecutablePath => {
+            let current = match value {
+                Some(ConfigValue::String(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let browse_key = key_owned.clone();
+            let revert_key = key_owned.clone();
+            let mut r = row![
+                text(label).size(14).width(Length::Fill),
+                text_input("auto-detect", &current)
+                    .on_input(move |s| {
+                        Message::Settings(SettingsMessage::AdapterAerisFieldChanged(
+                            key_owned.clone(),
+                            s,
+                        ))
+                    })
+                    .width(200),
+                button(text("Browse").size(13))
+                    .on_press(Message::Settings(SettingsMessage::BrowseExecutableField(
+                        browse_key,
+                    )))
+                    .padding([4, 10]),
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center);
+            if !current.is_empty() {
+                r = r.push(
+                    button(text("Clear").size(13))
+                        .on_press(Message::Settings(SettingsMessage::RevertAdapterAerisField(
+                            revert_key,
+                        )))
+                        .style(button::secondary)
+                        .padding([4, 10]),
+                );
+            }
+            r.into()
+        }
         ConfigFieldType::Number => {
             let current = match value {
                 Some(ConfigValue::String(s)) => s.clone(),
@@ -215,7 +272,6 @@ fn render_config_field<'a>(
 pub fn view(state: &SettingsState) -> Element<'_, Message> {
     let header = text("Settings").size(22);
 
-    // Appearance section
     let appearance_header = text("Appearance").size(16);
     let theme_row = row![
         text("Theme").size(14).width(Length::Fill),
@@ -226,7 +282,6 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     ]
     .align_y(iced::Alignment::Center);
 
-    // General section
     let general_header = text("General").size(16);
     let startup_row = row![
         text("Startup view").size(14).width(Length::Fill),
@@ -293,15 +348,27 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
                 last_section = Some(current_section);
             }
 
-            let value = state.adapter_config.values.get(&field.key);
-            let original = state.adapter_config_original.values.get(&field.key);
+            let value = if field.aeris_managed {
+                state
+                    .adapter_settings
+                    .get(&field.key)
+                    .map(|s| ConfigValue::String(s.clone()))
+            } else {
+                state.adapter_config.values.get(&field.key).cloned()
+            };
+            let original = if field.aeris_managed {
+                None
+            } else {
+                state.adapter_config_original.values.get(&field.key)
+            };
             adapter_section = adapter_section.push(render_config_field(
                 &field.key,
                 &field.label,
                 &field.field_type,
-                value,
+                value.as_ref(),
                 field.default.as_ref(),
                 original,
+                field.aeris_managed,
             ));
         }
 

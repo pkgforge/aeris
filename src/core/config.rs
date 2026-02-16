@@ -10,23 +10,30 @@ pub enum ConfigValue {
     StringList(Vec<String>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigField {
     pub key: String,
     pub label: String,
+    #[serde(default)]
     pub description: Option<String>,
     pub field_type: ConfigFieldType,
+    #[serde(default)]
     pub default: Option<ConfigValue>,
+    #[serde(default)]
     pub section: Option<String>,
+    #[serde(default)]
+    pub aeris_managed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum ConfigFieldType {
+    #[default]
     Text,
     Toggle,
     Number,
     Select(Vec<String>),
     PathList,
+    ExecutablePath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
