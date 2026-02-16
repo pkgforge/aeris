@@ -4460,6 +4460,7 @@ dependencies = [
 [[package]]
 name = "soar-config"
 version = "0.5.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "documented",
  "miette",
@@ -4474,6 +4475,7 @@ dependencies = [
 [[package]]
 name = "soar-core"
 version = "0.13.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "chrono",
  "compak",
@@ -4501,6 +4503,7 @@ dependencies = [
 [[package]]
 name = "soar-db"
 version = "0.4.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "diesel",
  "diesel_migrations",
@@ -4517,6 +4520,7 @@ dependencies = [
 [[package]]
 name = "soar-dl"
 version = "0.8.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "compak",
  "fast-glob",
@@ -4536,10 +4540,12 @@ dependencies = [
 [[package]]
 name = "soar-events"
 version = "0.0.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 
 [[package]]
 name = "soar-operations"
 version = "0.0.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "fast-glob",
  "minisign-verify",
@@ -4560,6 +4566,7 @@ dependencies = [
 [[package]]
 name = "soar-package"
 version = "0.2.3"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "image",
  "miette",
@@ -4574,6 +4581,7 @@ dependencies = [
 [[package]]
 name = "soar-registry"
 version = "0.3.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "miette",
  "serde",
@@ -4591,6 +4599,7 @@ dependencies = [
 [[package]]
 name = "soar-utils"
 version = "0.3.0"
+source = "git+https://github.com/pkgforge/soar#c970d49552989fc902ccb5ef3c267873fbddcc15"
 dependencies = [
  "blake3",
  "miette",
