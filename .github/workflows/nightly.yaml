@@ -1,0 +1,109 @@
+name: aeris nightly
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+on:
+  push:
+    tags:
+      - nightly
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+jobs:
+  remove-nightly-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Remove existing nightly tag
+        run: |
+          gh release delete nightly --cleanup-tag || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  publish-nightly:
+    name: Publish nightly binaries
+    runs-on: ${{ matrix.build.RUNNER }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - {
+              NAME: aarch64-linux,
+              TARGET: aarch64-unknown-linux-gnu,
+              RUNNER: ubuntu-24.04-arm
+            }
+          - {
+              NAME: x86_64-linux,
+              TARGET: x86_64-unknown-linux-gnu,
+              RUNNER: ubuntu-latest
+            }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get version info
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "version=nightly-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          sudo apt update -y
+          sudo apt install b3sum findutils file -y
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.build.TARGET }}
+
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.build.TARGET }}" --jobs="$(($(nproc)+1))" --verbose
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p release
+          cp {LICENSE,README.md} release/
+          cp "target/${{ matrix.build.TARGET }}/release/aeris" release/
+
+      - name: Create release artifacts
+        env:
+          ARTIFACT: "aeris-${{ matrix.build.NAME }}"
+        shell: bash
+        run: |
+          cp release/aeris "${ARTIFACT}"
+          b3sum "${ARTIFACT}" > "${ARTIFACT}.b3sum"
+
+          tar -czvf "${ARTIFACT}.tar.gz" release/
+          b3sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.b3sum"
+          bash -c 'realpath "${ARTIFACT}" ; realpath "${ARTIFACT}.tar.gz"' | xargs -I "{}" bash -c \
+           'printf "\nFile: $(basename {})\n  Type: $(file -b {})\n  B3sum: $(b3sum {} | cut -d" " -f1)\n  SHA256sum: $(sha256sum {} | cut -d" " -f1)\n  Size: $(du -bh {} | cut -f1)\n"'
+
+      - name: Publish to GitHub (nightly)
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: aeris-${{ matrix.build.NAME }}*
+          file_glob: true
+          overwrite: true
+          tag: nightly
+          release_name: "${{ steps.version.outputs.version }}"
+          prerelease: true
+
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@v3.0.0
+        with:
+          subject-name: "aeris-nightly-${{ matrix.build.NAME }}"
+          subject-path: |
+            aeris-${{ matrix.build.NAME }}*
+          show-summary: true
