@@ -3,10 +3,10 @@ pub mod message;
 use std::sync::Arc;
 
 use iced::{
-    Color, Element, Length, Subscription, Task,
+    Alignment, Element, Length, Subscription, Task,
     widget::{
-        button, center, column, container, mouse_area, opaque, pick_list, progress_bar, row, rule,
-        space, stack, text,
+        button, center, column, container, mouse_area, opaque, pick_list, progress_bar, row, space,
+        stack, text, tooltip,
     },
 };
 use soar_events::{InstallStage, RemoveStage, SoarEvent, VerifyStage};
@@ -19,6 +19,7 @@ use crate::{
         config::{AdapterConfig, ConfigFieldType, ConfigValue},
         privilege::{PackageMode, PrivilegeManager},
     },
+    styles::{self, font_size, spacing},
     views,
 };
 
@@ -153,6 +154,7 @@ pub struct ActiveOperation {
 pub struct App {
     selected_theme: AppTheme,
     current_view: View,
+    sidebar_expanded: bool,
     browse: views::browse::BrowseState,
     installed: views::installed::InstalledState,
     updates: views::updates::UpdatesState,
@@ -211,6 +213,7 @@ impl App {
             Self {
                 selected_theme,
                 current_view: startup_view,
+                sidebar_expanded: false,
                 browse: views::browse::BrowseState::default(),
                 installed: views::installed::InstalledState {
                     loading: true,
@@ -252,24 +255,24 @@ impl App {
                     self.installed.loaded = false;
                     self.updates.checked = false;
                     self.repositories.loaded = false;
-                    // Clear browse results since repos differ between modes
                     self.browse.search_results.clear();
                     self.browse.has_searched = false;
                     self.browse.result_version += 1;
-                    // Reload settings adapter config for the new mode
                     let new_config = self.adapter.build_initial_config_for_mode(mode);
                     self.settings.adapter_config = new_config.clone();
                     self.settings.adapter_config_original = new_config;
                     self.settings.adapter_dirty = false;
                     self.settings.adapter_save_success = false;
                     self.settings.adapter_save_error = None;
-                    // Reload data for the current view
                     let mut tasks = vec![self.load_installed()];
                     if self.current_view == View::Repositories {
                         tasks.push(self.load_repositories());
                     }
                     return Task::batch(tasks);
                 }
+            }
+            Message::ToggleSidebar => {
+                self.sidebar_expanded = !self.sidebar_expanded;
             }
             Message::Browse(msg) => return self.update_browse(msg),
             Message::Installed(msg) => return self.update_installed(msg),
@@ -297,11 +300,42 @@ impl App {
         match msg {
             message::BrowseMessage::SearchQueryChanged(query) => {
                 self.browse.search_query = query;
+                self.browse.search_debounce_version += 1;
+                let version = self.browse.search_debounce_version;
+                return Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        version
+                    },
+                    |v| Message::Browse(message::BrowseMessage::SearchSubmitDebounced(v)),
+                );
+            }
+            message::BrowseMessage::SearchSubmitDebounced(version) => {
+                if version != self.browse.search_debounce_version {
+                    return Task::none();
+                }
+                if self.browse.search_query.trim().is_empty() {
+                    return Task::none();
+                }
+                self.browse.loading = true;
+                let query = self.browse.search_query.clone();
+                let adapter = self.adapter.clone();
+                let mode = self.current_mode;
+                return Task::perform(
+                    async move {
+                        adapter
+                            .search_with_mode(&query, None, mode)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::Browse(message::BrowseMessage::SearchResults(result)),
+                );
             }
             message::BrowseMessage::SearchSubmit => {
                 if self.browse.search_query.trim().is_empty() {
                     return Task::none();
                 }
+                self.browse.search_debounce_version += 1;
                 self.browse.loading = true;
                 let query = self.browse.search_query.clone();
                 let adapter = self.adapter.clone();
@@ -345,7 +379,11 @@ impl App {
             }
             message::BrowseMessage::InstallPackage(pkg) => {
                 let mode = self.selected_install_mode;
-                self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
+                if mode == PackageMode::User {
+                    return self.execute_confirmed(message::ConfirmAction::Install(pkg, mode));
+                } else {
+                    self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
+                }
             }
             message::BrowseMessage::InstallPackageWithMode(pkg, mode) => {
                 self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
@@ -825,7 +863,6 @@ impl App {
                 }
             }
             message::RepositoriesMessage::SyncRepo(_name) => {
-                // Soar syncs all repos at once; treat single-repo sync the same
                 self.repositories.syncing = Some("__all__".into());
                 self.repositories.sync_error = None;
                 self.repositories.result_version += 1;
@@ -1026,13 +1063,23 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let header = self.header_view();
         let sidebar = self.sidebar_view();
+
         let content = match self.current_view {
             View::Dashboard => {
                 let stats = views::dashboard::DashboardStats {
                     installed_count: self.installed.packages.len(),
+                    update_count: self.updates.updates.len(),
+                    updates_checked: self.updates.checked,
                     repo_count: self.adapter.repo_count_for_mode(self.current_mode),
                     current_mode: self.current_mode,
+                    unhealthy_count: self
+                        .installed
+                        .packages
+                        .iter()
+                        .filter(|p| !p.is_healthy)
+                        .count(),
                 };
                 views::dashboard::view(&stats)
             }
@@ -1053,7 +1100,11 @@ impl App {
             content
         };
 
-        let base = row![sidebar, main];
+        let body = row![sidebar, main].height(Length::Fill);
+
+        let base = column![header, body]
+            .width(Length::Fill)
+            .height(Length::Fill);
 
         if let Some(ref action) = self.confirm_dialog {
             modal(
@@ -1061,15 +1112,51 @@ impl App {
                 self.confirm_dialog_view(action),
                 Message::CancelAction,
             )
-        } else if let Some(ref pkg) = self.browse.selected_package {
-            modal(
-                base,
-                views::browse::package_detail_view(pkg),
-                Message::Browse(message::BrowseMessage::CloseDetail),
-            )
         } else {
             base.into()
         }
+    }
+
+    fn header_view(&self) -> Element<'_, Message> {
+        let left = row![
+            text(APP_NAME).size(font_size::BODY),
+            text("\u{00b7}").size(font_size::BODY),
+            text(format!("{}", self.current_view)).size(font_size::BODY),
+        ]
+        .spacing(spacing::SM)
+        .align_y(Alignment::Center);
+
+        let has_system = self.adapter.info().capabilities.supports_system_packages;
+        static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
+
+        let mut right = row![].spacing(spacing::SM).align_y(Alignment::Center);
+        if has_system {
+            right = right.push(
+                pick_list(
+                    &MODES[..],
+                    Some(self.current_mode),
+                    Message::PackageModeChanged,
+                )
+                .width(100),
+            );
+        }
+        right = right.push(
+            button(text("\u{2699}").size(18).center())
+                .on_press(Message::NavigateTo(View::Settings))
+                .style(styles::header_icon_button)
+                .padding([6, 10]),
+        );
+
+        container(
+            row![left, space().width(Length::Fill), right]
+                .padding([0.0, spacing::LG])
+                .align_y(Alignment::Center),
+        )
+        .height(40)
+        .width(Length::Fill)
+        .center_y(40)
+        .style(styles::header_container)
+        .into()
     }
 
     fn confirm_dialog_view(&self, action: &message::ConfirmAction) -> Element<'_, Message> {
@@ -1094,21 +1181,21 @@ impl App {
                 let mode_selector: Element<'_, Message> = if has_multiple_modes {
                     column![
                         row![
-                            text("Install mode:").size(13),
+                            text("Install mode:").size(font_size::SMALL),
                             iced::widget::pick_list(&MODES[..], Some(current_mode), |m| {
                                 Message::Browse(message::BrowseMessage::InstallModeChanged(m))
                             },)
                             .width(120),
                         ]
-                        .spacing(8)
-                        .align_y(iced::Alignment::Center),
+                        .spacing(spacing::SM)
+                        .align_y(Alignment::Center),
                         if is_system {
-                            text("Requires administrator privileges").size(11)
+                            text("Requires administrator privileges").size(font_size::CAPTION)
                         } else {
-                            text("").size(11)
+                            text("").size(font_size::CAPTION)
                         }
                     ]
-                    .spacing(4)
+                    .spacing(spacing::XXS)
                     .into()
                 } else {
                     column![].into()
@@ -1122,7 +1209,9 @@ impl App {
             }
             message::ConfirmAction::Remove(pkg, _) => {
                 let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges").size(11).into()
+                    text("Requires administrator privileges")
+                        .size(font_size::CAPTION)
+                        .into()
                 } else {
                     column![].into()
                 };
@@ -1134,7 +1223,9 @@ impl App {
             }
             message::ConfirmAction::Update(pkg, _) => {
                 let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges").size(11).into()
+                    text("Requires administrator privileges")
+                        .size(font_size::CAPTION)
+                        .into()
                 } else {
                     column![].into()
                 };
@@ -1146,7 +1237,9 @@ impl App {
             }
             message::ConfirmAction::UpdateAll(_) => {
                 let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges").size(11).into()
+                    text("Requires administrator privileges")
+                        .size(font_size::CAPTION)
+                        .into()
                 } else {
                     column![].into()
                 };
@@ -1158,14 +1251,14 @@ impl App {
             }
         };
 
-        let cancel_btn = button(text("Cancel").size(14))
+        let cancel_btn = button(text("Cancel").size(font_size::BODY))
             .on_press(Message::CancelAction)
             .style(button::secondary)
-            .padding([8, 16]);
+            .padding([spacing::SM, spacing::XL]);
 
-        let confirm_btn = button(text("Confirm").size(14))
+        let confirm_btn = button(text("Confirm").size(font_size::BODY))
             .on_press(Message::ConfirmAction)
-            .padding([8, 16]);
+            .padding([spacing::SM, spacing::XL]);
 
         let confirm_btn = if is_destructive {
             confirm_btn.style(button::danger)
@@ -1173,98 +1266,133 @@ impl App {
             confirm_btn.style(button::primary)
         };
 
-        let mut content = column![text(title).size(18), text(description).size(14),].spacing(12);
+        let mut content = column![
+            text(title).size(font_size::TITLE),
+            text(description).size(font_size::BODY),
+        ]
+        .spacing(spacing::MD);
 
         content = content.push(mode_section);
 
-        content = content.push(row![cancel_btn, confirm_btn].spacing(8));
+        content = content.push(
+            row![space().width(Length::Fill), cancel_btn, confirm_btn,]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center),
+        );
 
-        container(
-            content
-                .spacing(16)
-                .padding(24)
-                .align_x(iced::Alignment::Center),
-        )
-        .style(container::rounded_box)
-        .width(360)
-        .into()
+        container(content.spacing(spacing::LG).padding(spacing::XXL))
+            .style(styles::modal_card)
+            .width(380)
+            .into()
     }
 
     fn sidebar_view(&self) -> Element<'_, Message> {
-        let nav_items = [
-            (View::Dashboard, "Dashboard"),
-            (View::Browse, "Browse"),
-            (View::Installed, "Installed"),
-            (View::Updates, "Updates"),
-            (View::Repositories, "Repositories"),
-            (View::AdapterInfo, "Adapter"),
+        let nav_items: [(View, &str, &str); 6] = [
+            (View::Dashboard, "Dashboard", "\u{2302}"),
+            (View::Browse, "Browse", "\u{26b2}"),
+            (View::Installed, "Installed", "\u{22a1}"),
+            (View::Updates, "Updates", "\u{21bb}"),
+            (View::Repositories, "Repositories", "\u{22a0}"),
+            (View::AdapterInfo, "Adapter", "\u{26a1}"),
         ];
 
-        let mut nav = column![].spacing(4).padding(8);
+        let mut nav = column![].spacing(spacing::XXS).padding(spacing::XS);
 
-        for (view, label) in nav_items {
+        for (view, label, icon) in nav_items {
             let is_active = self.current_view == view;
-            let btn = button(text(label).size(14).width(Length::Fill).center())
-                .on_press(Message::NavigateTo(view))
-                .width(Length::Fill)
-                .padding([8, 12]);
 
-            let btn = if is_active {
-                btn.style(button::primary)
+            let icon_style: fn(&iced::Theme) -> container::Style = if is_active {
+                styles::nav_icon_active
             } else {
-                btn.style(button::text)
+                styles::nav_icon_inactive
             };
 
-            nav = nav.push(btn);
+            let content: Element<'_, Message> = if self.sidebar_expanded {
+                let icon = container(text(icon).size(font_size::BODY))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(icon_style);
+
+                row![
+                    container(icon)
+                        .width(Length::Fixed(28.0))
+                        .height(Length::Fill),
+                    text(label).size(font_size::BODY)
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into()
+            } else {
+                let icon = container(text(icon).size(font_size::BODY))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(icon_style);
+
+                container(icon)
+                    .width(Length::Fixed(28.0))
+                    .height(Length::Fixed(28.0))
+                    .center_x(Length::Fill)
+                    .into()
+            };
+
+            let btn = button(content)
+                .on_press(Message::NavigateTo(view))
+                .width(Length::Fill)
+                .height(36)
+                .padding(if self.sidebar_expanded {
+                    [spacing::XS, spacing::SM]
+                } else {
+                    [spacing::XS, spacing::XS]
+                });
+
+            let btn = if is_active {
+                btn.style(|theme, _status| styles::sidebar_active_button(theme))
+            } else {
+                btn.style(styles::sidebar_button)
+            };
+
+            let nav_item: Element<'_, Message> = if !self.sidebar_expanded {
+                tooltip(btn, label, tooltip::Position::Right).gap(4).into()
+            } else {
+                btn.into()
+            };
+
+            nav = nav.push(nav_item);
         }
 
-        // Mode toggle (only shown when system packages are supported)
-        let has_system = self.adapter.info().capabilities.supports_system_packages;
-        let mut bottom_section = column![].spacing(4).padding(8);
-
-        if has_system {
-            static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
-            let mode_toggle = column![
-                text("Package Mode").size(11),
-                pick_list(
-                    &MODES[..],
-                    Some(self.current_mode),
-                    Message::PackageModeChanged
-                )
-                .width(Length::Fill),
-            ]
-            .spacing(4);
-            bottom_section = bottom_section.push(mode_toggle);
-        }
-
-        // Settings button at the bottom
-        let is_settings_active = self.current_view == View::Settings;
-        let settings_btn = button(text("Settings").size(14).width(Length::Fill).center())
-            .on_press(Message::NavigateTo(View::Settings))
-            .width(Length::Fill)
-            .padding([8, 12]);
-
-        let settings_btn = if is_settings_active {
-            settings_btn.style(button::primary)
+        let toggle_label = if self.sidebar_expanded {
+            "\u{00ab}"
         } else {
-            settings_btn.style(button::text)
+            "\u{00bb}"
         };
+        let toggle_btn = button(
+            text(toggle_label)
+                .size(font_size::SMALL)
+                .center()
+                .width(Length::Fill),
+        )
+        .on_press(Message::ToggleSidebar)
+        .width(Length::Fill)
+        .height(32)
+        .padding(spacing::XXS)
+        .style(styles::sidebar_button);
 
-        bottom_section = bottom_section.push(settings_btn);
+        let sidebar_width = if self.sidebar_expanded { 180 } else { 52 };
 
         container(
             column![
-                text(APP_NAME).size(20).center().width(Length::Fill),
-                rule::horizontal(1),
                 nav,
-                space(),
-                rule::horizontal(1),
-                bottom_section,
+                space().height(Length::Fill),
+                container(toggle_btn).padding(spacing::XS),
             ]
-            .spacing(8)
             .height(Length::Fill),
         )
-        .width(180)
+        .style(styles::sidebar_container)
+        .width(sidebar_width)
         .height(Length::Fill)
         .into()
     }
@@ -1351,10 +1479,13 @@ impl App {
     }
 
     fn progress_bar_view(&self, op: &ActiveOperation) -> Element<'_, Message> {
-        let label = text(format!("{} {}", op.operation_type, op.package_name)).size(13);
-        let status = text(op.status.label()).size(12);
+        let label =
+            text(format!("{} {}", op.operation_type, op.package_name)).size(font_size::SMALL);
+        let status = text(op.status.label()).size(font_size::CAPTION + 1.0);
 
-        let mut content = column![label, status].spacing(4).padding([8, 16]);
+        let mut content = column![label, status]
+            .spacing(spacing::XXS)
+            .padding([10.0, spacing::LG]);
 
         if let Some(progress) = op.status.progress() {
             content = content.push(progress_bar(0.0..=1.0, progress));
@@ -1362,18 +1493,7 @@ impl App {
 
         container(content)
             .width(Length::Fill)
-            .style(|theme: &iced::Theme| {
-                let palette = theme.extended_palette();
-                container::Style {
-                    background: Some(palette.background.weak.color.into()),
-                    border: iced::Border {
-                        width: 1.0,
-                        color: palette.background.strong.color,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            })
+            .style(styles::progress_container)
             .into()
     }
 
@@ -1393,21 +1513,7 @@ fn modal<'a>(
 ) -> Element<'a, Message> {
     stack![
         base.into(),
-        opaque(
-            mouse_area(center(opaque(content)).style(|_theme| {
-                container::Style {
-                    background: Some(
-                        Color {
-                            a: 0.8,
-                            ..Color::BLACK
-                        }
-                        .into(),
-                    ),
-                    ..container::Style::default()
-                }
-            }))
-            .on_press(on_blur)
-        )
+        opaque(mouse_area(center(opaque(content)).style(styles::modal_backdrop)).on_press(on_blur))
     ]
     .into()
 }

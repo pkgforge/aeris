@@ -25,6 +25,8 @@ pub enum Message {
     Settings(SettingsMessage),
     Repositories(RepositoriesMessage),
 
+    ToggleSidebar,
+
     ConfirmAction,
     CancelAction,
 
@@ -35,6 +37,7 @@ pub enum Message {
 pub enum BrowseMessage {
     SearchQueryChanged(String),
     SearchSubmit,
+    SearchSubmitDebounced(u64),
     SearchResults(Result<Vec<Package>, String>),
     SourceFilterToggle(String),
     SelectPackage(String),

@@ -1,13 +1,12 @@
 use iced::{
-    Element, Length,
-    widget::{
-        button, column, container, lazy, mouse_area, row, rule, scrollable, text, text_input,
-    },
+    Alignment, Element, Length,
+    widget::{button, column, container, lazy, row, rule, scrollable, space, text, text_input},
 };
 
 use crate::{
     app::message::{BrowseMessage, Message},
     core::package::Package,
+    styles::{self, font_size, spacing},
 };
 use soar_utils::bytes::format_bytes;
 
@@ -22,32 +21,58 @@ pub struct BrowseState {
     pub result_version: u64,
     pub installing: Option<String>,
     pub selected_package: Option<Package>,
+    pub search_debounce_version: u64,
 }
 
 pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
-    let search_bar = text_input("Search packages...", &state.search_query)
-        .on_input(|s| Message::Browse(BrowseMessage::SearchQueryChanged(s)))
-        .on_submit(Message::Browse(BrowseMessage::SearchSubmit))
-        .padding(10)
-        .size(16);
+    let search_bar = container(
+        text_input("Search packages...", &state.search_query)
+            .on_input(|s| Message::Browse(BrowseMessage::SearchQueryChanged(s)))
+            .on_submit(Message::Browse(BrowseMessage::SearchSubmit))
+            .padding(10)
+            .size(font_size::HEADING),
+    )
+    .style(styles::search_container)
+    .padding(spacing::XXS);
+
+    let result_count: Element<'_, Message> = if state.loading {
+        text("Searching...").size(font_size::CAPTION + 1.0).into()
+    } else if !state.search_results.is_empty() {
+        let count = state.search_results.len();
+        text(format!(
+            "{count} package{} found",
+            if count == 1 { "" } else { "s" }
+        ))
+        .size(font_size::CAPTION + 1.0)
+        .into()
+    } else {
+        text("").size(font_size::CAPTION + 1.0).into()
+    };
 
     let results_content: Element<'_, Message> = if state.loading {
-        container(text("Searching...").size(14))
+        container(text("Searching...").size(font_size::BODY))
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .into()
     } else if let Some(ref err) = state.error {
-        container(text(format!("Search failed: {err}")).size(14))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
+        container(
+            column![
+                text("Search failed").size(font_size::HEADING),
+                text(err.as_str()).size(font_size::SMALL),
+            ]
+            .spacing(spacing::SM)
+            .align_x(Alignment::Center),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
     } else if state.search_results.is_empty() {
         let msg = if state.has_searched {
             "No packages found"
         } else {
-            "Search for packages above"
+            "Type to search for packages"
         };
-        container(text(msg).size(14))
+        container(text(msg).size(font_size::BODY))
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .into()
@@ -61,136 +86,151 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
                 .map(|pkg| package_card(pkg, &installing))
                 .collect();
 
-            scrollable(column(cards).spacing(8).width(Length::Fill)).height(Length::Fill)
+            scrollable(column(cards).spacing(spacing::SM).width(Length::Fill)).height(Length::Fill)
         })
         .into()
     };
 
-    let mut content = column![row![search_bar].width(Length::Fill)]
-        .spacing(12)
+    let mut browse_list = column![search_bar, result_count]
+        .spacing(spacing::SM)
         .width(Length::Fill)
         .height(Length::Fill);
 
     if let Some(ref err) = state.install_error {
         let error_banner = row![
-            text(format!("Install failed: {err}")).size(13),
-            button(text("Dismiss").size(12))
+            text(format!("Install failed: {err}")).size(font_size::SMALL),
+            space().width(Length::Fill),
+            button(text("Dismiss").size(font_size::CAPTION + 1.0))
                 .on_press(Message::Browse(BrowseMessage::DismissInstallError))
                 .style(button::secondary)
-                .padding([2, 8]),
+                .padding([spacing::XXS, 10.0]),
         ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+        .spacing(spacing::SM)
+        .align_y(Alignment::Center);
 
-        content = content.push(
+        browse_list = browse_list.push(
             container(error_banner)
-                .padding([6, 12])
+                .padding([spacing::SM, spacing::MD])
                 .width(Length::Fill)
-                .style(|theme: &iced::Theme| {
-                    let palette = theme.extended_palette();
-                    container::Style {
-                        background: Some(palette.danger.weak.color.into()),
-                        border: iced::Border {
-                            width: 1.0,
-                            color: palette.danger.base.color,
-                            radius: 4.0.into(),
-                        },
-                        ..Default::default()
-                    }
-                }),
+                .style(styles::error_banner),
         );
     }
 
-    content = content.push(results_content);
+    browse_list = browse_list.push(results_content);
 
-    container(content)
-        .padding(20)
+    let browse_panel = container(browse_list)
+        .padding(spacing::XL)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+
+    if let Some(ref pkg) = state.selected_package {
+        row![browse_panel, rule::vertical(1), detail_side_panel(pkg),]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        browse_panel.into()
+    }
 }
 
 fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, Message> {
     let pkg_id = pkg.id.clone();
-    let name = text(pkg.name.clone()).size(16);
-    let version = text(pkg.version.clone()).size(12);
-    let adapter = text(format!("[{}]", pkg.adapter_id)).size(11);
+    let name = text(pkg.name.clone()).size(font_size::HEADING);
+    let version = container(text(pkg.version.clone()).size(font_size::CAPTION))
+        .padding([spacing::XXXS, spacing::XS])
+        .style(styles::badge_neutral);
+    let adapter = container(text(pkg.adapter_id.clone()).size(font_size::BADGE))
+        .padding([spacing::XXXS, spacing::XS])
+        .style(styles::badge_neutral);
 
     let header = row![name, version, adapter]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+        .spacing(spacing::SM)
+        .align_y(Alignment::Center);
 
     let description = text(
         pkg.description
             .clone()
             .unwrap_or_else(|| "No description".into()),
     )
-    .size(13);
+    .size(font_size::SMALL);
 
     let mut info_parts: Vec<Element<'_, Message>> = Vec::new();
     if let Some(size) = pkg.size {
-        info_parts.push(text(format_bytes(size, 2)).size(11).into());
+        info_parts.push(text(format_bytes(size, 2)).size(font_size::CAPTION).into());
     }
     if let Some(ref license) = pkg.license {
-        info_parts.push(text(license.clone()).size(11).into());
+        info_parts.push(text(license.clone()).size(font_size::CAPTION).into());
     }
-    let info_row = row(info_parts).spacing(12);
+    let info_row = row(info_parts).spacing(spacing::MD);
 
     let is_installing = installing.as_deref() == Some(&pkg.id);
-    let install_btn = if pkg.installed && pkg.update_available {
-        button(text("Update Available").size(12).center())
-            .padding([4, 12])
-            .style(button::secondary)
+    let install_btn: Element<'static, Message> = if pkg.installed && pkg.update_available {
+        container(text("Update Available").size(font_size::CAPTION))
+            .padding([spacing::XXS, 10.0])
+            .style(styles::badge_warning)
+            .into()
     } else if pkg.installed {
-        button(text("Installed").size(12).center())
-            .padding([4, 12])
-            .style(button::secondary)
+        container(text("Installed").size(font_size::CAPTION))
+            .padding([spacing::XXS, 10.0])
+            .style(styles::badge_success)
+            .into()
     } else if is_installing {
-        button(text("Installing...").size(12).center())
-            .padding([4, 12])
-            .style(button::secondary)
+        container(text("Installing...").size(font_size::CAPTION))
+            .padding([spacing::XXS, 10.0])
+            .style(styles::badge_primary)
+            .into()
     } else {
-        let mut btn = button(text("Install").size(12).center())
-            .padding([4, 12])
+        let mut btn = button(text("Install").size(font_size::CAPTION + 1.0).center())
+            .padding([spacing::XXS, 14.0])
             .style(button::primary);
         if installing.is_none() {
             btn = btn.on_press(Message::Browse(BrowseMessage::InstallPackage(pkg.clone())));
         }
-        btn
+        btn.into()
     };
 
     let left = column![header, description, info_row]
-        .spacing(4)
+        .spacing(spacing::XXS)
         .width(Length::Fill);
 
-    let card = row![left, install_btn]
-        .spacing(12)
-        .align_y(iced::Alignment::Center);
+    let card_content = row![left, install_btn]
+        .spacing(spacing::MD)
+        .align_y(Alignment::Center);
 
-    let card_container: Element<'static, Message> = container(card)
-        .padding(12)
-        .width(Length::Fill)
-        .style(container::bordered_box)
-        .into();
-
-    mouse_area(card_container)
-        .on_press(Message::Browse(BrowseMessage::SelectPackage(pkg_id)))
-        .into()
+    button(
+        container(card_content)
+            .padding(spacing::MD)
+            .width(Length::Fill),
+    )
+    .on_press(Message::Browse(BrowseMessage::SelectPackage(pkg_id)))
+    .width(Length::Fill)
+    .style(styles::card_button)
+    .into()
 }
 
-pub fn package_detail_view(pkg: &Package) -> Element<'_, Message> {
-    let name = text(pkg.name.clone()).size(20);
-    let version = text(format!("v{}", pkg.version)).size(14);
-    let header = row![name, version]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+fn detail_side_panel(pkg: &Package) -> Element<'_, Message> {
+    let close_btn = button(text("\u{00d7}").size(font_size::TITLE).center())
+        .on_press(Message::Browse(BrowseMessage::CloseDetail))
+        .style(styles::header_icon_button)
+        .padding([spacing::XXS, spacing::SM]);
+
+    let header = row![
+        text(pkg.name.clone()).size(font_size::TITLE),
+        space().width(Length::Fill),
+        close_btn,
+    ]
+    .align_y(Alignment::Center);
+
+    let version_badge = container(text(format!("v{}", pkg.version)).size(font_size::CAPTION + 1.0))
+        .padding([3.0, spacing::SM])
+        .style(styles::badge_primary);
 
     let description = text(
         pkg.description
             .clone()
             .unwrap_or_else(|| "No description available".into()),
     )
-    .size(14);
+    .size(font_size::BODY);
 
     let mut details: Vec<Element<'_, Message>> = Vec::new();
 
@@ -210,41 +250,70 @@ pub fn package_detail_view(pkg: &Package) -> Element<'_, Message> {
         details.push(detail_row("Tags", &pkg.tags.join(", ")));
     }
 
-    let status = if pkg.installed {
-        "Installed"
+    let status_badge: Element<'_, Message> = if pkg.installed {
+        container(text("Installed").size(font_size::CAPTION))
+            .padding([3.0, spacing::SM])
+            .style(styles::badge_success)
+            .into()
     } else {
-        "Not installed"
+        container(text("Not installed").size(font_size::CAPTION))
+            .padding([3.0, spacing::SM])
+            .style(styles::badge_neutral)
+            .into()
     };
-    details.push(detail_row("Status", status));
 
-    let close_btn = button(text("Close").size(13))
-        .padding([6, 14])
+    let install_btn: Element<'_, Message> = if !pkg.installed {
+        button(text("Install").size(font_size::SMALL))
+            .padding([spacing::XS, spacing::LG])
+            .style(button::primary)
+            .on_press(Message::Browse(BrowseMessage::InstallPackage(pkg.clone())))
+            .into()
+    } else {
+        space().width(0).into()
+    };
+
+    let close_bottom_btn = button(text("Close").size(font_size::SMALL))
+        .padding([spacing::XS, spacing::LG])
         .style(button::secondary)
         .on_press(Message::Browse(BrowseMessage::CloseDetail));
 
-    let mut content = column![header, description, rule::horizontal(1)]
+    let mut content = column![header, version_badge, description, rule::horizontal(1)]
         .spacing(10)
-        .padding(24);
+        .padding(spacing::XL);
 
     for detail in details {
         content = content.push(detail);
     }
 
     content = content.push(
-        row![iced::widget::space().width(Length::Fill), close_btn].align_y(iced::Alignment::Center),
+        row![
+            text("Status").size(font_size::SMALL).width(100),
+            status_badge
+        ]
+        .spacing(spacing::SM)
+        .align_y(Alignment::Center),
     );
 
-    container(content)
-        .style(container::rounded_box)
-        .width(400)
+    content = content.push(rule::horizontal(1));
+
+    content = content.push(
+        row![space().width(Length::Fill), install_btn, close_bottom_btn]
+            .spacing(spacing::SM)
+            .align_y(Alignment::Center),
+    );
+
+    container(scrollable(content).height(Length::Fill))
+        .style(styles::detail_panel)
+        .width(320)
+        .height(Length::Fill)
         .into()
 }
 
 fn detail_row<'a>(label: &str, value: &str) -> Element<'a, Message> {
     row![
-        text(label.to_string()).size(13).width(100),
-        text(value.to_string()).size(13),
+        text(label.to_string()).size(font_size::SMALL).width(100),
+        text(value.to_string()).size(font_size::SMALL),
     ]
-    .spacing(8)
+    .spacing(spacing::SM)
     .into()
 }

@@ -2,6 +2,7 @@ mod adapters;
 mod app;
 mod config;
 mod core;
+mod styles;
 mod theme;
 mod views;
 

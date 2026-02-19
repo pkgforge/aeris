@@ -6,56 +6,62 @@ use iced::{
 use crate::{
     app::message::Message,
     core::{adapter::AdapterInfo, capabilities::Capabilities},
+    styles::{self, font_size, spacing},
 };
 
 pub fn view(info: &AdapterInfo) -> Element<'_, Message> {
-    let header = text("Adapter Info").size(22);
+    let header = text("Adapter Info").size(font_size::TITLE);
 
-    let name_row = row![text("Name").size(14).width(120), text(&info.name).size(14),].spacing(8);
+    let name_row = row![
+        text("Name").size(font_size::BODY).width(120),
+        text(&info.name).size(font_size::BODY),
+    ]
+    .spacing(spacing::SM);
 
     let version_row = row![
-        text("Version").size(14).width(120),
-        text(&info.version).size(14),
+        text("Version").size(font_size::BODY).width(120),
+        text(&info.version).size(font_size::BODY),
     ]
-    .spacing(8);
+    .spacing(spacing::SM);
 
-    let mut type_row = row![text("Type").size(14).width(120)].spacing(8);
+    let mut type_row = row![text("Type").size(font_size::BODY).width(120)].spacing(spacing::SM);
     if info.is_builtin {
         type_row = type_row.push(
-            container(text("Built-in").size(11))
-                .padding([2, 6])
-                .style(container::bordered_box),
+            container(text("Built-in").size(font_size::CAPTION))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_primary),
         );
     } else {
-        type_row = type_row.push(text("Plugin").size(14));
+        type_row = type_row.push(text("Plugin").size(font_size::BODY));
     }
 
     let desc_row = row![
-        text("Description").size(14).width(120),
-        text(&info.description).size(14),
+        text("Description").size(font_size::BODY).width(120),
+        text(&info.description).size(font_size::BODY),
     ]
-    .spacing(8);
+    .spacing(spacing::SM);
 
-    let info_card = column![name_row, version_row, type_row, desc_row].spacing(8);
+    let info_card =
+        container(column![name_row, version_row, type_row, desc_row].spacing(spacing::SM))
+            .padding(spacing::LG)
+            .width(Length::Fill)
+            .style(styles::card);
 
-    let caps_header = text("Capabilities").size(16);
+    let caps_header = text("Capabilities").size(font_size::HEADING);
     let caps_view = capabilities_view(&info.capabilities);
 
     let content = column![
         header,
-        container(info_card)
-            .padding(12)
-            .width(Length::Fill)
-            .style(container::bordered_box),
+        info_card,
         rule::horizontal(1),
         caps_header,
-        caps_view,
+        caps_view
     ]
-    .spacing(16)
+    .spacing(spacing::LG)
     .width(Length::Fill);
 
     container(scrollable(content).height(Length::Fill))
-        .padding(20)
+        .padding(spacing::XL)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -94,58 +100,36 @@ fn capabilities_view(caps: &Capabilities) -> Element<'_, Message> {
         .map(|(name, supported)| capability_badge(name, supported))
         .collect();
 
-    // Wrap badges into rows of ~6
     let mut rows: Vec<Element<'_, Message>> = Vec::new();
     let mut current_row: Vec<Element<'_, Message>> = Vec::new();
     for badge in badges {
         current_row.push(badge);
         if current_row.len() >= 6 {
-            rows.push(row(std::mem::take(&mut current_row)).spacing(6).into());
+            rows.push(
+                row(std::mem::take(&mut current_row))
+                    .spacing(spacing::XS)
+                    .into(),
+            );
         }
     }
     if !current_row.is_empty() {
-        rows.push(row(current_row).spacing(6).into());
+        rows.push(row(current_row).spacing(spacing::XS).into());
     }
 
-    column(rows).spacing(6).into()
+    column(rows).spacing(spacing::XS).into()
 }
 
 fn capability_badge<'a>(name: &str, supported: bool) -> Element<'a, Message> {
-    let label = text(name.to_string()).size(11);
+    let label = text(name.to_string()).size(font_size::CAPTION);
 
-    let style = if supported {
-        cap_supported_style
+    let style: fn(&iced::Theme) -> container::Style = if supported {
+        styles::badge_success
     } else {
-        cap_unsupported_style
+        styles::badge_neutral
     };
 
-    container(label).padding([3, 8]).style(style).into()
-}
-
-fn cap_supported_style(theme: &iced::Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(palette.success.weak.color.into()),
-        border: iced::Border {
-            radius: 4.0.into(),
-            width: 1.0,
-            color: palette.success.base.color,
-        },
-        text_color: Some(palette.success.strong.color),
-        ..Default::default()
-    }
-}
-
-fn cap_unsupported_style(theme: &iced::Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(palette.background.weak.color.into()),
-        border: iced::Border {
-            radius: 4.0.into(),
-            width: 1.0,
-            color: palette.background.strong.color,
-        },
-        text_color: Some(palette.background.strong.color),
-        ..Default::default()
-    }
+    container(label)
+        .padding([3.0, spacing::SM])
+        .style(style)
+        .into()
 }

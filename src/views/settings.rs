@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use iced::{
-    Element, Length,
+    Alignment, Element, Length,
     widget::{
         button, column, container, pick_list, row, rule, scrollable, text, text_input, toggler,
     },
@@ -18,6 +18,7 @@ use crate::{
         config::{AdapterConfig, ConfigFieldType, ConfigSchema, ConfigValue},
         privilege::PackageMode,
     },
+    styles::{self, font_size, spacing},
 };
 
 #[derive(Debug)]
@@ -90,7 +91,7 @@ fn render_config_field<'a>(
     value: Option<&ConfigValue>,
     default: Option<&ConfigValue>,
     original: Option<&ConfigValue>,
-    aeris_managed: bool,
+    _aeris_managed: bool,
 ) -> Element<'a, Message> {
     let key_owned = key.to_string();
 
@@ -104,7 +105,7 @@ fn render_config_field<'a>(
                 },
             };
             row![
-                text(label).size(14).width(Length::Fill),
+                text(label).size(font_size::BODY).width(Length::Fill),
                 toggler(checked).on_toggle(move |v| {
                     Message::Settings(SettingsMessage::AdapterFieldChanged(
                         key_owned.clone(),
@@ -112,7 +113,7 @@ fn render_config_field<'a>(
                     ))
                 }),
             ]
-            .align_y(iced::Alignment::Center)
+            .align_y(Alignment::Center)
             .into()
         }
         ConfigFieldType::Text => {
@@ -121,7 +122,7 @@ fn render_config_field<'a>(
                 _ => String::new(),
             };
             row![
-                text(label).size(14).width(Length::Fill),
+                text(label).size(font_size::BODY).width(Length::Fill),
                 text_input("default", &current)
                     .on_input(move |s| {
                         Message::Settings(SettingsMessage::AdapterFieldChanged(
@@ -131,7 +132,7 @@ fn render_config_field<'a>(
                     })
                     .width(240),
             ]
-            .align_y(iced::Alignment::Center)
+            .align_y(Alignment::Center)
             .into()
         }
         ConfigFieldType::PathList => {
@@ -147,7 +148,7 @@ fn render_config_field<'a>(
             let browse_key = key_owned.clone();
             let revert_key = key_owned.clone();
             let mut r = row![
-                text(label).size(14).width(Length::Fill),
+                text(label).size(font_size::BODY).width(Length::Fill),
                 text_input("default", &current)
                     .on_input(move |s| {
                         Message::Settings(SettingsMessage::AdapterFieldChanged(
@@ -156,22 +157,22 @@ fn render_config_field<'a>(
                         ))
                     })
                     .width(200),
-                button(text("Browse").size(13))
+                button(text("Browse").size(font_size::SMALL))
                     .on_press(Message::Settings(SettingsMessage::BrowseAdapterField(
                         browse_key,
                     )))
-                    .padding([4, 10]),
+                    .padding([spacing::XXS, 10.0]),
             ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center);
+            .spacing(spacing::XXS)
+            .align_y(Alignment::Center);
             if changed {
                 r = r.push(
-                    button(text("Revert").size(13))
+                    button(text("Revert").size(font_size::SMALL))
                         .on_press(Message::Settings(SettingsMessage::RevertAdapterField(
                             revert_key,
                         )))
                         .style(button::secondary)
-                        .padding([4, 10]),
+                        .padding([spacing::XXS, 10.0]),
                 );
             }
             r.into()
@@ -184,7 +185,7 @@ fn render_config_field<'a>(
             let browse_key = key_owned.clone();
             let revert_key = key_owned.clone();
             let mut r = row![
-                text(label).size(14).width(Length::Fill),
+                text(label).size(font_size::BODY).width(Length::Fill),
                 text_input("auto-detect", &current)
                     .on_input(move |s| {
                         Message::Settings(SettingsMessage::AdapterAerisFieldChanged(
@@ -193,22 +194,22 @@ fn render_config_field<'a>(
                         ))
                     })
                     .width(200),
-                button(text("Browse").size(13))
+                button(text("Browse").size(font_size::SMALL))
                     .on_press(Message::Settings(SettingsMessage::BrowseExecutableField(
                         browse_key,
                     )))
-                    .padding([4, 10]),
+                    .padding([spacing::XXS, 10.0]),
             ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center);
+            .spacing(spacing::XXS)
+            .align_y(Alignment::Center);
             if !current.is_empty() {
                 r = r.push(
-                    button(text("Clear").size(13))
+                    button(text("Clear").size(font_size::SMALL))
                         .on_press(Message::Settings(SettingsMessage::RevertAdapterAerisField(
                             revert_key,
                         )))
                         .style(button::secondary)
-                        .padding([4, 10]),
+                        .padding([spacing::XXS, 10.0]),
                 );
             }
             r.into()
@@ -224,7 +225,7 @@ fn render_config_field<'a>(
                 _ => String::new(),
             };
             row![
-                text(label).size(14).width(Length::Fill),
+                text(label).size(font_size::BODY).width(Length::Fill),
                 text_input(&placeholder, &current)
                     .on_input(move |s| {
                         Message::Settings(SettingsMessage::AdapterFieldChanged(
@@ -234,7 +235,7 @@ fn render_config_field<'a>(
                     })
                     .width(80),
             ]
-            .align_y(iced::Alignment::Center)
+            .align_y(Alignment::Center)
             .into()
         }
         ConfigFieldType::Select(options) => {
@@ -247,14 +248,14 @@ fn render_config_field<'a>(
             };
             if options.is_empty() {
                 row![
-                    text(label).size(14).width(Length::Fill),
-                    text(current).size(14),
+                    text(label).size(font_size::BODY).width(Length::Fill),
+                    text(current).size(font_size::BODY),
                 ]
-                .align_y(iced::Alignment::Center)
+                .align_y(Alignment::Center)
                 .into()
             } else {
                 row![
-                    text(label).size(14).width(Length::Fill),
+                    text(label).size(font_size::BODY).width(Length::Fill),
                     pick_list(options.clone(), Some(current), move |v| {
                         Message::Settings(SettingsMessage::AdapterFieldChanged(
                             key_owned.clone(),
@@ -263,7 +264,7 @@ fn render_config_field<'a>(
                     },)
                     .width(160),
                 ]
-                .align_y(iced::Alignment::Center)
+                .align_y(Alignment::Center)
                 .into()
             }
         }
@@ -271,60 +272,79 @@ fn render_config_field<'a>(
 }
 
 pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Message> {
-    let header = text("Settings").size(22);
+    let header = text("Settings").size(font_size::TITLE);
 
-    let appearance_header = text("Appearance").size(16);
-    let theme_row = row![
-        text("Theme").size(14).width(Length::Fill),
-        pick_list(&AppTheme::ALL[..], Some(state.selected_theme), |t| {
-            Message::Settings(SettingsMessage::ThemeChanged(t))
-        },)
-        .width(160),
-    ]
-    .align_y(iced::Alignment::Center);
+    let appearance_section = container(
+        column![
+            text("Appearance").size(font_size::HEADING),
+            row![
+                text("Theme").size(font_size::BODY).width(Length::Fill),
+                pick_list(&AppTheme::ALL[..], Some(state.selected_theme), |t| {
+                    Message::Settings(SettingsMessage::ThemeChanged(t))
+                },)
+                .width(160),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10)
+        .padding(spacing::LG),
+    )
+    .width(Length::Fill)
+    .style(styles::settings_card);
 
-    let general_header = text("General").size(16);
-    let startup_row = row![
-        text("Startup view").size(14).width(Length::Fill),
-        pick_list(&VIEW_OPTIONS[..], Some(state.startup_view), |v| {
-            Message::Settings(SettingsMessage::StartupViewChanged(v))
-        })
-        .width(160),
-    ]
-    .align_y(iced::Alignment::Center);
+    let general_section = container(
+        column![
+            text("General").size(font_size::HEADING),
+            row![
+                text("Startup view")
+                    .size(font_size::BODY)
+                    .width(Length::Fill),
+                pick_list(&VIEW_OPTIONS[..], Some(state.startup_view), |v| {
+                    Message::Settings(SettingsMessage::StartupViewChanged(v))
+                })
+                .width(160),
+            ]
+            .align_y(Alignment::Center),
+            row![
+                text("Notifications")
+                    .size(font_size::BODY)
+                    .width(Length::Fill),
+                toggler(state.notifications)
+                    .on_toggle(|v| { Message::Settings(SettingsMessage::NotificationsToggled(v)) }),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10)
+        .padding(spacing::LG),
+    )
+    .width(Length::Fill)
+    .style(styles::settings_card);
 
-    let notifications_row = row![
-        text("Notifications").size(14).width(Length::Fill),
-        toggler(state.notifications)
-            .on_toggle(|v| { Message::Settings(SettingsMessage::NotificationsToggled(v)) }),
-    ]
-    .align_y(iced::Alignment::Center);
-
-    let mut aeris_save_btn = button(text("Save Aeris Settings").size(13))
-        .padding([6, 14])
+    let mut aeris_save_btn = button(text("Save Aeris Settings").size(font_size::SMALL))
+        .padding([spacing::XS, 14.0])
         .style(button::primary);
     if state.aeris_dirty && !state.saving {
         aeris_save_btn = aeris_save_btn.on_press(Message::Settings(SettingsMessage::SaveAeris));
     }
 
-    let mut aeris_section = column![
-        appearance_header,
-        theme_row,
-        general_header,
-        startup_row,
-        notifications_row,
-        aeris_save_btn,
-    ]
-    .spacing(10);
+    let mut aeris_section =
+        column![appearance_section, general_section, aeris_save_btn].spacing(spacing::MD);
 
     if let Some(ref err) = state.aeris_save_error {
-        aeris_section = aeris_section.push(text(format!("Error: {err}")).size(12));
+        aeris_section = aeris_section.push(
+            container(text(format!("Error: {err}")).size(font_size::CAPTION + 1.0))
+                .padding([spacing::XS, spacing::MD])
+                .style(styles::error_banner),
+        );
     }
     if state.aeris_save_success {
-        aeris_section = aeris_section.push(text("Saved").size(12));
+        aeris_section = aeris_section.push(
+            container(text("Saved").size(font_size::CAPTION + 1.0))
+                .padding([spacing::XXS, 10.0])
+                .style(styles::badge_success),
+        );
     }
 
-    // Adapter section - dynamic rendering from schema
     let mut adapter_section = column![].spacing(10);
 
     if let Some(ref schema) = state.adapter_schema {
@@ -336,20 +356,29 @@ pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Mess
             PackageMode::User => "User",
             PackageMode::System => "System",
         };
-        adapter_section =
-            adapter_section.push(text(format!("Adapter: {capitalized} ({mode_label})")).size(16));
+        adapter_section = adapter_section
+            .push(text(format!("Adapter: {capitalized} ({mode_label})")).size(font_size::HEADING));
 
         let mut last_section: Option<Option<&String>> = None;
+        let mut current_group: Vec<Element<'a, Message>> = Vec::new();
 
         for field in &schema.fields {
             let current_section = field.section.as_ref();
 
             if last_section.is_none() || last_section.unwrap() != current_section {
-                if last_section.is_some() {
-                    adapter_section = adapter_section.push(rule::horizontal(1));
+                if !current_group.is_empty() {
+                    adapter_section = adapter_section.push(
+                        container(
+                            column(std::mem::take(&mut current_group))
+                                .spacing(10)
+                                .padding(spacing::LG),
+                        )
+                        .width(Length::Fill)
+                        .style(styles::settings_card),
+                    );
                 }
                 if let Some(section_name) = current_section {
-                    adapter_section = adapter_section.push(text(section_name.as_str()).size(14));
+                    current_group.push(text(section_name.as_str()).size(font_size::BODY).into());
                 }
                 last_section = Some(current_section);
             }
@@ -367,7 +396,7 @@ pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Mess
             } else {
                 state.adapter_config_original.values.get(&field.key)
             };
-            adapter_section = adapter_section.push(render_config_field(
+            current_group.push(render_config_field(
                 &field.key,
                 &field.label,
                 &field.field_type,
@@ -378,8 +407,16 @@ pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Mess
             ));
         }
 
-        let mut adapter_save_btn = button(text("Save Adapter Settings").size(13))
-            .padding([6, 14])
+        if !current_group.is_empty() {
+            adapter_section = adapter_section.push(
+                container(column(current_group).spacing(10).padding(spacing::LG))
+                    .width(Length::Fill)
+                    .style(styles::settings_card),
+            );
+        }
+
+        let mut adapter_save_btn = button(text("Save Adapter Settings").size(font_size::SMALL))
+            .padding([spacing::XS, 14.0])
             .style(button::primary);
         if state.adapter_dirty && !state.saving {
             adapter_save_btn =
@@ -388,19 +425,27 @@ pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Mess
         adapter_section = adapter_section.push(adapter_save_btn);
 
         if let Some(ref err) = state.adapter_save_error {
-            adapter_section = adapter_section.push(text(format!("Error: {err}")).size(12));
+            adapter_section = adapter_section.push(
+                container(text(format!("Error: {err}")).size(font_size::CAPTION + 1.0))
+                    .padding([spacing::XS, spacing::MD])
+                    .style(styles::error_banner),
+            );
         }
         if state.adapter_save_success {
-            adapter_section = adapter_section.push(text("Saved").size(12));
+            adapter_section = adapter_section.push(
+                container(text("Saved").size(font_size::CAPTION + 1.0))
+                    .padding([spacing::XXS, 10.0])
+                    .style(styles::badge_success),
+            );
         }
     }
 
-    let content = column![header, aeris_section, rule::horizontal(1), adapter_section,]
-        .spacing(16)
+    let content = column![header, aeris_section, rule::horizontal(1), adapter_section]
+        .spacing(spacing::LG)
         .width(Length::Fill);
 
     container(scrollable(content).height(Length::Fill))
-        .padding(20)
+        .padding(spacing::XL)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
