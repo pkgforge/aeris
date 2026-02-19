@@ -36,13 +36,23 @@ jobs:
       matrix:
         build:
           - {
-              NAME: aarch64-linux,
+              NAME: aarch64-linux-gnu,
               TARGET: aarch64-unknown-linux-gnu,
               RUNNER: ubuntu-24.04-arm
             }
           - {
-              NAME: x86_64-linux,
+              NAME: aarch64-linux-musl,
+              TARGET: aarch64-unknown-linux-musl,
+              RUNNER: ubuntu-24.04-arm
+            }
+          - {
+              NAME: x86_64-linux-gnu,
               TARGET: x86_64-unknown-linux-gnu,
+              RUNNER: ubuntu-latest
+            }
+          - {
+              NAME: x86_64-linux-musl,
+              TARGET: x86_64-unknown-linux-musl,
               RUNNER: ubuntu-latest
             }
     steps:
@@ -81,13 +91,8 @@ jobs:
           ARTIFACT: "aeris-${{ matrix.build.NAME }}"
         shell: bash
         run: |
-          cp release/aeris "${ARTIFACT}"
-          b3sum "${ARTIFACT}" > "${ARTIFACT}.b3sum"
-
-          tar -czvf "${ARTIFACT}.tar.gz" release/
-          b3sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.b3sum"
-          bash -c 'realpath "${ARTIFACT}" ; realpath "${ARTIFACT}.tar.gz"' | xargs -I "{}" bash -c \
-           'printf "\nFile: $(basename {})\n  Type: $(file -b {})\n  B3sum: $(b3sum {} | cut -d" " -f1)\n  SHA256sum: $(sha256sum {} | cut -d" " -f1)\n  Size: $(du -bh {} | cut -f1)\n"'
+          tar -cJvf "${ARTIFACT}.tar.xz" release/
+          b3sum "${ARTIFACT}.tar.xz" > "${ARTIFACT}.tar.xz.b3sum"
 
       - name: Publish to GitHub (nightly)
         uses: svenstaro/upload-release-action@v2
