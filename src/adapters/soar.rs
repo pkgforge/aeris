@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 use soar_config::config::Config;
 use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
@@ -17,15 +21,24 @@ use crate::core::{
 };
 
 pub struct SoarAdapter {
-    user_ctx: SoarContext,
-    system_ctx: Option<SoarContext>,
+    user_ctx: RwLock<SoarContext>,
+    system_ctx: RwLock<Option<SoarContext>>,
+    user_events: EventSinkHandle,
     has_system: bool,
     info: AdapterInfo,
 }
 
 impl SoarAdapter {
+    fn user_ctx(&self) -> SoarContext {
+        self.user_ctx.read().unwrap().clone()
+    }
+
+    fn system_ctx(&self) -> Option<SoarContext> {
+        self.system_ctx.read().unwrap().clone()
+    }
+
     pub fn repo_count(&self) -> usize {
-        self.user_ctx.config().repositories.len()
+        self.user_ctx().config().repositories.len()
     }
 
     pub fn repo_count_for_mode(&self, mode: PackageMode) -> usize {
@@ -46,8 +59,9 @@ impl SoarAdapter {
             return self.install_system_package(query, settings).await;
         }
 
+        let ctx = self.user_ctx();
         let options = InstallOptions::default();
-        let results = install::resolve_packages(&self.user_ctx, &[query.to_string()], &options)
+        let results = install::resolve_packages(&ctx, &[query.to_string()], &options)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -76,7 +90,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No packages to install".into()));
         }
 
-        let report = install::perform_installation(&self.user_ctx, targets, &options)
+        let report = install::perform_installation(&ctx, targets, &options)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -120,12 +134,12 @@ impl SoarAdapter {
     }
 
     async fn list_installed_system(&self) -> Result<Vec<InstalledPackage>> {
-        let ctx = match &self.system_ctx {
+        let ctx = match self.system_ctx() {
             Some(ctx) => ctx,
             None => return Ok(vec![]),
         };
 
-        let result = soar_operations::list::list_installed(ctx, None)
+        let result = soar_operations::list::list_installed(&ctx, None)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
         Ok(result
@@ -196,7 +210,8 @@ impl SoarAdapter {
     }
 
     pub async fn remove_package(&self, query: &str) -> Result<()> {
-        let results = remove::resolve_removals(&self.user_ctx, &[query.to_string()], false)
+        let ctx = self.user_ctx();
+        let results = remove::resolve_removals(&ctx, &[query.to_string()], false)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
         let mut to_remove = Vec::new();
@@ -218,7 +233,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No packages to remove".into()));
         }
 
-        let report = remove::perform_removal(&self.user_ctx, to_remove)
+        let report = remove::perform_removal(&ctx, to_remove)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -230,7 +245,8 @@ impl SoarAdapter {
     }
 
     pub async fn update_package(&self, query: &str) -> Result<()> {
-        let updates = update::check_updates(&self.user_ctx, Some(&[query.to_string()]))
+        let ctx = self.user_ctx();
+        let updates = update::check_updates(&ctx, Some(&[query.to_string()]))
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -238,7 +254,7 @@ impl SoarAdapter {
             return Err(AdapterError::Other("No updates available".into()));
         }
 
-        let report = update::perform_update(&self.user_ctx, updates, false, false)
+        let report = update::perform_update(&ctx, updates, false, false)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -250,7 +266,8 @@ impl SoarAdapter {
     }
 
     pub async fn update_all(&self) -> Result<()> {
-        let updates = update::check_updates(&self.user_ctx, None)
+        let ctx = self.user_ctx();
+        let updates = update::check_updates(&ctx, None)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -258,7 +275,7 @@ impl SoarAdapter {
             return Ok(());
         }
 
-        let report = update::perform_update(&self.user_ctx, updates, false, false)
+        let report = update::perform_update(&ctx, updates, false, false)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -270,7 +287,8 @@ impl SoarAdapter {
     }
 
     fn build_config_schema(&self) -> ConfigSchema {
-        let profile_keys: Vec<String> = self.user_ctx.config().profile.keys().cloned().collect();
+        let ctx = self.user_ctx();
+        let profile_keys: Vec<String> = ctx.config().profile.keys().cloned().collect();
 
         ConfigSchema {
             adapter_id: "soar".into(),
@@ -405,7 +423,8 @@ impl SoarAdapter {
     fn build_initial_config(&self) -> AdapterConfig {
         use std::collections::HashMap;
 
-        let cfg = self.user_ctx.config();
+        let ctx = self.user_ctx();
+        let cfg = ctx.config();
         let mut values = HashMap::new();
 
         values.insert(
@@ -475,7 +494,7 @@ impl SoarAdapter {
     pub fn new(config: Config) -> Result<(Self, std::sync::mpsc::Receiver<SoarEvent>)> {
         let (sink, receiver) = ChannelSink::new();
         let events: EventSinkHandle = Arc::new(sink);
-        let user_ctx = SoarContext::new(config, events);
+        let user_ctx = SoarContext::new(config, events.clone());
 
         let has_system = Self::can_run_system();
 
@@ -488,8 +507,9 @@ impl SoarAdapter {
 
         Ok((
             Self {
-                user_ctx,
-                system_ctx,
+                user_ctx: RwLock::new(user_ctx),
+                system_ctx: RwLock::new(system_ctx),
+                user_events: events,
                 has_system,
                 info: AdapterInfo {
                     id: "soar".into(),
@@ -540,25 +560,21 @@ impl SoarAdapter {
         Some(SoarContext::new(config, events))
     }
 
-    pub fn system_config(&self) -> Option<&Config> {
-        self.system_ctx.as_ref().map(|ctx| ctx.config())
-    }
-
-    /// Get the config for the given mode
-    pub fn config_for_mode(&self, mode: PackageMode) -> &Config {
+    /// Get the config for the given mode (returns owned Config since contexts are behind RwLock)
+    pub fn config_for_mode(&self, mode: PackageMode) -> Config {
         match mode {
             PackageMode::System => self
-                .system_ctx
-                .as_ref()
-                .map(|ctx| ctx.config())
-                .unwrap_or_else(|| self.user_ctx.config()),
-            PackageMode::User => self.user_ctx.config(),
+                .system_ctx()
+                .map(|ctx| ctx.config().clone())
+                .unwrap_or_else(|| self.user_ctx().config().clone()),
+            PackageMode::User => self.user_ctx().config().clone(),
         }
     }
 
     /// Build initial config values for the given mode
     pub fn build_initial_config_for_mode(&self, mode: PackageMode) -> AdapterConfig {
         let cfg = self.config_for_mode(mode);
+        let cfg = &cfg;
         let mut values = HashMap::new();
 
         values.insert(
@@ -640,14 +656,14 @@ impl SoarAdapter {
         mode: PackageMode,
     ) -> Result<Vec<Package>> {
         let ctx = match mode {
-            PackageMode::System => match &self.system_ctx {
+            PackageMode::System => match self.system_ctx() {
                 Some(ctx) => ctx,
                 None => return Ok(vec![]),
             },
-            PackageMode::User => &self.user_ctx,
+            PackageMode::User => self.user_ctx(),
         };
 
-        let result = soar_operations::search::search_packages(ctx, query, false, limit)
+        let result = soar_operations::search::search_packages(&ctx, query, false, limit)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -717,7 +733,8 @@ impl Adapter for SoarAdapter {
     }
 
     async fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<Package>> {
-        let result = soar_operations::search::search_packages(&self.user_ctx, query, false, limit)
+        let ctx = self.user_ctx();
+        let result = soar_operations::search::search_packages(&ctx, query, false, limit)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -746,8 +763,9 @@ impl Adapter for SoarAdapter {
             return self.remove_system_package(packages, &HashMap::new()).await;
         }
 
+        let ctx = self.user_ctx();
         let pkg_ids: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
-        let results = remove::resolve_removals(&self.user_ctx, &pkg_ids, false)
+        let results = remove::resolve_removals(&ctx, &pkg_ids, false)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
         let mut to_remove = Vec::new();
@@ -771,7 +789,7 @@ impl Adapter for SoarAdapter {
             return Err(AdapterError::Other("No packages to remove".into()));
         }
 
-        remove::perform_removal(&self.user_ctx, to_remove)
+        remove::perform_removal(&ctx, to_remove)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -792,7 +810,8 @@ impl Adapter for SoarAdapter {
             return self.list_installed_system().await;
         }
 
-        let result = soar_operations::list::list_installed(&self.user_ctx, None)
+        let ctx = self.user_ctx();
+        let result = soar_operations::list::list_installed(&ctx, None)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
         Ok(result
@@ -830,15 +849,15 @@ impl Adapter for SoarAdapter {
 
     async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
         let ctx = if mode == PackageMode::System {
-            match &self.system_ctx {
+            match self.system_ctx() {
                 Some(ctx) => ctx,
                 None => return Ok(vec![]),
             }
         } else {
-            &self.user_ctx
+            self.user_ctx()
         };
 
-        let updates = update::check_updates(ctx, None)
+        let updates = update::check_updates(&ctx, None)
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
@@ -870,25 +889,73 @@ impl Adapter for SoarAdapter {
     }
 
     async fn sync(&self, _progress: Option<ProgressSender>) -> Result<()> {
-        self.user_ctx
+        self.user_ctx()
             .sync()
             .await
             .map_err(|e| AdapterError::Other(e.to_string()))
     }
 
     async fn list_repositories(&self) -> Result<Vec<Repository>> {
-        Ok(self
-            .user_ctx
+        let ctx = self.user_ctx();
+        Ok(ctx
             .config()
             .repositories
             .iter()
             .map(|r| Repository {
                 name: r.name.clone(),
                 url: r.url.clone(),
-                enabled: true,
+                enabled: r.is_enabled(),
                 description: None,
             })
             .collect())
+    }
+
+    async fn set_repo_enabled(&self, name: &str, enabled: bool, mode: PackageMode) -> Result<()> {
+        use toml_edit::DocumentMut;
+
+        let config_path = match mode {
+            PackageMode::User => soar_config::config::CONFIG_PATH
+                .read()
+                .unwrap()
+                .to_path_buf(),
+            PackageMode::System => PathBuf::from("/etc/soar/config.toml"),
+        };
+
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+        let mut doc: DocumentMut = content
+            .parse()
+            .map_err(|e: toml_edit::TomlError| AdapterError::Other(e.to_string()))?;
+
+        if let Some(repos) = doc
+            .get_mut("repositories")
+            .and_then(|v| v.as_array_of_tables_mut())
+        {
+            for repo in repos.iter_mut() {
+                if repo.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    repo["enabled"] = toml_edit::value(enabled);
+                    break;
+                }
+            }
+        }
+
+        std::fs::write(&config_path, doc.to_string())
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        // Recreate the context with fresh config so enabled/disabled state takes effect
+        match mode {
+            PackageMode::User => {
+                let new_config = Config::new().map_err(|e| AdapterError::Other(e.to_string()))?;
+                let new_ctx = SoarContext::new(new_config, self.user_events.clone());
+                *self.user_ctx.write().unwrap() = new_ctx;
+            }
+            PackageMode::System => {
+                let new_ctx = Self::create_system_context();
+                *self.system_ctx.write().unwrap() = new_ctx;
+            }
+        }
+
+        Ok(())
     }
 
     async fn package_detail(&self, _package_id: &str) -> Result<PackageDetail> {
@@ -967,6 +1034,7 @@ impl Adapter for SoarAdapter {
         // Preserve repositories if not already in the document
         if doc.get("repositories").is_none() {
             let cfg = self.config_for_mode(mode);
+            let cfg = &cfg;
             if !cfg.repositories.is_empty() {
                 let mut repos = toml_edit::ArrayOfTables::new();
                 for repo in &cfg.repositories {

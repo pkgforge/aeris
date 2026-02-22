@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use toml_edit::DocumentMut;
 
 use crate::app::{AppTheme, View};
 
@@ -70,50 +69,6 @@ impl AerisConfig {
             Some("installed") => View::Installed,
             Some("updates") => View::Updates,
             _ => View::Dashboard,
-        }
-    }
-}
-
-pub fn save_repo_enabled(repo_name: &str, enabled: bool) -> Result<(), String> {
-    let config_path = soar_config::config::CONFIG_PATH
-        .read()
-        .unwrap()
-        .to_path_buf();
-
-    let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let mut doc: DocumentMut = content
-        .parse()
-        .map_err(|e: toml_edit::TomlError| e.to_string())?;
-
-    if let Some(repos) = doc
-        .get_mut("repositories")
-        .and_then(|v| v.as_array_of_tables_mut())
-    {
-        for repo in repos.iter_mut() {
-            if repo.get("name").and_then(|v| v.as_str()) == Some(repo_name) {
-                repo["enabled"] = toml_edit::value(enabled);
-                break;
-            }
-        }
-    }
-
-    std::fs::write(&config_path, doc.to_string()).map_err(|e| e.to_string())
-}
-
-fn set_opt_str(doc: &mut DocumentMut, key: &str, value: Option<&str>) {
-    match value {
-        Some(v) => doc[key] = toml_edit::value(v),
-        None => {
-            doc.remove(key);
-        }
-    }
-}
-
-fn set_opt_bool(doc: &mut DocumentMut, key: &str, value: Option<bool>) {
-    match value {
-        Some(v) => doc[key] = toml_edit::value(v),
-        None => {
-            doc.remove(key);
         }
     }
 }

@@ -156,6 +156,15 @@ pub trait Adapter: Send + Sync {
         Err(AdapterError::NotSupported)
     }
 
+    async fn set_repo_enabled(
+        &self,
+        _name: &str,
+        _enabled: bool,
+        _mode: PackageMode,
+    ) -> Result<()> {
+        Err(AdapterError::NotSupported)
+    }
+
     fn config_schema(&self) -> Option<ConfigSchema> {
         None
     }

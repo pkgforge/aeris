@@ -2,12 +2,18 @@ use iced::{Border, Color, Shadow, Theme, Vector, border::Radius, widget::contain
 
 pub mod font_size {
     pub const DISPLAY: f32 = 32.0;
-    pub const TITLE: f32 = 22.0;
-    pub const HEADING: f32 = 17.0;
+    pub const TITLE: f32 = 20.0;
+    pub const HEADING: f32 = 16.0;
     pub const BODY: f32 = 14.0;
     pub const SMALL: f32 = 13.0;
     pub const CAPTION: f32 = 11.0;
     pub const BADGE: f32 = 10.0;
+}
+
+pub mod line_height {
+    pub const TIGHT: f32 = 1.2;
+    pub const NORMAL: f32 = 1.4;
+    pub const RELAXED: f32 = 1.6;
 }
 
 pub mod spacing {
@@ -19,6 +25,16 @@ pub mod spacing {
     pub const LG: f32 = 16.0;
     pub const XL: f32 = 20.0;
     pub const XXL: f32 = 24.0;
+    pub const XXXL: f32 = 32.0;
+}
+
+pub mod radius {
+    pub const NONE: f32 = 0.0;
+    pub const SM: f32 = 4.0;
+    pub const MD: f32 = 6.0;
+    pub const LG: f32 = 8.0;
+    pub const XL: f32 = 12.0;
+    pub const FULL: f32 = 9999.0;
 }
 
 fn radius_left(r: f32) -> Radius {
@@ -27,6 +43,22 @@ fn radius_left(r: f32) -> Radius {
         top_right: 0.0,
         bottom_right: 0.0,
         bottom_left: r,
+    }
+}
+
+pub fn loading_spinner(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        text_color: Some(palette.primary.base.color),
+        ..Default::default()
+    }
+}
+
+pub fn skeleton_loader(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(palette.background.weak.color.into()),
+        ..Default::default()
     }
 }
 
@@ -39,7 +71,7 @@ pub fn header_container(theme: &Theme) -> container::Style {
         border: Border {
             width: 1.0,
             color: palette.background.strong.color,
-            radius: 0.0.into(),
+            radius: radius::NONE.into(),
         },
         ..Default::default()
     }
@@ -55,7 +87,7 @@ pub fn header_icon_button(
             background: Some(palette.background.strong.color.into()),
             text_color: palette.background.base.text,
             border: Border {
-                radius: 14.0.into(),
+                radius: radius::FULL.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -64,7 +96,7 @@ pub fn header_icon_button(
             background: None,
             text_color: palette.background.base.text,
             border: Border {
-                radius: 14.0.into(),
+                radius: radius::FULL.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -93,7 +125,7 @@ pub fn sidebar_active_button(theme: &Theme) -> iced::widget::button::Style {
         background: Some(palette.primary.weak.color.into()),
         text_color: palette.primary.base.text,
         border: Border {
-            radius: 6.0.into(),
+            radius: radius::MD.into(),
             width: 0.0,
             ..Default::default()
         },
@@ -117,7 +149,16 @@ pub fn sidebar_button(
             background: Some(palette.background.strong.color.into()),
             text_color,
             border: Border {
-                radius: 6.0.into(),
+                radius: radius::MD.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        iced::widget::button::Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.primary.weak.color.into()),
+            text_color: palette.primary.base.text,
+            border: Border {
+                radius: radius::MD.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -126,7 +167,7 @@ pub fn sidebar_button(
             background: None,
             text_color,
             border: Border {
-                radius: 6.0.into(),
+                radius: radius::MD.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -141,7 +182,7 @@ pub fn nav_icon_active(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.primary.base.color.into()),
         border: Border {
-            radius: 6.0.into(),
+            radius: radius::MD.into(),
             ..Default::default()
         },
         text_color: Some(palette.primary.base.text),
@@ -155,7 +196,7 @@ pub fn nav_icon_inactive(theme: &Theme) -> container::Style {
     container::Style {
         background: None,
         border: Border {
-            radius: 6.0.into(),
+            radius: radius::MD.into(),
             ..Default::default()
         },
         text_color: Some(if is_dark {
@@ -174,7 +215,7 @@ pub fn card(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.background.base.color.into()),
         border: Border {
-            radius: 8.0.into(),
+            radius: radius::LG.into(),
             width: 1.0,
             color: palette.background.strong.color,
         },
@@ -200,7 +241,7 @@ pub fn card_button(
             background: Some(palette.background.weak.color.into()),
             text_color: palette.background.base.text,
             border: Border {
-                radius: 8.0.into(),
+                radius: radius::LG.into(),
                 width: 1.0,
                 color: palette.primary.weak.color,
             },
@@ -214,11 +255,29 @@ pub fn card_button(
             },
             snap: false,
         },
+        iced::widget::button::Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.background.strong.color.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: radius::LG.into(),
+                width: 1.0,
+                color: palette.primary.base.color,
+            },
+            shadow: Shadow {
+                color: Color {
+                    a: 0.06,
+                    ..Color::BLACK
+                },
+                offset: Vector::new(0.0, 1.0),
+                blur_radius: 4.0,
+            },
+            snap: false,
+        },
         _ => iced::widget::button::Style {
             background: Some(palette.background.base.color.into()),
             text_color: palette.background.base.text,
             border: Border {
-                radius: 8.0.into(),
+                radius: radius::LG.into(),
                 width: 1.0,
                 color: palette.background.strong.color,
             },
@@ -256,7 +315,7 @@ pub fn search_container(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.background.weak.color.into()),
         border: Border {
-            radius: 8.0.into(),
+            radius: radius::LG.into(),
             width: 1.0,
             color: palette.background.strong.color,
         },
@@ -271,7 +330,7 @@ pub fn badge_success(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.success.weak.color.into()),
         border: Border {
-            radius: 4.0.into(),
+            radius: radius::SM.into(),
             width: 1.0,
             color: palette.success.base.color,
         },
@@ -287,7 +346,7 @@ pub fn badge_warning(theme: &Theme) -> container::Style {
         container::Style {
             background: Some(Color::from_rgb(0.5, 0.38, 0.05).into()),
             border: Border {
-                radius: 4.0.into(),
+                radius: radius::SM.into(),
                 width: 1.0,
                 color: Color::from_rgb(0.75, 0.58, 0.12),
             },
@@ -298,7 +357,7 @@ pub fn badge_warning(theme: &Theme) -> container::Style {
         container::Style {
             background: Some(Color::from_rgb(1.0, 0.96, 0.88).into()),
             border: Border {
-                radius: 4.0.into(),
+                radius: radius::SM.into(),
                 width: 1.0,
                 color: Color::from_rgb(0.82, 0.65, 0.15),
             },
@@ -313,7 +372,7 @@ pub fn badge_neutral(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.background.weak.color.into()),
         border: Border {
-            radius: 4.0.into(),
+            radius: radius::SM.into(),
             width: 1.0,
             color: palette.background.strong.color,
         },
@@ -327,7 +386,7 @@ pub fn badge_danger(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.danger.weak.color.into()),
         border: Border {
-            radius: 4.0.into(),
+            radius: radius::SM.into(),
             width: 1.0,
             color: palette.danger.base.color,
         },
@@ -341,7 +400,7 @@ pub fn badge_primary(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.primary.weak.color.into()),
         border: Border {
-            radius: 4.0.into(),
+            radius: radius::SM.into(),
             width: 1.0,
             color: palette.primary.base.color,
         },
@@ -370,7 +429,7 @@ pub fn modal_card(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.background.base.color.into()),
         border: Border {
-            radius: 12.0.into(),
+            radius: radius::XL.into(),
             width: 1.0,
             color: palette.background.strong.color,
         },
@@ -391,7 +450,7 @@ pub fn stat_card_accent_left(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.primary.weak.color.into()),
         border: Border {
-            radius: radius_left(4.0),
+            radius: radius_left(radius::SM),
             width: 0.0,
             ..Default::default()
         },
@@ -408,7 +467,7 @@ pub fn progress_container(theme: &Theme) -> container::Style {
         border: Border {
             width: 1.0,
             color: palette.background.strong.color,
-            radius: 0.0.into(),
+            radius: radius::NONE.into(),
         },
         shadow: Shadow {
             color: Color {
@@ -431,7 +490,7 @@ pub fn error_banner(theme: &Theme) -> container::Style {
         border: Border {
             width: 1.0,
             color: palette.danger.base.color,
-            radius: 6.0.into(),
+            radius: radius::MD.into(),
         },
         ..Default::default()
     }
@@ -444,7 +503,7 @@ pub fn settings_card(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(palette.background.base.color.into()),
         border: Border {
-            radius: 8.0.into(),
+            radius: radius::LG.into(),
             width: 1.0,
             color: palette.background.strong.color,
         },
@@ -473,7 +532,16 @@ pub fn pill_button_danger(
             background: Some(palette.danger.base.color.into()),
             text_color: palette.danger.base.text,
             border: Border {
-                radius: 14.0.into(),
+                radius: radius::FULL.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        iced::widget::button::Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.danger.strong.color.into()),
+            text_color: palette.danger.weak.color,
+            border: Border {
+                radius: radius::FULL.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -486,7 +554,7 @@ pub fn pill_button_danger(
                 Color::from_rgb(0.6, 0.15, 0.15)
             },
             border: Border {
-                radius: 14.0.into(),
+                radius: radius::FULL.into(),
                 width: 1.0,
                 color: palette.danger.base.color,
             },
@@ -507,9 +575,19 @@ pub fn outlined_button(
             background: Some(palette.primary.weak.color.into()),
             text_color: palette.primary.strong.color,
             border: Border {
-                radius: 6.0.into(),
+                radius: radius::MD.into(),
                 width: 1.0,
                 color: palette.primary.base.color,
+            },
+            ..Default::default()
+        },
+        iced::widget::button::Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.primary.strong.color.into()),
+            text_color: palette.primary.weak.color,
+            border: Border {
+                radius: radius::MD.into(),
+                width: 1.0,
+                color: palette.primary.strong.color,
             },
             ..Default::default()
         },
@@ -517,9 +595,47 @@ pub fn outlined_button(
             background: None,
             text_color: palette.primary.base.color,
             border: Border {
-                radius: 6.0.into(),
+                radius: radius::MD.into(),
                 width: 1.0,
                 color: palette.primary.base.color,
+            },
+            ..Default::default()
+        },
+    }
+}
+
+// --- Ghost button (text-only with hover) ---
+
+pub fn ghost_button(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+    match status {
+        iced::widget::button::Status::Hovered => iced::widget::button::Style {
+            background: Some(palette.background.strong.color.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: radius::MD.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        iced::widget::button::Status::Pressed => iced::widget::button::Style {
+            background: Some(palette.background.strong.color.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: radius::MD.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        _ => iced::widget::button::Style {
+            background: None,
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: radius::MD.into(),
+                ..Default::default()
             },
             ..Default::default()
         },

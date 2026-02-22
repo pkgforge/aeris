@@ -900,9 +900,15 @@ impl App {
                 }
             }
             message::RepositoriesMessage::ToggleEnabled(name, enabled) => {
-                let repo_name = name.clone();
+                let adapter = self.adapter.clone();
+                let mode = self.current_mode;
                 return Task::perform(
-                    async move { crate::config::save_repo_enabled(&repo_name, enabled) },
+                    async move {
+                        adapter
+                            .set_repo_enabled(&name, enabled, mode)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
                     |result| {
                         Message::Repositories(message::RepositoriesMessage::ToggleResult(result))
                     },
@@ -1498,11 +1504,7 @@ impl App {
     }
 
     pub fn theme(&self) -> Option<iced::Theme> {
-        match self.selected_theme {
-            AppTheme::System => None,
-            AppTheme::Light => Some(iced::Theme::Light),
-            AppTheme::Dark => Some(iced::Theme::Dark),
-        }
+        crate::theme::resolve_theme(self.selected_theme)
     }
 }
 
