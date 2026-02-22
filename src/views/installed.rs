@@ -90,7 +90,7 @@ fn installed_card(pkg: &InstalledPackage, removing: &Option<String>) -> Element<
         .style(styles::badge_neutral);
     let adapter = container(text(pkg.package.adapter_id.clone()).size(font_size::BADGE))
         .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_neutral);
+        .style(styles::badge_adapter(&pkg.package.adapter_id));
 
     let mut header = row![name, version, adapter]
         .spacing(spacing::SM)

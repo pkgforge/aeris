@@ -141,7 +141,7 @@ fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, 
         .style(styles::badge_neutral);
     let adapter = container(text(pkg.adapter_id.clone()).size(font_size::BADGE))
         .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_neutral);
+        .style(styles::badge_adapter(&pkg.adapter_id));
 
     let header = row![name, version, adapter]
         .spacing(spacing::SM)

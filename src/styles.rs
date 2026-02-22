@@ -409,6 +409,55 @@ pub fn badge_primary(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn badge_adapter(name: &str) -> impl Fn(&Theme) -> container::Style + 'static {
+    let hue = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
+        % 360;
+    let h = hue as f32;
+
+    move |theme: &Theme| {
+        let palette = theme.extended_palette();
+        let is_dark = palette.background.base.color.r < 0.5;
+
+        let (s, l_bg, l_border, l_text) = if is_dark {
+            (0.45, 0.18, 0.35, 0.78)
+        } else {
+            (0.55, 0.92, 0.65, 0.30)
+        };
+
+        let bg = hsl_to_color(h, s, l_bg);
+        let border = hsl_to_color(h, s, l_border);
+        let text = hsl_to_color(h, s, l_text);
+
+        container::Style {
+            background: Some(bg.into()),
+            border: Border {
+                radius: radius::SM.into(),
+                width: 1.0,
+                color: border,
+            },
+            text_color: Some(text),
+            ..Default::default()
+        }
+    }
+}
+
+fn hsl_to_color(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h as u32 {
+        0..60 => (c, x, 0.0),
+        60..120 => (x, c, 0.0),
+        120..180 => (0.0, c, x),
+        180..240 => (0.0, x, c),
+        240..300 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Color::from_rgb(r + m, g + m, b + m)
+}
+
 // --- Modal ---
 
 pub fn modal_backdrop(_theme: &Theme) -> container::Style {

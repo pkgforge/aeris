@@ -437,7 +437,7 @@ impl App {
                     .map_err(|e| e.to_string())?;
 
                 for other in other_adapters {
-                    match other.search(&query, None).await {
+                    match other.search(&query, None, mode).await {
                         Ok(pkgs) => results.extend(pkgs),
                         Err(e) => log::warn!("Search failed for {}: {e}", other.info().id),
                     }
@@ -1031,7 +1031,7 @@ impl App {
                     return Task::perform(
                         async move {
                             adapter
-                                .install(&packages, None)
+                                .install(&packages, None, mode)
                                 .await
                                 .map_err(|e| e.to_string())
                                 .map(|_| ())
@@ -1285,7 +1285,15 @@ impl App {
             View::Updates => views::updates::view(&self.updates, self.current_mode),
             View::Settings => views::settings::view(&self.settings, self.current_mode),
             View::Repositories => views::repositories::view(&self.repositories, self.current_mode),
-            View::AdapterInfo => views::adapter_info::view(self.adapter.info()),
+            View::AdapterInfo => {
+                let adapters: Vec<_> = self
+                    .adapter_manager
+                    .list_adapters()
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                views::adapter_info::view(adapters)
+            }
         };
 
         let main: Element<'_, Message> = if let Some(ref op) = self.active_operation {

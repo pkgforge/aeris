@@ -9,18 +9,33 @@ use crate::{
     styles::{self, font_size, spacing},
 };
 
-pub fn view(info: &AdapterInfo) -> Element<'_, Message> {
-    let header = text("Adapter Info").size(font_size::TITLE);
+pub fn view(adapters: Vec<AdapterInfo>) -> Element<'static, Message> {
+    let header = text("Adapters").size(font_size::TITLE);
 
+    let mut content = column![header].spacing(spacing::LG).width(Length::Fill);
+
+    for info in adapters {
+        content = content.push(adapter_card(info));
+        content = content.push(rule::horizontal(1));
+    }
+
+    container(scrollable(content).height(Length::Fill))
+        .padding(spacing::XL)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn adapter_card(info: AdapterInfo) -> Element<'static, Message> {
     let name_row = row![
         text("Name").size(font_size::BODY).width(120),
-        text(&info.name).size(font_size::BODY),
+        text(info.name.clone()).size(font_size::BODY),
     ]
     .spacing(spacing::SM);
 
     let version_row = row![
         text("Version").size(font_size::BODY).width(120),
-        text(&info.version).size(font_size::BODY),
+        text(info.version.clone()).size(font_size::BODY),
     ]
     .spacing(spacing::SM);
 
@@ -32,12 +47,16 @@ pub fn view(info: &AdapterInfo) -> Element<'_, Message> {
                 .style(styles::badge_primary),
         );
     } else {
-        type_row = type_row.push(text("Plugin").size(font_size::BODY));
+        type_row = type_row.push(
+            container(text("Plugin").size(font_size::CAPTION))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_neutral),
+        );
     }
 
     let desc_row = row![
         text("Description").size(font_size::BODY).width(120),
-        text(&info.description).size(font_size::BODY),
+        text(info.description.clone()).size(font_size::BODY),
     ]
     .spacing(spacing::SM);
 
@@ -48,26 +67,14 @@ pub fn view(info: &AdapterInfo) -> Element<'_, Message> {
             .style(styles::card);
 
     let caps_header = text("Capabilities").size(font_size::HEADING);
-    let caps_view = capabilities_view(&info.capabilities);
+    let caps_view = capabilities_view(info.capabilities);
 
-    let content = column![
-        header,
-        info_card,
-        rule::horizontal(1),
-        caps_header,
-        caps_view
-    ]
-    .spacing(spacing::LG)
-    .width(Length::Fill);
-
-    container(scrollable(content).height(Length::Fill))
-        .padding(spacing::XL)
-        .width(Length::Fill)
-        .height(Length::Fill)
+    column![info_card, caps_header, caps_view]
+        .spacing(spacing::SM)
         .into()
 }
 
-fn capabilities_view(caps: &Capabilities) -> Element<'_, Message> {
+fn capabilities_view(caps: Capabilities) -> Element<'static, Message> {
     let entries: Vec<(&str, bool)> = vec![
         ("Search", caps.can_search),
         ("Install", caps.can_install),

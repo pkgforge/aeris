@@ -98,7 +98,12 @@ pub trait Adapter: Send + Sync {
     fn info(&self) -> &AdapterInfo;
     fn capabilities(&self) -> &Capabilities;
 
-    async fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<Package>>;
+    async fn search(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        mode: PackageMode,
+    ) -> Result<Vec<Package>>;
 
     async fn package_detail(&self, _package_id: &str) -> Result<PackageDetail> {
         Err(AdapterError::NotSupported)
@@ -108,6 +113,7 @@ pub trait Adapter: Send + Sync {
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>>;
 
     async fn remove(

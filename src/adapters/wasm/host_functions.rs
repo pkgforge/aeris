@@ -86,13 +86,41 @@ fn register_host_exec(linker: &mut Linker<HostState>) -> Result<(), String> {
                     Ok(fat) => fat,
                     Err(e) => {
                         log::error!("[plugin:{}] host_exec error: {e}", caller.data().adapter_id);
-                        0i64
+                        // Return a proper error response so the plugin sees a
+                        // non-zero exit code instead of interpreting 0 as success.
+                        let error_resp = ExecResponse {
+                            exit_code: -1,
+                            stdout: String::new(),
+                            stderr: e,
+                        };
+                        let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                        match write_response_to_wasm(&mut caller, &json) {
+                            Ok(fat) => fat,
+                            Err(_) => 0i64,
+                        }
                     }
                 }
             },
         )
         .map_err(|e| format!("Failed to register {}: {e}", abi::IMPORT_EXEC))?;
     Ok(())
+}
+
+fn write_response_to_wasm(caller: &mut Caller<'_, HostState>, json: &str) -> Result<i64, String> {
+    let memory = caller
+        .get_export(abi::EXPORT_MEMORY)
+        .and_then(|e| e.into_memory())
+        .ok_or("missing memory export")?;
+
+    let allocate = caller
+        .get_export(abi::EXPORT_ALLOCATE)
+        .and_then(|e| e.into_func())
+        .ok_or("missing allocate export")?;
+
+    let (w_ptr, w_len) =
+        memory::write_string_caller(&mut caller.as_context_mut(), &memory, &allocate, json)?;
+
+    Ok(((w_ptr as i64) << 32) | (w_len as i64))
 }
 
 fn exec_impl(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> Result<i64, String> {

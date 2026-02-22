@@ -30,7 +30,12 @@ impl AdapterManager {
         self.adapters.get(id).cloned()
     }
 
-    pub async fn search(&self, query: &str, sources: &[String]) -> Result<Vec<Package>> {
+    pub async fn search(
+        &self,
+        query: &str,
+        sources: &[String],
+        mode: PackageMode,
+    ) -> Result<Vec<Package>> {
         let mut results = Vec::new();
         let adapters: Vec<_> = if sources.is_empty() {
             self.adapters
@@ -47,7 +52,7 @@ impl AdapterManager {
         };
 
         for adapter in adapters {
-            match adapter.search(query, None).await {
+            match adapter.search(query, None, mode).await {
                 Ok(pkgs) => results.extend(pkgs),
                 Err(e) => log::warn!("Search failed for {}: {e}", adapter.info().id),
             }
@@ -82,6 +87,7 @@ impl AdapterManager {
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         let mut by_adapter: HashMap<&str, Vec<&Package>> = HashMap::new();
         for pkg in packages {
@@ -92,7 +98,7 @@ impl AdapterManager {
         for (adapter_id, pkgs) in by_adapter {
             if let Some(adapter) = self.adapters.get(adapter_id) {
                 let owned: Vec<Package> = pkgs.into_iter().cloned().collect();
-                match adapter.install(&owned, progress.clone()).await {
+                match adapter.install(&owned, progress.clone(), mode).await {
                     Ok(r) => results.extend(r),
                     Err(e) => log::error!("Install failed for {adapter_id}: {e}"),
                 }

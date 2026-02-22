@@ -21,6 +21,24 @@ use super::memory;
 
 const FUEL_LIMIT: u64 = 10_000_000;
 
+#[derive(serde::Serialize)]
+struct PackagesWithMode {
+    packages: Vec<Package>,
+    mode: String,
+}
+
+#[derive(serde::Serialize)]
+struct ModeInput {
+    mode: String,
+}
+
+fn mode_str(mode: PackageMode) -> String {
+    match mode {
+        PackageMode::User => "user".into(),
+        PackageMode::System => "system".into(),
+    }
+}
+
 pub struct WasmAdapter {
     engine: Arc<Engine>,
     module: Arc<Module>,
@@ -271,16 +289,23 @@ impl Adapter for WasmAdapter {
         &self.capabilities
     }
 
-    async fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<Package>> {
+    async fn search(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        mode: PackageMode,
+    ) -> Result<Vec<Package>> {
         #[derive(serde::Serialize)]
         struct SearchInput {
             query: String,
             limit: Option<usize>,
+            mode: String,
         }
 
         let input = SearchInput {
             query: query.to_string(),
             limit,
+            mode: mode_str(mode),
         };
 
         self.call_with_json(abi::EXPORT_SEARCH, input).await
@@ -294,19 +319,26 @@ impl Adapter for WasmAdapter {
         &self,
         packages: &[Package],
         _progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
-        let packages = packages.to_vec();
-        self.call_with_json(abi::EXPORT_INSTALL, packages).await
+        let input = PackagesWithMode {
+            packages: packages.to_vec(),
+            mode: mode_str(mode),
+        };
+        self.call_with_json(abi::EXPORT_INSTALL, input).await
     }
 
     async fn remove(
         &self,
         packages: &[Package],
         _progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<()> {
-        let packages = packages.to_vec();
-        let _: serde_json::Value = self.call_with_json(abi::EXPORT_REMOVE, packages).await?;
+        let input = PackagesWithMode {
+            packages: packages.to_vec(),
+            mode: mode_str(mode),
+        };
+        let _: serde_json::Value = self.call_with_json(abi::EXPORT_REMOVE, input).await?;
         Ok(())
     }
 
@@ -314,18 +346,27 @@ impl Adapter for WasmAdapter {
         &self,
         packages: &[Package],
         _progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
-        let packages = packages.to_vec();
-        self.call_with_json(abi::EXPORT_UPDATE, packages).await
+        let input = PackagesWithMode {
+            packages: packages.to_vec(),
+            mode: mode_str(mode),
+        };
+        self.call_with_json(abi::EXPORT_UPDATE, input).await
     }
 
-    async fn list_installed(&self, _mode: PackageMode) -> Result<Vec<InstalledPackage>> {
-        self.call_no_args(abi::EXPORT_LIST_INSTALLED).await
+    async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {
+        let input = ModeInput {
+            mode: mode_str(mode),
+        };
+        self.call_with_json(abi::EXPORT_LIST_INSTALLED, input).await
     }
 
-    async fn list_updates(&self, _mode: PackageMode) -> Result<Vec<Update>> {
-        self.call_no_args(abi::EXPORT_LIST_UPDATES).await
+    async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
+        let input = ModeInput {
+            mode: mode_str(mode),
+        };
+        self.call_with_json(abi::EXPORT_LIST_UPDATES, input).await
     }
 
     async fn sync(&self, _progress: Option<ProgressSender>) -> Result<()> {

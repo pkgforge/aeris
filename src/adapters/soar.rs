@@ -732,7 +732,12 @@ impl Adapter for SoarAdapter {
         &self.info.capabilities
     }
 
-    async fn search(&self, query: &str, limit: Option<usize>) -> Result<Vec<Package>> {
+    async fn search(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        _mode: PackageMode,
+    ) -> Result<Vec<Package>> {
         let ctx = self.user_ctx();
         let result = soar_operations::search::search_packages(&ctx, query, false, limit)
             .await
@@ -749,6 +754,7 @@ impl Adapter for SoarAdapter {
         &self,
         _packages: &[Package],
         _progress: Option<ProgressSender>,
+        _mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         Err(AdapterError::NotSupported)
     }
