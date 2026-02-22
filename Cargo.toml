@@ -35,6 +35,7 @@ toml = "1.0.1"
 toml_edit = "0.25.1"
 shellexpand = "3.0"
 ureq = { version = "3.2.0", features = ["json"] }
+wasmtime = { version = "41", default-features = false, features = ["cranelift", "runtime"] }
 which = "7.0"
 
 [profile.dev.package."*"]
