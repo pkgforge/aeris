@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: |
           sudo apt update -y
-          sudo apt install b3sum findutils file -y
+          sudo apt install b3sum findutils file musl-tools -y
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
