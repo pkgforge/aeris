@@ -5,4 +5,5 @@ pub mod config;
 pub mod package;
 pub mod privilege;
 pub mod profile;
+pub mod registry;
 pub mod repository;

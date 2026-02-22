@@ -16,6 +16,7 @@ use crate::{
     config::AerisConfig,
     core::{
         adapter::Adapter,
+        adapter_manager::AdapterManager,
         config::{AdapterConfig, ConfigFieldType, ConfigValue},
         privilege::{PackageMode, PrivilegeManager},
     },
@@ -162,6 +163,7 @@ pub struct App {
     repositories: views::repositories::RepositoriesState,
     aeris_config: AerisConfig,
     adapter: Arc<SoarAdapter>,
+    adapter_manager: AdapterManager,
     confirm_dialog: Option<message::ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
@@ -181,6 +183,19 @@ impl App {
         let (adapter, event_receiver) =
             SoarAdapter::new(soar_config).expect("Failed to initialize Soar adapter");
         let adapter = Arc::new(adapter);
+
+        let mut adapter_manager = AdapterManager::new();
+        adapter_manager.register(adapter.clone() as Arc<dyn Adapter>);
+
+        for result in crate::adapters::wasm::load_all_plugins() {
+            match result {
+                Ok(wasm_adapter) => {
+                    log::info!("Loaded plugin: {}", wasm_adapter.info().id);
+                    adapter_manager.register(Arc::new(wasm_adapter));
+                }
+                Err(e) => log::warn!("Failed to load plugin: {e}"),
+            }
+        }
 
         let settings = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
 
@@ -224,6 +239,7 @@ impl App {
                 repositories: views::repositories::RepositoriesState::default(),
                 aeris_config,
                 adapter,
+                adapter_manager,
                 confirm_dialog: None,
                 event_receiver,
                 active_operation: None,
@@ -318,18 +334,7 @@ impl App {
                     return Task::none();
                 }
                 self.browse.loading = true;
-                let query = self.browse.search_query.clone();
-                let adapter = self.adapter.clone();
-                let mode = self.current_mode;
-                return Task::perform(
-                    async move {
-                        adapter
-                            .search_with_mode(&query, None, mode)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    |result| Message::Browse(message::BrowseMessage::SearchResults(result)),
-                );
+                return self.perform_search();
             }
             message::BrowseMessage::SearchSubmit => {
                 if self.browse.search_query.trim().is_empty() {
@@ -337,18 +342,7 @@ impl App {
                 }
                 self.browse.search_debounce_version += 1;
                 self.browse.loading = true;
-                let query = self.browse.search_query.clone();
-                let adapter = self.adapter.clone();
-                let mode = self.current_mode;
-                return Task::perform(
-                    async move {
-                        adapter
-                            .search_with_mode(&query, None, mode)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    |result| Message::Browse(message::BrowseMessage::SearchResults(result)),
-                );
+                return self.perform_search();
             }
             message::BrowseMessage::SearchResults(result) => {
                 self.browse.loading = false;
@@ -421,16 +415,68 @@ impl App {
         Task::none()
     }
 
+    fn perform_search(&self) -> Task<Message> {
+        let query = self.browse.search_query.clone();
+        let adapter = self.adapter.clone();
+        let mode = self.current_mode;
+
+        // Collect non-Soar adapters for generic search
+        let other_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter(|info| info.id != "soar" && info.enabled && info.capabilities.can_search)
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        Task::perform(
+            async move {
+                let mut results = adapter
+                    .search_with_mode(&query, None, mode)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                for other in other_adapters {
+                    match other.search(&query, None).await {
+                        Ok(pkgs) => results.extend(pkgs),
+                        Err(e) => log::warn!("Search failed for {}: {e}", other.info().id),
+                    }
+                }
+
+                Ok(results)
+            },
+            |result| Message::Browse(message::BrowseMessage::SearchResults(result)),
+        )
+    }
+
     fn load_installed(&mut self) -> Task<Message> {
         self.installed.loading = true;
         let adapter = self.adapter.clone();
         let mode = self.current_mode;
+
+        let other_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter(|info| info.id != "soar" && info.enabled && info.capabilities.can_list)
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
         Task::perform(
             async move {
-                adapter
+                let mut results = adapter
                     .list_installed(mode)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+
+                for other in other_adapters {
+                    match other.list_installed(mode).await {
+                        Ok(pkgs) => results.extend(pkgs),
+                        Err(e) => log::warn!("List installed failed for {}: {e}", other.info().id),
+                    }
+                }
+
+                Ok(results)
             },
             |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
         )
@@ -526,8 +572,35 @@ impl App {
                 self.updates.loading = true;
                 let adapter = self.adapter.clone();
                 let mode = self.current_mode;
+
+                let other_adapters: Vec<Arc<dyn Adapter>> = self
+                    .adapter_manager
+                    .list_adapters()
+                    .iter()
+                    .filter(|info| {
+                        info.id != "soar" && info.enabled && info.capabilities.can_update
+                    })
+                    .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+                    .collect();
+
                 return Task::perform(
-                    async move { adapter.list_updates(mode).await.map_err(|e| e.to_string()) },
+                    async move {
+                        let mut results = adapter
+                            .list_updates(mode)
+                            .await
+                            .map_err(|e| e.to_string())?;
+
+                        for other in other_adapters {
+                            match other.list_updates(mode).await {
+                                Ok(updates) => results.extend(updates),
+                                Err(e) => {
+                                    log::warn!("Update check failed for {}: {e}", other.info().id)
+                                }
+                            }
+                        }
+
+                        Ok(results)
+                    },
                     |result| Message::Updates(message::UpdatesMessage::UpdatesLoaded(result)),
                 );
             }
@@ -925,51 +998,84 @@ impl App {
     fn execute_confirmed(&mut self, action: message::ConfirmAction) -> Task<Message> {
         match action {
             message::ConfirmAction::Install(ref pkg, mode) => {
-                if let Some(query) = pkg.soar_query() {
-                    self.active_operation = Some(ActiveOperation {
-                        operation_type: OperationType::Install,
-                        package_name: pkg.name.clone(),
-                        status: OperationStatus::Starting,
-                    });
-                    self.browse.installing = Some(pkg.id.clone());
-                    self.browse.result_version += 1;
+                self.active_operation = Some(ActiveOperation {
+                    operation_type: OperationType::Install,
+                    package_name: pkg.name.clone(),
+                    status: OperationStatus::Starting,
+                });
+                self.browse.installing = Some(pkg.id.clone());
+                self.browse.result_version += 1;
 
-                    if mode == PackageMode::System {
-                        let _ = PrivilegeManager::detect_elevator();
+                if pkg.adapter_id == "soar" {
+                    if let Some(query) = pkg.soar_query() {
+                        if mode == PackageMode::System {
+                            let _ = PrivilegeManager::detect_elevator();
+                        }
+
+                        let adapter = self.adapter.clone();
+                        let settings = self.settings.adapter_settings.clone();
+                        return Task::perform(
+                            async move {
+                                adapter
+                                    .install_package(&query, mode, &settings)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            },
+                            |result| {
+                                Message::Browse(message::BrowseMessage::InstallComplete(result))
+                            },
+                        );
                     }
-
-                    let adapter = self.adapter.clone();
-                    let settings = self.settings.adapter_settings.clone();
+                } else if let Some(adapter) = self.adapter_manager.get_adapter(&pkg.adapter_id) {
+                    let packages = vec![pkg.clone()];
                     return Task::perform(
                         async move {
                             adapter
-                                .install_package(&query, mode, &settings)
+                                .install(&packages, None)
                                 .await
                                 .map_err(|e| e.to_string())
+                                .map(|_| ())
                         },
                         |result| Message::Browse(message::BrowseMessage::InstallComplete(result)),
                     );
                 }
             }
             message::ConfirmAction::Remove(ref pkg, mode) => {
-                if let Some(query) = pkg.soar_query() {
-                    self.active_operation = Some(ActiveOperation {
-                        operation_type: OperationType::Remove,
-                        package_name: pkg.name.clone(),
-                        status: OperationStatus::Starting,
-                    });
-                    self.installed.removing = Some(pkg.id.clone());
-                    self.installed.result_version += 1;
+                self.active_operation = Some(ActiveOperation {
+                    operation_type: OperationType::Remove,
+                    package_name: pkg.name.clone(),
+                    status: OperationStatus::Starting,
+                });
+                self.installed.removing = Some(pkg.id.clone());
+                self.installed.result_version += 1;
 
-                    if mode == PackageMode::System {
-                        let _ = PrivilegeManager::detect_elevator();
+                if pkg.adapter_id == "soar" {
+                    if let Some(query) = pkg.soar_query() {
+                        if mode == PackageMode::System {
+                            let _ = PrivilegeManager::detect_elevator();
+                            let adapter = self.adapter.clone();
+                            let settings = self.settings.adapter_settings.clone();
+                            let pkg_name = pkg.name.clone();
+                            return Task::perform(
+                                async move {
+                                    adapter
+                                        .run_system_remove(&pkg_name, &settings)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                |result| {
+                                    Message::Installed(message::InstalledMessage::RemoveComplete(
+                                        result,
+                                    ))
+                                },
+                            );
+                        }
+
                         let adapter = self.adapter.clone();
-                        let settings = self.settings.adapter_settings.clone();
-                        let pkg_name = pkg.name.clone();
                         return Task::perform(
                             async move {
                                 adapter
-                                    .run_system_remove(&pkg_name, &settings)
+                                    .remove_package(&query)
                                     .await
                                     .map_err(|e| e.to_string())
                             },
@@ -980,12 +1086,12 @@ impl App {
                             },
                         );
                     }
-
-                    let adapter = self.adapter.clone();
+                } else if let Some(adapter) = self.adapter_manager.get_adapter(&pkg.adapter_id) {
+                    let packages = vec![pkg.clone()];
                     return Task::perform(
                         async move {
                             adapter
-                                .remove_package(&query)
+                                .remove(&packages, None, mode)
                                 .await
                                 .map_err(|e| e.to_string())
                         },
@@ -996,23 +1102,40 @@ impl App {
                 }
             }
             message::ConfirmAction::Update(ref pkg, mode) => {
-                if let Some(query) = pkg.soar_query() {
-                    self.active_operation = Some(ActiveOperation {
-                        operation_type: OperationType::Update,
-                        package_name: pkg.name.clone(),
-                        status: OperationStatus::Starting,
-                    });
-                    self.updates.updating = Some(pkg.id.clone());
-                    self.updates.result_version += 1;
+                self.active_operation = Some(ActiveOperation {
+                    operation_type: OperationType::Update,
+                    package_name: pkg.name.clone(),
+                    status: OperationStatus::Starting,
+                });
+                self.updates.updating = Some(pkg.id.clone());
+                self.updates.result_version += 1;
 
-                    if mode == PackageMode::System {
-                        let _ = PrivilegeManager::detect_elevator();
+                if pkg.adapter_id == "soar" {
+                    if let Some(query) = pkg.soar_query() {
+                        if mode == PackageMode::System {
+                            let _ = PrivilegeManager::detect_elevator();
+                            let adapter = self.adapter.clone();
+                            let settings = self.settings.adapter_settings.clone();
+                            return Task::perform(
+                                async move {
+                                    adapter
+                                        .update_system_package(&query, &settings)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                |result| {
+                                    Message::Updates(message::UpdatesMessage::UpdateComplete(
+                                        result,
+                                    ))
+                                },
+                            );
+                        }
+
                         let adapter = self.adapter.clone();
-                        let settings = self.settings.adapter_settings.clone();
                         return Task::perform(
                             async move {
                                 adapter
-                                    .update_system_package(&query, &settings)
+                                    .update_package(&query)
                                     .await
                                     .map_err(|e| e.to_string())
                             },
@@ -1021,14 +1144,15 @@ impl App {
                             },
                         );
                     }
-
-                    let adapter = self.adapter.clone();
+                } else if let Some(adapter) = self.adapter_manager.get_adapter(&pkg.adapter_id) {
+                    let packages = vec![pkg.clone()];
                     return Task::perform(
                         async move {
                             adapter
-                                .update_package(&query)
+                                .update(&packages, None, mode)
                                 .await
                                 .map_err(|e| e.to_string())
+                                .map(|_| ())
                         },
                         |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
                     );
@@ -1043,24 +1167,91 @@ impl App {
                 self.updates.updating = Some("__all__".into());
                 self.updates.result_version += 1;
 
-                if mode == PackageMode::System {
-                    let _ = PrivilegeManager::detect_elevator();
+                // Partition updates by adapter_id
+                let mut soar_updates = Vec::new();
+                let mut other_updates: std::collections::HashMap<String, Vec<_>> =
+                    std::collections::HashMap::new();
+                for update in &self.updates.updates {
+                    if update.package.adapter_id == "soar" {
+                        soar_updates.push(update.clone());
+                    } else {
+                        other_updates
+                            .entry(update.package.adapter_id.clone())
+                            .or_default()
+                            .push(update.package.clone());
+                    }
+                }
+
+                // Collect non-Soar adapters for the updates
+                let other_adapter_map: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
+                    other_updates
+                        .into_iter()
+                        .filter_map(|(id, pkgs)| {
+                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
+                        })
+                        .collect();
+
+                let has_soar_updates = !soar_updates.is_empty();
+
+                if has_soar_updates {
+                    if mode == PackageMode::System {
+                        let _ = PrivilegeManager::detect_elevator();
+                        let adapter = self.adapter.clone();
+                        let settings = self.settings.adapter_settings.clone();
+                        return Task::perform(
+                            async move {
+                                adapter
+                                    .update_all_system(&settings)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+
+                                for (other_adapter, pkgs) in other_adapter_map {
+                                    if let Err(e) = other_adapter.update(&pkgs, None, mode).await {
+                                        log::warn!(
+                                            "Update failed for {}: {e}",
+                                            other_adapter.info().id
+                                        );
+                                    }
+                                }
+
+                                Ok(())
+                            },
+                            |result| {
+                                Message::Updates(message::UpdatesMessage::UpdateComplete(result))
+                            },
+                        );
+                    }
+
                     let adapter = self.adapter.clone();
-                    let settings = self.settings.adapter_settings.clone();
                     return Task::perform(
                         async move {
-                            adapter
-                                .update_all_system(&settings)
-                                .await
-                                .map_err(|e| e.to_string())
+                            adapter.update_all().await.map_err(|e| e.to_string())?;
+
+                            for (other_adapter, pkgs) in other_adapter_map {
+                                if let Err(e) = other_adapter.update(&pkgs, None, mode).await {
+                                    log::warn!(
+                                        "Update failed for {}: {e}",
+                                        other_adapter.info().id
+                                    );
+                                }
+                            }
+
+                            Ok(())
                         },
                         |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
                     );
                 }
 
-                let adapter = self.adapter.clone();
+                // Only non-Soar updates
                 return Task::perform(
-                    async move { adapter.update_all().await.map_err(|e| e.to_string()) },
+                    async move {
+                        for (other_adapter, pkgs) in other_adapter_map {
+                            if let Err(e) = other_adapter.update(&pkgs, None, mode).await {
+                                log::warn!("Update failed for {}: {e}", other_adapter.info().id);
+                            }
+                        }
+                        Ok(())
+                    },
                     |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
                 );
             }
