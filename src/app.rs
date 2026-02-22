@@ -19,6 +19,7 @@ use crate::{
         adapter_manager::AdapterManager,
         config::{AdapterConfig, ConfigFieldType, ConfigValue},
         privilege::{PackageMode, PrivilegeManager},
+        registry::PluginEntry,
     },
     styles::{self, font_size, spacing},
     views,
@@ -152,6 +153,15 @@ pub struct ActiveOperation {
     pub status: OperationStatus,
 }
 
+#[derive(Default)]
+pub struct AdapterViewState {
+    pub registry_plugins: Vec<PluginEntry>,
+    pub registry_loading: bool,
+    pub registry_error: Option<String>,
+    pub installing_plugin: Option<String>,
+    pub removing_plugin: Option<String>,
+}
+
 pub struct App {
     selected_theme: AppTheme,
     current_view: View,
@@ -164,6 +174,7 @@ pub struct App {
     aeris_config: AerisConfig,
     adapter: Arc<SoarAdapter>,
     adapter_manager: AdapterManager,
+    adapter_view: AdapterViewState,
     confirm_dialog: Option<message::ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
@@ -197,6 +208,10 @@ impl App {
             }
         }
 
+        let disabled: std::collections::HashSet<String> =
+            aeris_config.disabled_adapters.iter().cloned().collect();
+        adapter_manager.set_disabled(disabled);
+
         let settings = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
 
         let default_mode = settings
@@ -213,13 +228,18 @@ impl App {
             })
             .unwrap_or(PackageMode::User);
 
+        let soar_enabled_at_init = !aeris_config.is_adapter_disabled("soar");
         let load_adapter = adapter.clone();
         let init_task = Task::perform(
             async move {
-                load_adapter
-                    .list_installed(default_mode)
-                    .await
-                    .map_err(|e| e.to_string())
+                if soar_enabled_at_init {
+                    load_adapter
+                        .list_installed(default_mode)
+                        .await
+                        .map_err(|e| e.to_string())
+                } else {
+                    Ok(Vec::new())
+                }
             },
             |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
         );
@@ -240,6 +260,7 @@ impl App {
                 aeris_config,
                 adapter,
                 adapter_manager,
+                adapter_view: AdapterViewState::default(),
                 confirm_dialog: None,
                 event_receiver,
                 active_operation: None,
@@ -295,6 +316,7 @@ impl App {
             Message::Updates(msg) => return self.update_updates(msg),
             Message::Settings(msg) => return self.update_settings(msg),
             Message::Repositories(msg) => return self.update_repositories(msg),
+            Message::Adapter(msg) => return self.update_adapter(msg),
             Message::CancelAction => {
                 self.confirm_dialog = None;
             }
@@ -333,11 +355,27 @@ impl App {
                 if self.browse.search_query.trim().is_empty() {
                     return Task::none();
                 }
+                if !self.adapter_manager.any_enabled() {
+                    self.browse.has_searched = true;
+                    self.browse.error = Some(
+                        "No adapters enabled. Enable at least one adapter in the Adapter view."
+                            .into(),
+                    );
+                    return Task::none();
+                }
                 self.browse.loading = true;
                 return self.perform_search();
             }
             message::BrowseMessage::SearchSubmit => {
                 if self.browse.search_query.trim().is_empty() {
+                    return Task::none();
+                }
+                if !self.adapter_manager.any_enabled() {
+                    self.browse.has_searched = true;
+                    self.browse.error = Some(
+                        "No adapters enabled. Enable at least one adapter in the Adapter view."
+                            .into(),
+                    );
                     return Task::none();
                 }
                 self.browse.search_debounce_version += 1;
@@ -417,24 +455,32 @@ impl App {
 
     fn perform_search(&self) -> Task<Message> {
         let query = self.browse.search_query.clone();
-        let adapter = self.adapter.clone();
         let mode = self.current_mode;
+        let soar_enabled = self.adapter_manager.is_enabled("soar");
+        let adapter = self.adapter.clone();
 
-        // Collect non-Soar adapters for generic search
         let other_adapters: Vec<Arc<dyn Adapter>> = self
             .adapter_manager
             .list_adapters()
             .iter()
-            .filter(|info| info.id != "soar" && info.enabled && info.capabilities.can_search)
+            .filter(|info| {
+                info.id != "soar"
+                    && self.adapter_manager.is_enabled(&info.id)
+                    && info.capabilities.can_search
+            })
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
             .collect();
 
         Task::perform(
             async move {
-                let mut results = adapter
-                    .search_with_mode(&query, None, mode)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let mut results = Vec::new();
+
+                if soar_enabled {
+                    match adapter.search_with_mode(&query, None, mode).await {
+                        Ok(pkgs) => results.extend(pkgs),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
 
                 for other in other_adapters {
                     match other.search(&query, None, mode).await {
@@ -450,24 +496,45 @@ impl App {
     }
 
     fn load_installed(&mut self) -> Task<Message> {
+        if !self.adapter_manager.any_enabled() {
+            self.installed.loading = false;
+            self.installed.loaded = true;
+            self.installed.packages.clear();
+            self.installed.error = Some(
+                "No adapters enabled. Enable at least one adapter in the Adapter view.".into(),
+            );
+            self.installed.result_version += 1;
+            return Task::none();
+        }
+
         self.installed.loading = true;
-        let adapter = self.adapter.clone();
+
         let mode = self.current_mode;
+        let soar_enabled = self.adapter_manager.is_enabled("soar");
+        let adapter = self.adapter.clone();
 
         let other_adapters: Vec<Arc<dyn Adapter>> = self
             .adapter_manager
             .list_adapters()
             .iter()
-            .filter(|info| info.id != "soar" && info.enabled && info.capabilities.can_list)
+            .filter(|info| {
+                info.id != "soar"
+                    && self.adapter_manager.is_enabled(&info.id)
+                    && info.capabilities.can_list
+            })
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
             .collect();
 
         Task::perform(
             async move {
-                let mut results = adapter
-                    .list_installed(mode)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let mut results = Vec::new();
+
+                if soar_enabled {
+                    match adapter.list_installed(mode).await {
+                        Ok(pkgs) => results.extend(pkgs),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
 
                 for other in other_adapters {
                     match other.list_installed(mode).await {
@@ -569,26 +636,46 @@ impl App {
     fn update_updates(&mut self, msg: message::UpdatesMessage) -> Task<Message> {
         match msg {
             message::UpdatesMessage::CheckUpdates => {
+                if !self.adapter_manager.any_enabled() {
+                    self.updates.loading = false;
+                    self.updates.checked = true;
+                    self.updates.updates.clear();
+                    self.updates.error = Some(
+                        "No adapters enabled. Enable at least one adapter in the Adapter view."
+                            .into(),
+                    );
+                    self.updates.result_version += 1;
+                    return Task::none();
+                }
+
                 self.updates.loading = true;
-                let adapter = self.adapter.clone();
+
                 let mode = self.current_mode;
+                let soar_enabled = self.adapter_manager.is_enabled("soar");
+                let adapter = self.adapter.clone();
 
                 let other_adapters: Vec<Arc<dyn Adapter>> = self
                     .adapter_manager
                     .list_adapters()
                     .iter()
                     .filter(|info| {
-                        info.id != "soar" && info.enabled && info.capabilities.can_update
+                        info.id != "soar"
+                            && self.adapter_manager.is_enabled(&info.id)
+                            && info.capabilities.can_update
                     })
                     .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
                     .collect();
 
                 return Task::perform(
                     async move {
-                        let mut results = adapter
-                            .list_updates(mode)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let mut results = Vec::new();
+
+                        if soar_enabled {
+                            match adapter.list_updates(mode).await {
+                                Ok(updates) => results.extend(updates),
+                                Err(e) => return Err(e.to_string()),
+                            }
+                        }
 
                         for other in other_adapters {
                             match other.list_updates(mode).await {
@@ -995,6 +1082,114 @@ impl App {
         Task::none()
     }
 
+    fn update_adapter(&mut self, msg: message::AdapterMessage) -> Task<Message> {
+        match msg {
+            message::AdapterMessage::ToggleAdapter(id, enabled) => {
+                self.adapter_manager.set_adapter_enabled(&id, enabled);
+                self.aeris_config.set_adapter_disabled(&id, !enabled);
+
+                // Invalidate cached view data so they reload with new adapter set
+                self.installed.loaded = false;
+                self.updates.checked = false;
+                self.browse.search_results.clear();
+                self.browse.has_searched = false;
+                self.browse.result_version += 1;
+
+                let config = self.aeris_config.clone();
+                let save_task = Task::perform(async move { config.save() }, |result| {
+                    Message::Adapter(message::AdapterMessage::ToggleSaved(result))
+                });
+                let reload_task = self.load_installed();
+                return Task::batch([save_task, reload_task]);
+            }
+            message::AdapterMessage::ToggleSaved(result) => {
+                if let Err(e) = result {
+                    log::error!("Failed to save adapter toggle: {e}");
+                }
+            }
+            message::AdapterMessage::FetchRegistry => {
+                self.adapter_view.registry_loading = true;
+                self.adapter_view.registry_error = None;
+                return Task::perform(
+                    async move { crate::core::registry::fetch_registry(None).map(|r| r.plugins) },
+                    |result| Message::Adapter(message::AdapterMessage::RegistryFetched(result)),
+                );
+            }
+            message::AdapterMessage::RegistryFetched(result) => {
+                self.adapter_view.registry_loading = false;
+                match result {
+                    Ok(plugins) => {
+                        self.adapter_view.registry_plugins = plugins;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to fetch registry: {e}");
+                        self.adapter_view.registry_error = Some(e);
+                    }
+                }
+            }
+            message::AdapterMessage::InstallPlugin(entry) => {
+                self.adapter_view.installing_plugin = Some(entry.id.clone());
+                return Task::perform(
+                    async move {
+                        let plugin_dir = crate::core::registry::download_plugin(&entry)?;
+                        Ok(plugin_dir.to_string_lossy().to_string())
+                    },
+                    |result: Result<String, String>| {
+                        Message::Adapter(message::AdapterMessage::PluginInstalled(result))
+                    },
+                );
+            }
+            message::AdapterMessage::PluginInstalled(result) => {
+                self.adapter_view.installing_plugin = None;
+                match result {
+                    Ok(path) => {
+                        let plugin_dir = std::path::PathBuf::from(&path);
+                        match crate::adapters::wasm::WasmAdapter::load(plugin_dir) {
+                            Ok(wasm_adapter) => {
+                                let id = wasm_adapter.info().id.clone();
+                                log::info!("Installed and loaded plugin: {id}");
+                                self.adapter_manager.register(Arc::new(wasm_adapter));
+                            }
+                            Err(e) => {
+                                log::error!("Failed to load installed plugin: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to install plugin: {e}");
+                    }
+                }
+            }
+            message::AdapterMessage::RemovePlugin(id) => {
+                let plugin_path = self
+                    .adapter_manager
+                    .get_adapter(&id)
+                    .and_then(|a| a.info().plugin_path.clone());
+                self.adapter_manager.unregister(&id);
+                self.adapter_view.removing_plugin = Some(id.clone());
+                if let Some(path) = plugin_path {
+                    return Task::perform(
+                        async move {
+                            std::fs::remove_dir_all(&path)
+                                .map_err(|e| format!("Failed to remove plugin files: {e}"))?;
+                            Ok(id)
+                        },
+                        |result| Message::Adapter(message::AdapterMessage::PluginRemoved(result)),
+                    );
+                }
+                self.adapter_view.removing_plugin = None;
+            }
+            message::AdapterMessage::PluginRemoved(result) => {
+                self.adapter_view.removing_plugin = None;
+                match result {
+                    Ok(id) => log::info!("Plugin {id} removed successfully"),
+                    Err(e) => log::error!("Failed to remove plugin: {e}"),
+                }
+            }
+        }
+        Task::none()
+    }
+
     fn execute_confirmed(&mut self, action: message::ConfirmAction) -> Task<Message> {
         match action {
             message::ConfirmAction::Install(ref pkg, mode) => {
@@ -1286,13 +1481,8 @@ impl App {
             View::Settings => views::settings::view(&self.settings, self.current_mode),
             View::Repositories => views::repositories::view(&self.repositories, self.current_mode),
             View::AdapterInfo => {
-                let adapters: Vec<_> = self
-                    .adapter_manager
-                    .list_adapters()
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                views::adapter_info::view(adapters)
+                let adapters = self.adapter_manager.list_adapters_with_status();
+                views::adapter_info::view(&self.adapter_view, adapters)
             }
         };
 

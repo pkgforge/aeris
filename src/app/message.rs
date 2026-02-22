@@ -2,6 +2,7 @@ use crate::core::{
     config::ConfigValue,
     package::{InstalledPackage, Package, PackageDetail, Update},
     privilege::PackageMode,
+    registry::PluginEntry,
 };
 
 use super::{AppTheme, View};
@@ -24,6 +25,7 @@ pub enum Message {
     Updates(UpdatesMessage),
     Settings(SettingsMessage),
     Repositories(RepositoriesMessage),
+    Adapter(AdapterMessage),
 
     ToggleSidebar,
 
@@ -97,6 +99,18 @@ pub enum RepositoriesMessage {
     SyncComplete(Result<(), String>),
     ToggleEnabled(String, bool),
     ToggleResult(Result<(), String>),
+}
+
+#[derive(Debug, Clone)]
+pub enum AdapterMessage {
+    ToggleAdapter(String, bool),
+    ToggleSaved(Result<(), String>),
+    FetchRegistry,
+    RegistryFetched(Result<Vec<PluginEntry>, String>),
+    InstallPlugin(PluginEntry),
+    PluginInstalled(Result<String, String>),
+    RemovePlugin(String),
+    PluginRemoved(Result<String, String>),
 }
 
 #[derive(Debug, Clone, Default)]

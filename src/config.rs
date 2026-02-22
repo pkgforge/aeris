@@ -13,6 +13,8 @@ pub struct AerisConfig {
     pub notifications: Option<bool>,
     #[serde(default)]
     pub adapters: HashMap<String, HashMap<String, String>>,
+    #[serde(default)]
+    pub disabled_adapters: Vec<String>,
 }
 
 impl AerisConfig {
@@ -39,6 +41,17 @@ impl AerisConfig {
         let contents = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
 
         std::fs::write(&path, contents).map_err(|e| e.to_string())
+    }
+
+    pub fn is_adapter_disabled(&self, id: &str) -> bool {
+        self.disabled_adapters.iter().any(|s| s == id)
+    }
+
+    pub fn set_adapter_disabled(&mut self, id: &str, disabled: bool) {
+        self.disabled_adapters.retain(|s| s != id);
+        if disabled {
+            self.disabled_adapters.push(id.to_string());
+        }
     }
 
     pub fn get_adapter_setting(&self, adapter_id: &str, key: &str) -> Option<&str> {

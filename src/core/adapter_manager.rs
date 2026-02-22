@@ -1,19 +1,24 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use super::{
-    adapter::{Adapter, AdapterError, AdapterId, AdapterInfo, ProgressSender, Result},
+    adapter::{Adapter, AdapterId, AdapterInfo, ProgressSender, Result},
     package::{InstallResult, InstalledPackage, Package, Update},
     privilege::PackageMode,
 };
 
 pub struct AdapterManager {
     adapters: HashMap<AdapterId, Arc<dyn Adapter>>,
+    disabled: HashSet<String>,
 }
 
 impl AdapterManager {
     pub fn new() -> Self {
         Self {
             adapters: HashMap::new(),
+            disabled: HashSet::new(),
         }
     }
 
@@ -22,8 +27,44 @@ impl AdapterManager {
         self.adapters.insert(id, adapter);
     }
 
+    pub fn unregister(&mut self, id: &str) {
+        self.adapters.remove(id);
+        self.disabled.remove(id);
+    }
+
+    pub fn set_disabled(&mut self, disabled: HashSet<String>) {
+        self.disabled = disabled;
+    }
+
+    pub fn set_adapter_enabled(&mut self, id: &str, enabled: bool) {
+        if enabled {
+            self.disabled.remove(id);
+        } else {
+            self.disabled.insert(id.to_string());
+        }
+    }
+
+    pub fn is_enabled(&self, id: &str) -> bool {
+        !self.disabled.contains(id)
+    }
+
     pub fn list_adapters(&self) -> Vec<&AdapterInfo> {
         self.adapters.values().map(|a| a.info()).collect()
+    }
+
+    pub fn list_adapters_with_status(&self) -> Vec<(AdapterInfo, bool)> {
+        self.adapters
+            .values()
+            .map(|a| {
+                let info = a.info().clone();
+                let enabled = self.is_enabled(&info.id);
+                (info, enabled)
+            })
+            .collect()
+    }
+
+    pub fn any_enabled(&self) -> bool {
+        self.adapters.keys().any(|id| self.is_enabled(id))
     }
 
     pub fn get_adapter(&self, id: &str) -> Option<Arc<dyn Adapter>> {
@@ -40,14 +81,14 @@ impl AdapterManager {
         let adapters: Vec<_> = if sources.is_empty() {
             self.adapters
                 .values()
-                .filter(|a| a.info().enabled && a.capabilities().can_search)
+                .filter(|a| self.is_enabled(&a.info().id) && a.capabilities().can_search)
                 .cloned()
                 .collect()
         } else {
             sources
                 .iter()
                 .filter_map(|id| self.adapters.get(id).cloned())
-                .filter(|a| a.info().enabled && a.capabilities().can_search)
+                .filter(|a| self.is_enabled(&a.info().id) && a.capabilities().can_search)
                 .collect()
         };
 
@@ -63,7 +104,11 @@ impl AdapterManager {
 
     pub async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {
         let mut results = Vec::new();
-        for adapter in self.adapters.values().filter(|a| a.info().enabled) {
+        for adapter in self
+            .adapters
+            .values()
+            .filter(|a| self.is_enabled(&a.info().id))
+        {
             match adapter.list_installed(mode).await {
                 Ok(pkgs) => results.extend(pkgs),
                 Err(e) => log::warn!("List failed for {}: {e}", adapter.info().id),
@@ -74,7 +119,11 @@ impl AdapterManager {
 
     pub async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
         let mut results = Vec::new();
-        for adapter in self.adapters.values().filter(|a| a.info().enabled) {
+        for adapter in self
+            .adapters
+            .values()
+            .filter(|a| self.is_enabled(&a.info().id))
+        {
             match adapter.list_updates(mode).await {
                 Ok(updates) => results.extend(updates),
                 Err(e) => log::warn!("Update check failed for {}: {e}", adapter.info().id),
@@ -159,7 +208,7 @@ impl AdapterManager {
     ) -> HashMap<AdapterId, Result<()>> {
         let mut results = HashMap::new();
         for (id, adapter) in &self.adapters {
-            if adapter.info().enabled && adapter.capabilities().can_sync {
+            if self.is_enabled(&adapter.info().id) && adapter.capabilities().can_sync {
                 results.insert(id.clone(), adapter.sync(progress.clone()).await);
             }
         }
