@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, lazy, row, scrollable, space, text},
@@ -18,6 +20,9 @@ pub struct InstalledState {
     pub error: Option<String>,
     pub result_version: u64,
     pub removing: Option<String>,
+    pub updating: Option<String>,
+    /// Adapter IDs that support updating but not listing available updates.
+    pub updatable_adapters: HashSet<String>,
 }
 
 pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Message> {
@@ -60,10 +65,12 @@ pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Mes
         let version = state.result_version;
         let packages = state.packages.clone();
         let removing = state.removing.clone();
+        let updating = state.updating.clone();
+        let updatable_adapters = state.updatable_adapters.clone();
         lazy(("installed", version), move |_| {
             let cards: Vec<Element<'_, Message>> = packages
                 .iter()
-                .map(|pkg| installed_card(pkg, &removing))
+                .map(|pkg| installed_card(pkg, &removing, &updating, &updatable_adapters))
                 .collect();
 
             scrollable(column(cards).spacing(spacing::SM).width(Length::Fill)).height(Length::Fill)
@@ -83,18 +90,30 @@ pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Mes
     .into()
 }
 
-fn installed_card(pkg: &InstalledPackage, removing: &Option<String>) -> Element<'static, Message> {
+fn installed_card(
+    pkg: &InstalledPackage,
+    removing: &Option<String>,
+    updating: &Option<String>,
+    updatable_adapters: &HashSet<String>,
+) -> Element<'static, Message> {
     let name = text(pkg.package.name.clone()).size(font_size::HEADING);
-    let version = container(text(pkg.package.version.clone()).size(font_size::CAPTION))
-        .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_neutral);
     let adapter = container(text(pkg.package.adapter_id.clone()).size(font_size::BADGE))
         .padding([spacing::XXXS, spacing::XS])
         .style(styles::badge_adapter(&pkg.package.adapter_id));
 
-    let mut header = row![name, version, adapter]
+    let mut header = row![name]
         .spacing(spacing::SM)
         .align_y(Alignment::Center);
+
+    if !pkg.package.version.is_empty() {
+        header = header.push(
+            container(text(pkg.package.version.clone()).size(font_size::CAPTION))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_neutral),
+        );
+    }
+
+    header = header.push(adapter);
 
     if !pkg.is_healthy {
         header = header.push(
@@ -160,7 +179,34 @@ fn installed_card(pkg: &InstalledPackage, removing: &Option<String>) -> Element<
         .spacing(spacing::XXS)
         .width(Length::Fill);
 
-    let card_content = row![left, remove_btn]
+    let is_busy = removing.is_some() || updating.is_some();
+    let show_update = updatable_adapters.contains(&pkg.package.adapter_id);
+
+    let mut buttons = row![].spacing(spacing::XS).align_y(Alignment::Center);
+
+    if show_update {
+        let is_updating = updating.as_deref() == Some(&pkg.package.id);
+        let update_btn = if is_updating {
+            button(text("Updating...").size(font_size::CAPTION + 1.0).center())
+                .padding([spacing::XXS, 14.0])
+                .style(button::secondary)
+        } else {
+            let mut btn = button(text("Update").size(font_size::CAPTION + 1.0).center())
+                .padding([spacing::XXS, 14.0])
+                .style(button::primary);
+            if !is_busy {
+                btn = btn.on_press(Message::Installed(InstalledMessage::UpdatePackage(
+                    pkg.package.clone(),
+                )));
+            }
+            btn
+        };
+        buttons = buttons.push(update_btn);
+    }
+
+    buttons = buttons.push(remove_btn);
+
+    let card_content = row![left, buttons]
         .spacing(spacing::MD)
         .align_y(Alignment::Center);
 

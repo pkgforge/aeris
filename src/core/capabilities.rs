@@ -8,6 +8,7 @@ pub struct Capabilities {
     pub can_remove: bool,
     pub can_update: bool,
     pub can_list: bool,
+    pub can_list_updates: bool,
     pub can_sync: bool,
     pub can_run: bool,
 

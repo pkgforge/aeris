@@ -60,15 +60,22 @@ pub enum InstalledMessage {
     SourceFilterChanged(Option<String>),
     RemovePackage(Package),
     RemoveComplete(Result<(), String>),
+    UpdatePackage(Package),
 }
 
 #[derive(Debug, Clone)]
 pub enum UpdatesMessage {
     CheckUpdates,
-    UpdatesLoaded(Result<Vec<Update>, String>),
+    UpdatesLoaded {
+        result: Result<Vec<Update>, String>,
+        /// Adapters (id, name) that don't support listing available updates.
+        no_update_listing: Vec<(String, String)>,
+    },
     UpdatePackage(Package),
     UpdateComplete(Result<(), String>),
     UpdateAll,
+    /// Trigger update for all installed packages from a specific adapter (by id).
+    UpdateAdapterAll(String),
 }
 
 #[derive(Debug, Clone)]

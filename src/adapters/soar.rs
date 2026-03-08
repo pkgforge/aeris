@@ -521,6 +521,7 @@ impl SoarAdapter {
                         can_remove: true,
                         can_update: true,
                         can_list: true,
+                        can_list_updates: true,
                         can_sync: true,
                         can_run: true,
                         can_add_repo: true,

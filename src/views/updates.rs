@@ -18,6 +18,8 @@ pub struct UpdatesState {
     pub error: Option<String>,
     pub result_version: u64,
     pub updating: Option<String>,
+    /// Adapters (id, name) that were checked but don't support listing available updates.
+    pub no_update_listing: Vec<(String, String)>,
 }
 
 pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Message> {
@@ -68,7 +70,41 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
         } else {
             "Click Check to look for updates"
         };
-        container(text(msg).size(font_size::BODY))
+        let mut col = column![text(msg).size(font_size::BODY)]
+            .spacing(spacing::SM)
+            .align_x(Alignment::Center);
+
+        if state.checked && !state.no_update_listing.is_empty() {
+            for (adapter_id, adapter_name) in &state.no_update_listing {
+                let mut note_row = row![
+                    text(format!(
+                        "{adapter_name} cannot detect available updates."
+                    ))
+                    .size(font_size::CAPTION),
+                ]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center);
+
+                if !is_busy {
+                    note_row = note_row.push(
+                        button(
+                            text(format!("Update All {adapter_name}"))
+                                .size(font_size::CAPTION)
+                                .center(),
+                        )
+                        .padding([spacing::XXXS, spacing::SM])
+                        .style(button::secondary)
+                        .on_press(Message::Updates(UpdatesMessage::UpdateAdapterAll(
+                            adapter_id.clone(),
+                        ))),
+                    );
+                }
+
+                col = col.push(note_row);
+            }
+        }
+
+        container(col)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .into()
@@ -76,11 +112,37 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
         let version = state.result_version;
         let updates = state.updates.clone();
         let updating = state.updating.clone();
+        let no_update_listing = state.no_update_listing.clone();
         lazy(("updates", version), move |_| {
             let cards: Vec<Element<'_, Message>> =
                 updates.iter().map(|u| update_card(u, &updating)).collect();
 
-            scrollable(column(cards).spacing(spacing::SM).width(Length::Fill)).height(Length::Fill)
+            let mut col = column(cards).spacing(spacing::SM).width(Length::Fill);
+
+            for (adapter_id, adapter_name) in &no_update_listing {
+                let note_row = row![
+                    text(format!(
+                        "{adapter_name} cannot detect available updates."
+                    ))
+                    .size(font_size::CAPTION),
+                    button(
+                        text(format!("Update All {adapter_name}"))
+                            .size(font_size::CAPTION)
+                            .center(),
+                    )
+                    .padding([spacing::XXXS, spacing::SM])
+                    .style(button::secondary)
+                    .on_press(Message::Updates(UpdatesMessage::UpdateAdapterAll(
+                        adapter_id.clone(),
+                    ))),
+                ]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center);
+
+                col = col.push(container(note_row).padding([spacing::SM, 0.0]));
+            }
+
+            scrollable(col).height(Length::Fill)
         })
         .into()
     };

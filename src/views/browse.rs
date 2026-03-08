@@ -136,16 +136,23 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
 fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, Message> {
     let pkg_id = pkg.id.clone();
     let name = text(pkg.name.clone()).size(font_size::HEADING);
-    let version = container(text(pkg.version.clone()).size(font_size::CAPTION))
-        .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_neutral);
     let adapter = container(text(pkg.adapter_id.clone()).size(font_size::BADGE))
         .padding([spacing::XXXS, spacing::XS])
         .style(styles::badge_adapter(&pkg.adapter_id));
 
-    let header = row![name, version, adapter]
+    let mut header = row![name]
         .spacing(spacing::SM)
         .align_y(Alignment::Center);
+
+    if !pkg.version.is_empty() {
+        header = header.push(
+            container(text(pkg.version.clone()).size(font_size::CAPTION))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_neutral),
+        );
+    }
+
+    header = header.push(adapter);
 
     let description = text(
         pkg.description
@@ -221,10 +228,6 @@ fn detail_side_panel(pkg: &Package) -> Element<'_, Message> {
     ]
     .align_y(Alignment::Center);
 
-    let version_badge = container(text(format!("v{}", pkg.version)).size(font_size::CAPTION + 1.0))
-        .padding([3.0, spacing::SM])
-        .style(styles::badge_primary);
-
     let description = text(
         pkg.description
             .clone()
@@ -277,9 +280,18 @@ fn detail_side_panel(pkg: &Package) -> Element<'_, Message> {
         .style(button::secondary)
         .on_press(Message::Browse(BrowseMessage::CloseDetail));
 
-    let mut content = column![header, version_badge, description, rule::horizontal(1)]
-        .spacing(10)
-        .padding(spacing::XL);
+    let mut content = column![header].spacing(10).padding(spacing::XL);
+
+    if !pkg.version.is_empty() {
+        content = content.push(
+            container(text(pkg.version.clone()).size(font_size::CAPTION + 1.0))
+                .padding([3.0, spacing::SM])
+                .style(styles::badge_primary),
+        );
+    }
+
+    content = content.push(description);
+    content = content.push(rule::horizontal(1));
 
     for detail in details {
         content = content.push(detail);

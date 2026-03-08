@@ -228,21 +228,8 @@ impl App {
             })
             .unwrap_or(PackageMode::User);
 
-        let soar_enabled_at_init = !aeris_config.is_adapter_disabled("soar");
-        let load_adapter = adapter.clone();
-        let init_task = Task::perform(
-            async move {
-                if soar_enabled_at_init {
-                    load_adapter
-                        .list_installed(default_mode)
-                        .await
-                        .map_err(|e| e.to_string())
-                } else {
-                    Ok(Vec::new())
-                }
-            },
-            |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
-        );
+        let init_task =
+            Task::done(Message::Installed(message::InstalledMessage::Refresh));
 
         (
             Self {
@@ -252,6 +239,14 @@ impl App {
                 browse: views::browse::BrowseState::default(),
                 installed: views::installed::InstalledState {
                     loading: true,
+                    updatable_adapters: adapter_manager
+                        .list_adapters()
+                        .iter()
+                        .filter(|info| {
+                            info.capabilities.can_update && !info.capabilities.can_list_updates
+                        })
+                        .map(|info| info.id.clone())
+                        .collect(),
                     ..Default::default()
                 },
                 updates: views::updates::UpdatesState::default(),
@@ -628,6 +623,10 @@ impl App {
                     }
                 }
             }
+            message::InstalledMessage::UpdatePackage(pkg) => {
+                self.confirm_dialog =
+                    Some(message::ConfirmAction::Update(pkg, self.current_mode));
+            }
             _ => {}
         }
         Task::none()
@@ -666,6 +665,20 @@ impl App {
                     .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
                     .collect();
 
+                // Collect names of enabled adapters that can update but
+                // don't support listing available updates (always return empty).
+                let no_update_listing: Vec<(String, String)> = self
+                    .adapter_manager
+                    .list_adapters()
+                    .iter()
+                    .filter(|info| {
+                        self.adapter_manager.is_enabled(&info.id)
+                            && info.capabilities.can_update
+                            && !info.capabilities.can_list_updates
+                    })
+                    .map(|info| (info.id.clone(), info.name.clone()))
+                    .collect();
+
                 return Task::perform(
                     async move {
                         let mut results = Vec::new();
@@ -688,13 +701,22 @@ impl App {
 
                         Ok(results)
                     },
-                    |result| Message::Updates(message::UpdatesMessage::UpdatesLoaded(result)),
+                    move |result| {
+                        Message::Updates(message::UpdatesMessage::UpdatesLoaded {
+                            result,
+                            no_update_listing,
+                        })
+                    },
                 );
             }
-            message::UpdatesMessage::UpdatesLoaded(result) => {
+            message::UpdatesMessage::UpdatesLoaded {
+                result,
+                no_update_listing,
+            } => {
                 self.updates.loading = false;
                 self.updates.checked = true;
                 self.updates.result_version += 1;
+                self.updates.no_update_listing = no_update_listing;
                 match result {
                     Ok(updates) => {
                         self.updates.error = None;
@@ -713,6 +735,7 @@ impl App {
             message::UpdatesMessage::UpdateComplete(result) => {
                 self.active_operation = None;
                 let pkg_id = self.updates.updating.take();
+                self.installed.updating.take();
                 match result {
                     Ok(()) => {
                         log::info!("Package updated successfully");
@@ -737,6 +760,42 @@ impl App {
                     return Task::none();
                 }
                 self.confirm_dialog = Some(message::ConfirmAction::UpdateAll(self.current_mode));
+            }
+            message::UpdatesMessage::UpdateAdapterAll(adapter_id) => {
+                if self.updates.updating.is_some() {
+                    return Task::none();
+                }
+                if let Some(adapter) = self.adapter_manager.get_adapter(&adapter_id) {
+                    let adapter_name = adapter.info().name.clone();
+                    self.active_operation = Some(ActiveOperation {
+                        operation_type: OperationType::Update,
+                        package_name: format!("all {adapter_name} packages"),
+                        status: OperationStatus::Starting,
+                    });
+                    self.updates.updating = Some(format!("__adapter__{adapter_id}"));
+                    self.updates.result_version += 1;
+
+                    let mode = self.current_mode;
+                    return Task::perform(
+                        async move {
+                            let installed = adapter.list_installed(mode).await
+                                .map_err(|e| e.to_string())?;
+                            let packages: Vec<crate::core::package::Package> = installed
+                                .into_iter()
+                                .map(|ip| ip.package)
+                                .collect();
+                            if packages.is_empty() {
+                                return Ok(());
+                            }
+                            adapter
+                                .update(&packages, None, mode)
+                                .await
+                                .map_err(|e| e.to_string())
+                                .map(|_| ())
+                        },
+                        |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
+                    );
+                }
             }
         }
         Task::none()
@@ -1304,6 +1363,11 @@ impl App {
                 });
                 self.updates.updating = Some(pkg.id.clone());
                 self.updates.result_version += 1;
+
+                if self.installed.updatable_adapters.contains(&pkg.adapter_id) {
+                    self.installed.updating = Some(pkg.id.clone());
+                    self.installed.result_version += 1;
+                }
 
                 if pkg.adapter_id == "soar" {
                     if let Some(query) = pkg.soar_query() {
