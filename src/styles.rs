@@ -294,6 +294,51 @@ pub fn card_button(
     }
 }
 
+pub fn card_button_selected(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
+    match status {
+        iced::widget::button::Status::Hovered => iced::widget::button::Style {
+            background: Some(palette.primary.weak.color.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: radius::LG.into(),
+                width: 2.0,
+                color: palette.primary.base.color,
+            },
+            shadow: Shadow {
+                color: Color {
+                    a: 0.12,
+                    ..Color::BLACK
+                },
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 12.0,
+            },
+            snap: false,
+        },
+        _ => iced::widget::button::Style {
+            background: Some(palette.primary.weak.color.into()),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius: radius::LG.into(),
+                width: 2.0,
+                color: palette.primary.base.color,
+            },
+            shadow: Shadow {
+                color: Color {
+                    a: 0.08,
+                    ..Color::BLACK
+                },
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: 8.0,
+            },
+            snap: false,
+        },
+    }
+}
+
 // --- Detail Panel ---
 
 pub fn detail_panel(theme: &Theme) -> container::Style {
@@ -525,6 +570,29 @@ pub fn progress_container(theme: &Theme) -> container::Style {
             },
             offset: Vector::new(0.0, -2.0),
             blur_radius: 6.0,
+        },
+        ..Default::default()
+    }
+}
+
+// --- Toast ---
+
+pub fn toast_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(palette.background.base.color.into()),
+        border: Border {
+            radius: radius::LG.into(),
+            width: 1.0,
+            color: palette.background.strong.color,
+        },
+        shadow: Shadow {
+            color: Color {
+                a: 0.15,
+                ..Color::BLACK
+            },
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
         },
         ..Default::default()
     }

@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::core::adapter::ProgressSender;
+
 use super::manifest::Permissions;
 
 #[derive(Clone)]
@@ -7,6 +9,7 @@ pub struct HostState {
     pub adapter_id: String,
     pub permissions: Permissions,
     pub data_dir: PathBuf,
+    pub progress_sender: Option<ProgressSender>,
 }
 
 impl HostState {
@@ -16,6 +19,7 @@ impl HostState {
             adapter_id,
             permissions,
             data_dir,
+            progress_sender: None,
         }
     }
 

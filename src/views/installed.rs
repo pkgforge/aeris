@@ -1,12 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, lazy, row, scrollable, space, text},
+    widget::{
+        button, checkbox, column, container, lazy, progress_bar, row, scrollable, space, text,
+    },
 };
 
 use crate::{
-    app::message::{InstalledMessage, Message},
+    app::{
+        OperationStatus,
+        message::{InstalledMessage, Message},
+    },
     core::{package::InstalledPackage, privilege::PackageMode},
     styles::{self, font_size, spacing},
 };
@@ -23,6 +28,8 @@ pub struct InstalledState {
     pub updating: Option<String>,
     /// Adapter IDs that support updating but not listing available updates.
     pub updatable_adapters: HashSet<String>,
+    pub selected: HashSet<String>,
+    pub package_progress: HashMap<String, OperationStatus>,
 }
 
 pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Message> {
@@ -67,10 +74,21 @@ pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Mes
         let removing = state.removing.clone();
         let updating = state.updating.clone();
         let updatable_adapters = state.updatable_adapters.clone();
+        let selected = state.selected.clone();
+        let package_progress = state.package_progress.clone();
         lazy(("installed", version), move |_| {
             let cards: Vec<Element<'_, Message>> = packages
                 .iter()
-                .map(|pkg| installed_card(pkg, &removing, &updating, &updatable_adapters))
+                .map(|pkg| {
+                    installed_card(
+                        pkg,
+                        &removing,
+                        &updating,
+                        &updatable_adapters,
+                        &selected,
+                        &package_progress,
+                    )
+                })
                 .collect();
 
             scrollable(column(cards).spacing(spacing::SM).width(Length::Fill)).height(Length::Fill)
@@ -78,16 +96,26 @@ pub fn view<'a>(state: &'a InstalledState, mode: PackageMode) -> Element<'a, Mes
         .into()
     };
 
-    container(
-        column![header, content]
-            .spacing(spacing::MD)
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .padding(spacing::XL)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    let mut main_col = column![header, content]
+        .spacing(spacing::MD)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    if !state.selected.is_empty() {
+        main_col = main_col.push(super::browse::floating_action_bar(
+            state.selected.len(),
+            "Remove",
+            Message::Installed(InstalledMessage::RemoveSelected),
+            Message::Installed(InstalledMessage::ClearSelection),
+            true,
+        ));
+    }
+
+    container(main_col)
+        .padding(spacing::XL)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 fn installed_card(
@@ -95,15 +123,16 @@ fn installed_card(
     removing: &Option<String>,
     updating: &Option<String>,
     updatable_adapters: &HashSet<String>,
+    selected: &HashSet<String>,
+    package_progress: &HashMap<String, OperationStatus>,
 ) -> Element<'static, Message> {
+    let is_selected = selected.contains(&pkg.package.id);
     let name = text(pkg.package.name.clone()).size(font_size::HEADING);
     let adapter = container(text(pkg.package.adapter_id.clone()).size(font_size::BADGE))
         .padding([spacing::XXXS, spacing::XS])
         .style(styles::badge_adapter(&pkg.package.adapter_id));
 
-    let mut header = row![name]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center);
+    let mut header = row![name].spacing(spacing::SM).align_y(Alignment::Center);
 
     if !pkg.package.version.is_empty() {
         header = header.push(
@@ -158,9 +187,14 @@ fn installed_card(
         .spacing(spacing::MD)
         .align_y(Alignment::Center);
 
-    let is_removing = removing.as_deref() == Some(&pkg.package.id);
+    let pkg_status = package_progress.get(&pkg.package.name);
+    let is_removing = removing.as_deref() == Some(&pkg.package.id)
+        || (removing.as_deref() == Some("__batch__") && pkg_status.is_some());
     let remove_btn = if is_removing {
-        button(text("Removing...").size(font_size::CAPTION + 1.0).center())
+        let label = pkg_status
+            .map(|s| s.label())
+            .unwrap_or_else(|| "Removing...".into());
+        button(text(label).size(font_size::CAPTION + 1.0).center())
             .padding([spacing::XXS, 14.0])
             .style(button::secondary)
     } else {
@@ -175,9 +209,18 @@ fn installed_card(
         btn
     };
 
-    let left = column![header, info_row]
+    let mut left = column![header, info_row]
         .spacing(spacing::XXS)
         .width(Length::Fill);
+
+    // Add inline progress bar when downloading
+    if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
+        left = left.push(
+            container(progress_bar(0.0..=1.0, progress))
+                .height(4)
+                .width(Length::Fill),
+        );
+    }
 
     let is_busy = removing.is_some() || updating.is_some();
     let show_update = updatable_adapters.contains(&pkg.package.adapter_id);
@@ -185,9 +228,13 @@ fn installed_card(
     let mut buttons = row![].spacing(spacing::XS).align_y(Alignment::Center);
 
     if show_update {
-        let is_updating = updating.as_deref() == Some(&pkg.package.id);
+        let is_updating = updating.as_deref() == Some(&pkg.package.id)
+            || (updating.as_deref() == Some("__batch__") && pkg_status.is_some());
         let update_btn = if is_updating {
-            button(text("Updating...").size(font_size::CAPTION + 1.0).center())
+            let label = pkg_status
+                .map(|s| s.label())
+                .unwrap_or_else(|| "Updating...".into());
+            button(text(label).size(font_size::CAPTION + 1.0).center())
                 .padding([spacing::XXS, 14.0])
                 .style(button::secondary)
         } else {
@@ -206,9 +253,20 @@ fn installed_card(
 
     buttons = buttons.push(remove_btn);
 
-    let card_content = row![left, buttons]
+    let cb_id = pkg.package.id.clone();
+    let cb = checkbox(is_selected)
+        .on_toggle(move |_| Message::Installed(InstalledMessage::ToggleSelect(cb_id.clone())));
+
+    let card_content = row![cb, left, buttons]
         .spacing(spacing::MD)
         .align_y(Alignment::Center);
+
+    let card_style = if is_selected {
+        styles::card_button_selected
+            as fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style
+    } else {
+        styles::card_button
+    };
 
     button(
         container(card_content)
@@ -216,6 +274,6 @@ fn installed_card(
             .width(Length::Fill),
     )
     .width(Length::Fill)
-    .style(styles::card_button)
+    .style(card_style)
     .into()
 }

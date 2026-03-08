@@ -407,9 +407,16 @@ fn register_host_report_progress(linker: &mut Linker<HostState>) -> Result<(), S
                     Err(_) => return,
                 };
 
-                // Log the progress event; actual channel forwarding is a follow-up
                 let adapter_id = caller.data().adapter_id.clone();
                 log::debug!("[plugin:{adapter_id}] progress: {json_str}");
+
+                // Forward progress event to sender if available
+                if let Some(ref sender) = caller.data().progress_sender {
+                    let _ = sender.send(crate::core::adapter::ProgressEvent::Status {
+                        adapter_id,
+                        message: json_str,
+                    });
+                }
             },
         )
         .map_err(|e| format!("Failed to register {}: {e}", abi::IMPORT_REPORT_PROGRESS))?;

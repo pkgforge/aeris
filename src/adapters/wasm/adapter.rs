@@ -277,6 +277,51 @@ impl WasmAdapter {
         .await
         .map_err(|e| AdapterError::Other(format!("Task join error: {e}")))?
     }
+    /// Like call_with_json but sets progress_sender on the HostState.
+    async fn call_with_json_progress<
+        I: serde::Serialize + Send + 'static,
+        O: serde::de::DeserializeOwned + Send + 'static,
+    >(
+        &self,
+        export_name: &'static str,
+        input: I,
+        progress: Option<ProgressSender>,
+    ) -> Result<O> {
+        let engine = self.engine.clone();
+        let module = self.module.clone();
+        let linker = self.linker.clone();
+        let mut host_state = self.host_state.clone();
+        host_state.progress_sender = progress;
+
+        tokio::task::spawn_blocking(move || {
+            let (mut store, instance) =
+                Self::fresh_instance(&engine, &module, &linker, host_state)?;
+
+            let input_json = serde_json::to_string(&input).map_err(|e| {
+                AdapterError::PluginError(format!("Failed to serialize input: {e}"))
+            })?;
+
+            let (ptr, len) = memory::write_string(&instance, &mut store, &input_json)
+                .map_err(AdapterError::PluginError)?;
+
+            let func = instance
+                .get_typed_func::<(i32, i32), i64>(store.as_context_mut(), export_name)
+                .map_err(|e| {
+                    AdapterError::PluginError(format!("Missing export '{export_name}': {e}"))
+                })?;
+
+            let result = func
+                .call(&mut store, (ptr as i32, len as i32))
+                .map_err(|e| AdapterError::PluginError(format!("{export_name} failed: {e}")))?;
+
+            let mem = memory::get_memory(&instance, store.as_context_mut())
+                .map_err(AdapterError::PluginError)?;
+
+            memory::read_result_json(&mem, &store, result).map_err(AdapterError::PluginError)
+        })
+        .await
+        .map_err(|e| AdapterError::Other(format!("Task join error: {e}")))?
+    }
 }
 
 #[async_trait::async_trait]
@@ -318,41 +363,45 @@ impl Adapter for WasmAdapter {
     async fn install(
         &self,
         packages: &[Package],
-        _progress: Option<ProgressSender>,
+        progress: Option<ProgressSender>,
         mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         let input = PackagesWithMode {
             packages: packages.to_vec(),
             mode: mode_str(mode),
         };
-        self.call_with_json(abi::EXPORT_INSTALL, input).await
+        self.call_with_json_progress(abi::EXPORT_INSTALL, input, progress)
+            .await
     }
 
     async fn remove(
         &self,
         packages: &[Package],
-        _progress: Option<ProgressSender>,
+        progress: Option<ProgressSender>,
         mode: PackageMode,
     ) -> Result<()> {
         let input = PackagesWithMode {
             packages: packages.to_vec(),
             mode: mode_str(mode),
         };
-        let _: serde_json::Value = self.call_with_json(abi::EXPORT_REMOVE, input).await?;
+        let _: serde_json::Value = self
+            .call_with_json_progress(abi::EXPORT_REMOVE, input, progress)
+            .await?;
         Ok(())
     }
 
     async fn update(
         &self,
         packages: &[Package],
-        _progress: Option<ProgressSender>,
+        progress: Option<ProgressSender>,
         mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         let input = PackagesWithMode {
             packages: packages.to_vec(),
             mode: mode_str(mode),
         };
-        self.call_with_json(abi::EXPORT_UPDATE, input).await
+        self.call_with_json_progress(abi::EXPORT_UPDATE, input, progress)
+            .await
     }
 
     async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {

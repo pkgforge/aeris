@@ -1,6 +1,8 @@
 pub mod message;
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use iced::{
     Alignment, Element, Length, Subscription, Task,
@@ -105,6 +107,7 @@ impl std::fmt::Display for OperationType {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum OperationStatus {
     Starting,
     Downloading { current: u64, total: u64 },
@@ -153,6 +156,37 @@ pub struct ActiveOperation {
     pub status: OperationStatus,
 }
 
+#[allow(dead_code)]
+pub struct TrackedOperation {
+    pub id: u64,
+    pub operation_type: OperationType,
+    pub package_name: String,
+    pub status: OperationStatus,
+    pub started_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastLevel {
+    Success,
+    Error,
+    Info,
+}
+
+pub struct Toast {
+    pub id: u64,
+    pub level: ToastLevel,
+    pub message: String,
+    pub created_at: Instant,
+    pub duration: Duration,
+}
+
+#[allow(dead_code)]
+pub struct QueuedOperation {
+    pub id: u64,
+    pub action: message::ConfirmAction,
+    pub queued_at: Instant,
+}
+
 #[derive(Default)]
 pub struct AdapterViewState {
     pub registry_plugins: Vec<PluginEntry>,
@@ -178,6 +212,14 @@ pub struct App {
     confirm_dialog: Option<message::ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
+    package_progress: HashMap<String, OperationStatus>,
+    operations: Vec<TrackedOperation>,
+    next_operation_id: u64,
+    toasts: Vec<Toast>,
+    next_toast_id: u64,
+    operation_queue: Vec<QueuedOperation>,
+    progress_sender: crate::core::adapter::ProgressSender,
+    progress_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::core::adapter::ProgressEvent>,
     selected_install_mode: PackageMode,
     current_mode: PackageMode,
 }
@@ -228,8 +270,9 @@ impl App {
             })
             .unwrap_or(PackageMode::User);
 
-        let init_task =
-            Task::done(Message::Installed(message::InstalledMessage::Refresh));
+        let init_task = Task::done(Message::Installed(message::InstalledMessage::Refresh));
+
+        let (progress_sender, progress_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         (
             Self {
@@ -259,6 +302,14 @@ impl App {
                 confirm_dialog: None,
                 event_receiver,
                 active_operation: None,
+                package_progress: HashMap::new(),
+                operations: Vec::new(),
+                next_operation_id: 1,
+                toasts: Vec::new(),
+                next_toast_id: 1,
+                operation_queue: Vec::new(),
+                progress_sender,
+                progress_receiver,
                 selected_install_mode: default_mode,
                 current_mode: default_mode,
             },
@@ -274,6 +325,10 @@ impl App {
         match message {
             Message::NavigateTo(view) => {
                 self.current_view = view;
+                // Clear selections when navigating away
+                self.browse.selected.clear();
+                self.installed.selected.clear();
+                self.updates.selected.clear();
                 return match view {
                     View::Installed if !self.installed.loaded => self.load_installed(),
                     View::Repositories if !self.repositories.loaded => self.load_repositories(),
@@ -320,10 +375,38 @@ impl App {
                     return self.execute_confirmed(action);
                 }
             }
+            Message::DismissToast(id) => {
+                self.toasts.retain(|t| t.id != id);
+            }
+            Message::CancelQueuedOperation(id) => {
+                self.operation_queue.retain(|q| q.id != id);
+            }
+            Message::ProcessNextQueued => {
+                if self.active_operation.is_none() && !self.operation_queue.is_empty() {
+                    let queued = self.operation_queue.remove(0);
+                    return self.execute_operation(queued.action);
+                }
+            }
             Message::ProgressTick => {
                 while let Ok(event) = self.event_receiver.try_recv() {
                     self.handle_soar_event(event);
                 }
+                while let Ok(event) = self.progress_receiver.try_recv() {
+                    self.handle_progress_event(event);
+                }
+                // Sync per-package progress to active view state
+                if !self.package_progress.is_empty() && self.active_operation.is_some() {
+                    self.browse.package_progress = self.package_progress.clone();
+                    self.browse.result_version += 1;
+                    self.installed.package_progress = self.package_progress.clone();
+                    self.installed.result_version += 1;
+                    self.updates.package_progress = self.package_progress.clone();
+                    self.updates.result_version += 1;
+                }
+                // Expire old toasts
+                let now = Instant::now();
+                self.toasts
+                    .retain(|t| now.duration_since(t.created_at) < t.duration);
             }
         }
         Task::none()
@@ -423,25 +506,71 @@ impl App {
             }
             message::BrowseMessage::InstallComplete(result) => {
                 self.active_operation = None;
+                self.package_progress.clear();
+                self.browse.package_progress.clear();
                 let pkg_id = self.browse.installing.take();
+                let batch_ids = std::mem::take(&mut self.browse.installing_batch_ids);
                 self.browse.result_version += 1;
                 match result {
                     Ok(()) => {
                         log::info!("Package installed successfully");
-                        if let Some(ref id) = pkg_id {
+                        self.push_toast(ToastLevel::Success, "Package installed successfully");
+                        if !batch_ids.is_empty() {
+                            for id in &batch_ids {
+                                self.set_browse_installed(id, true);
+                            }
+                        } else if let Some(ref id) = pkg_id {
                             self.set_browse_installed(id, true);
                         }
-                        return self.load_installed();
+                        let reload = self.load_installed();
+                        let next = Task::done(Message::ProcessNextQueued);
+                        return Task::batch([reload, next]);
                     }
                     Err(e) => {
                         log::error!("Install failed: {e}");
+                        self.push_toast(ToastLevel::Error, format!("Install failed: {e}"));
                         self.browse.install_error = Some(e);
+                        return Task::done(Message::ProcessNextQueued);
                     }
                 }
             }
             message::BrowseMessage::DismissInstallError => {
                 self.browse.install_error = None;
                 self.browse.result_version += 1;
+            }
+            message::BrowseMessage::ToggleSelect(id) => {
+                if self.browse.selected.contains(&id) {
+                    self.browse.selected.remove(&id);
+                } else {
+                    self.browse.selected.insert(id);
+                }
+                self.browse.result_version += 1;
+            }
+            message::BrowseMessage::SelectAll => {
+                for pkg in &self.browse.search_results {
+                    if !pkg.installed {
+                        self.browse.selected.insert(pkg.id.clone());
+                    }
+                }
+                self.browse.result_version += 1;
+            }
+            message::BrowseMessage::ClearSelection => {
+                self.browse.selected.clear();
+                self.browse.result_version += 1;
+            }
+            message::BrowseMessage::InstallSelected => {
+                let packages: Vec<_> = self
+                    .browse
+                    .search_results
+                    .iter()
+                    .filter(|p| self.browse.selected.contains(&p.id))
+                    .cloned()
+                    .collect();
+                if !packages.is_empty() {
+                    let mode = self.selected_install_mode;
+                    self.confirm_dialog =
+                        Some(message::ConfirmAction::BatchInstall(packages, mode));
+                }
             }
             _ => {}
         }
@@ -503,6 +632,55 @@ impl App {
         }
 
         self.installed.loading = true;
+
+        let mode = self.current_mode;
+        let soar_enabled = self.adapter_manager.is_enabled("soar");
+        let adapter = self.adapter.clone();
+
+        let other_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter(|info| {
+                info.id != "soar"
+                    && self.adapter_manager.is_enabled(&info.id)
+                    && info.capabilities.can_list
+            })
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        Task::perform(
+            async move {
+                let mut results = Vec::new();
+
+                if soar_enabled {
+                    match adapter.list_installed(mode).await {
+                        Ok(pkgs) => results.extend(pkgs),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+
+                for other in other_adapters {
+                    match other.list_installed(mode).await {
+                        Ok(pkgs) => results.extend(pkgs),
+                        Err(e) => log::warn!("List installed failed for {}: {e}", other.info().id),
+                    }
+                }
+
+                Ok(results)
+            },
+            |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
+        )
+    }
+
+    /// Reload installed packages without showing the loading spinner.
+    /// Used after remove/update to avoid the jarring "Loading..." flash.
+    fn reload_installed_quiet(&mut self) -> Task<Message> {
+        if !self.adapter_manager.any_enabled() {
+            return Task::none();
+        }
+
+        // Intentionally do NOT set self.installed.loading = true
 
         let mode = self.current_mode;
         let soar_enabled = self.adapter_manager.is_enabled("soar");
@@ -607,25 +785,65 @@ impl App {
             }
             message::InstalledMessage::RemoveComplete(result) => {
                 self.active_operation = None;
+                self.package_progress.clear();
+                self.installed.package_progress.clear();
                 let pkg_id = self.installed.removing.take();
                 match result {
                     Ok(()) => {
                         log::info!("Package removed successfully");
+                        self.push_toast(ToastLevel::Success, "Package removed successfully");
                         if let Some(ref id) = pkg_id {
                             self.set_browse_installed(id, false);
+                            // Optimistically remove from local list for instant UI feedback
+                            self.installed.packages.retain(|p| p.package.id != *id);
+                            self.installed.result_version += 1;
                         }
-                        return self.load_installed();
+                        let reload = self.reload_installed_quiet();
+                        let next = Task::done(Message::ProcessNextQueued);
+                        return Task::batch([reload, next]);
                     }
                     Err(e) => {
                         log::error!("Remove failed: {e}");
+                        self.push_toast(ToastLevel::Error, format!("Remove failed: {e}"));
                         self.installed.error = Some(e);
                         self.installed.result_version += 1;
+                        return Task::done(Message::ProcessNextQueued);
                     }
                 }
             }
             message::InstalledMessage::UpdatePackage(pkg) => {
-                self.confirm_dialog =
-                    Some(message::ConfirmAction::Update(pkg, self.current_mode));
+                self.confirm_dialog = Some(message::ConfirmAction::Update(pkg, self.current_mode));
+            }
+            message::InstalledMessage::ToggleSelect(id) => {
+                if self.installed.selected.contains(&id) {
+                    self.installed.selected.remove(&id);
+                } else {
+                    self.installed.selected.insert(id);
+                }
+                self.installed.result_version += 1;
+            }
+            message::InstalledMessage::SelectAll => {
+                for pkg in &self.installed.packages {
+                    self.installed.selected.insert(pkg.package.id.clone());
+                }
+                self.installed.result_version += 1;
+            }
+            message::InstalledMessage::ClearSelection => {
+                self.installed.selected.clear();
+                self.installed.result_version += 1;
+            }
+            message::InstalledMessage::RemoveSelected => {
+                let packages: Vec<_> = self
+                    .installed
+                    .packages
+                    .iter()
+                    .filter(|p| self.installed.selected.contains(&p.package.id))
+                    .map(|p| p.package.clone())
+                    .collect();
+                if !packages.is_empty() {
+                    let mode = self.current_mode;
+                    self.confirm_dialog = Some(message::ConfirmAction::BatchRemove(packages, mode));
+                }
             }
             _ => {}
         }
@@ -734,11 +952,15 @@ impl App {
             }
             message::UpdatesMessage::UpdateComplete(result) => {
                 self.active_operation = None;
+                self.package_progress.clear();
+                self.updates.package_progress.clear();
+                self.installed.package_progress.clear();
                 let pkg_id = self.updates.updating.take();
                 self.installed.updating.take();
                 match result {
                     Ok(()) => {
                         log::info!("Package updated successfully");
+                        self.push_toast(ToastLevel::Success, "Package updated successfully");
                         match pkg_id.as_deref() {
                             Some("__all__") => self.set_browse_update_available_all(false),
                             Some(id) => self.set_browse_update_available(id, false),
@@ -746,12 +968,15 @@ impl App {
                         }
                         let check = self.update_updates(message::UpdatesMessage::CheckUpdates);
                         let reload = self.load_installed();
-                        return Task::batch([check, reload]);
+                        let next = Task::done(Message::ProcessNextQueued);
+                        return Task::batch([check, reload, next]);
                     }
                     Err(e) => {
                         log::error!("Update failed: {e}");
+                        self.push_toast(ToastLevel::Error, format!("Update failed: {e}"));
                         self.updates.error = Some(e);
                         self.updates.result_version += 1;
+                        return Task::done(Message::ProcessNextQueued);
                     }
                 }
             }
@@ -760,6 +985,37 @@ impl App {
                     return Task::none();
                 }
                 self.confirm_dialog = Some(message::ConfirmAction::UpdateAll(self.current_mode));
+            }
+            message::UpdatesMessage::ToggleSelect(id) => {
+                if self.updates.selected.contains(&id) {
+                    self.updates.selected.remove(&id);
+                } else {
+                    self.updates.selected.insert(id);
+                }
+                self.updates.result_version += 1;
+            }
+            message::UpdatesMessage::SelectAll => {
+                for update in &self.updates.updates {
+                    self.updates.selected.insert(update.package.id.clone());
+                }
+                self.updates.result_version += 1;
+            }
+            message::UpdatesMessage::ClearSelection => {
+                self.updates.selected.clear();
+                self.updates.result_version += 1;
+            }
+            message::UpdatesMessage::UpdateSelected => {
+                let packages: Vec<_> = self
+                    .updates
+                    .updates
+                    .iter()
+                    .filter(|u| self.updates.selected.contains(&u.package.id))
+                    .map(|u| u.package.clone())
+                    .collect();
+                if !packages.is_empty() {
+                    let mode = self.current_mode;
+                    self.confirm_dialog = Some(message::ConfirmAction::BatchUpdate(packages, mode));
+                }
             }
             message::UpdatesMessage::UpdateAdapterAll(adapter_id) => {
                 if self.updates.updating.is_some() {
@@ -778,12 +1034,12 @@ impl App {
                     let mode = self.current_mode;
                     return Task::perform(
                         async move {
-                            let installed = adapter.list_installed(mode).await
+                            let installed = adapter
+                                .list_installed(mode)
+                                .await
                                 .map_err(|e| e.to_string())?;
-                            let packages: Vec<crate::core::package::Package> = installed
-                                .into_iter()
-                                .map(|ip| ip.package)
-                                .collect();
+                            let packages: Vec<crate::core::package::Package> =
+                                installed.into_iter().map(|ip| ip.package).collect();
                             if packages.is_empty() {
                                 return Ok(());
                             }
@@ -1250,6 +1506,21 @@ impl App {
     }
 
     fn execute_confirmed(&mut self, action: message::ConfirmAction) -> Task<Message> {
+        // If an operation is already active, queue the new one
+        if self.active_operation.is_some() {
+            let id = self.next_operation_id;
+            self.next_operation_id += 1;
+            self.operation_queue.push(QueuedOperation {
+                id,
+                action,
+                queued_at: Instant::now(),
+            });
+            return Task::none();
+        }
+        self.execute_operation(action)
+    }
+
+    fn execute_operation(&mut self, action: message::ConfirmAction) -> Task<Message> {
         match action {
             message::ConfirmAction::Install(ref pkg, mode) => {
                 self.active_operation = Some(ActiveOperation {
@@ -1514,6 +1785,144 @@ impl App {
                     |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
                 );
             }
+            message::ConfirmAction::BatchInstall(ref packages, mode) => {
+                self.active_operation = Some(ActiveOperation {
+                    operation_type: OperationType::Install,
+                    package_name: format!("{} packages", packages.len()),
+                    status: OperationStatus::Starting,
+                });
+                self.browse.installing = Some("__batch__".into());
+                self.browse.installing_batch_ids = packages.iter().map(|p| p.id.clone()).collect();
+                self.browse.selected.clear();
+                self.browse.result_version += 1;
+
+                if mode == PackageMode::System {
+                    let _ = PrivilegeManager::detect_elevator();
+                }
+
+                // Group by adapter
+                let mut groups: std::collections::HashMap<
+                    String,
+                    Vec<crate::core::package::Package>,
+                > = std::collections::HashMap::new();
+                for pkg in packages {
+                    groups
+                        .entry(pkg.adapter_id.clone())
+                        .or_default()
+                        .push(pkg.clone());
+                }
+
+                let adapter_batches: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
+                    groups
+                        .into_iter()
+                        .filter_map(|(id, pkgs)| {
+                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
+                        })
+                        .collect();
+
+                return Task::perform(
+                    async move {
+                        for (adapter, pkgs) in adapter_batches {
+                            adapter
+                                .install(&pkgs, None, mode)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                        }
+                        Ok(())
+                    },
+                    |result| Message::Browse(message::BrowseMessage::InstallComplete(result)),
+                );
+            }
+            message::ConfirmAction::BatchRemove(ref packages, mode) => {
+                self.active_operation = Some(ActiveOperation {
+                    operation_type: OperationType::Remove,
+                    package_name: format!("{} packages", packages.len()),
+                    status: OperationStatus::Starting,
+                });
+                self.installed.removing = Some("__batch__".into());
+                self.installed.selected.clear();
+                self.installed.result_version += 1;
+
+                let mut groups: std::collections::HashMap<
+                    String,
+                    Vec<crate::core::package::Package>,
+                > = std::collections::HashMap::new();
+                for pkg in packages {
+                    groups
+                        .entry(pkg.adapter_id.clone())
+                        .or_default()
+                        .push(pkg.clone());
+                }
+
+                let adapter_batches: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
+                    groups
+                        .into_iter()
+                        .filter_map(|(id, pkgs)| {
+                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
+                        })
+                        .collect();
+
+                return Task::perform(
+                    async move {
+                        for (adapter, pkgs) in adapter_batches {
+                            adapter
+                                .remove(&pkgs, None, mode)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                        }
+                        Ok(())
+                    },
+                    |result| Message::Installed(message::InstalledMessage::RemoveComplete(result)),
+                );
+            }
+            message::ConfirmAction::BatchUpdate(ref packages, mode) => {
+                self.active_operation = Some(ActiveOperation {
+                    operation_type: OperationType::Update,
+                    package_name: format!("{} packages", packages.len()),
+                    status: OperationStatus::Starting,
+                });
+                self.updates.updating = Some("__batch__".into());
+                self.updates.selected.clear();
+                self.updates.result_version += 1;
+
+                if mode == PackageMode::System {
+                    let _ = PrivilegeManager::detect_elevator();
+                }
+
+                // Group by adapter
+                let mut groups: std::collections::HashMap<
+                    String,
+                    Vec<crate::core::package::Package>,
+                > = std::collections::HashMap::new();
+                for pkg in packages {
+                    groups
+                        .entry(pkg.adapter_id.clone())
+                        .or_default()
+                        .push(pkg.clone());
+                }
+
+                let adapter_batches: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
+                    groups
+                        .into_iter()
+                        .filter_map(|(id, pkgs)| {
+                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
+                        })
+                        .collect();
+
+                return Task::perform(
+                    async move {
+                        for (adapter, pkgs) in adapter_batches {
+                            adapter
+                                .update(&pkgs, None, mode)
+                                .await
+                                .map_err(|e| e.to_string())
+                                .map(|_| ())?;
+                        }
+                        Ok(())
+                    },
+                    |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
+                );
+            }
         }
         Task::none()
     }
@@ -1550,11 +1959,21 @@ impl App {
             }
         };
 
-        let main: Element<'_, Message> = if let Some(ref op) = self.active_operation {
-            column![content, self.progress_bar_view(op)]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+        let has_active_ops = self.active_operation.is_some()
+            || !self.operations.is_empty()
+            || !self.operation_queue.is_empty();
+
+        let main: Element<'_, Message> = if has_active_ops {
+            let mut main_col = column![content].width(Length::Fill).height(Length::Fill);
+            // Show legacy progress bar if present
+            if let Some(ref op) = self.active_operation {
+                main_col = main_col.push(self.progress_bar_view(op));
+            }
+            // Show new tracked operations + queue
+            if !self.operations.is_empty() || !self.operation_queue.is_empty() {
+                main_col = main_col.push(self.progress_panel_view());
+            }
+            main_col.into()
         } else {
             content
         };
@@ -1565,7 +1984,8 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        if let Some(ref action) = self.confirm_dialog {
+        // Layer: confirm dialog, then toasts on top
+        let with_dialog: Element<'_, Message> = if let Some(ref action) = self.confirm_dialog {
             modal(
                 base,
                 self.confirm_dialog_view(action),
@@ -1573,6 +1993,12 @@ impl App {
             )
         } else {
             base.into()
+        };
+
+        if !self.toasts.is_empty() {
+            stack![with_dialog, self.toast_overlay_view()].into()
+        } else {
+            with_dialog
         }
     }
 
@@ -1619,7 +2045,10 @@ impl App {
     }
 
     fn confirm_dialog_view(&self, action: &message::ConfirmAction) -> Element<'_, Message> {
-        let is_destructive = matches!(action, message::ConfirmAction::Remove(..));
+        let is_destructive = matches!(
+            action,
+            message::ConfirmAction::Remove(..) | message::ConfirmAction::BatchRemove(..)
+        );
 
         let has_system = self.adapter.info().capabilities.supports_system_packages;
         static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
@@ -1628,7 +2057,10 @@ impl App {
             message::ConfirmAction::Install(_, mode)
             | message::ConfirmAction::Remove(_, mode)
             | message::ConfirmAction::Update(_, mode)
-            | message::ConfirmAction::UpdateAll(mode) => *mode,
+            | message::ConfirmAction::UpdateAll(mode)
+            | message::ConfirmAction::BatchInstall(_, mode)
+            | message::ConfirmAction::BatchRemove(_, mode)
+            | message::ConfirmAction::BatchUpdate(_, mode) => *mode,
         };
         let is_system = action_mode == PackageMode::System;
 
@@ -1705,6 +2137,57 @@ impl App {
                 (
                     "Update All",
                     "All packages with available updates will be updated.".to_string(),
+                    hint,
+                )
+            }
+            message::ConfirmAction::BatchInstall(pkgs, _) => {
+                let list = pkgs
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let hint: Element<'_, Message> = column![].into();
+                (
+                    "Install Packages",
+                    format!("Install {} packages: {list}", pkgs.len()),
+                    hint,
+                )
+            }
+            message::ConfirmAction::BatchRemove(pkgs, _) => {
+                let list = pkgs
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let hint: Element<'_, Message> = if is_system {
+                    text("Requires administrator privileges")
+                        .size(font_size::CAPTION)
+                        .into()
+                } else {
+                    column![].into()
+                };
+                (
+                    "Remove Packages",
+                    format!("Remove {} packages: {list}", pkgs.len()),
+                    hint,
+                )
+            }
+            message::ConfirmAction::BatchUpdate(pkgs, _) => {
+                let list = pkgs
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let hint: Element<'_, Message> = if is_system {
+                    text("Requires administrator privileges")
+                        .size(font_size::CAPTION)
+                        .into()
+                } else {
+                    column![].into()
+                };
+                (
+                    "Update Packages",
+                    format!("Update {} packages: {list}", pkgs.len()),
                     hint,
                 )
             }
@@ -1856,8 +2339,21 @@ impl App {
         .into()
     }
 
+    fn push_toast(&mut self, level: ToastLevel, message: impl Into<String>) {
+        let id = self.next_toast_id;
+        self.next_toast_id += 1;
+        self.toasts.push(Toast {
+            id,
+            level,
+            message: message.into(),
+            created_at: Instant::now(),
+            duration: Duration::from_secs(5),
+        });
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
-        if self.active_operation.is_some() {
+        if self.active_operation.is_some() || !self.operations.is_empty() || !self.toasts.is_empty()
+        {
             iced::time::every(std::time::Duration::from_millis(50)).map(|_| Message::ProgressTick)
         } else {
             Subscription::none()
@@ -1865,75 +2361,162 @@ impl App {
     }
 
     fn handle_soar_event(&mut self, event: SoarEvent) {
-        let op = match self.active_operation.as_mut() {
-            Some(op) => op,
-            None => return,
-        };
-
         match event {
-            SoarEvent::DownloadStarting { total, .. } => {
-                op.status = OperationStatus::Downloading { current: 0, total };
+            SoarEvent::DownloadStarting {
+                pkg_name, total, ..
+            } => {
+                self.apply_soar_status(
+                    &pkg_name,
+                    OperationStatus::Downloading { current: 0, total },
+                );
             }
-            SoarEvent::DownloadResuming { current, total, .. }
-            | SoarEvent::DownloadProgress { current, total, .. } => {
-                op.status = OperationStatus::Downloading { current, total };
+            SoarEvent::DownloadResuming {
+                pkg_name,
+                current,
+                total,
+                ..
             }
-            SoarEvent::DownloadComplete { .. } => {
-                op.status = OperationStatus::Downloading {
-                    current: 1,
-                    total: 1,
-                };
+            | SoarEvent::DownloadProgress {
+                pkg_name,
+                current,
+                total,
+                ..
+            } => {
+                self.apply_soar_status(&pkg_name, OperationStatus::Downloading { current, total });
             }
-            SoarEvent::Verifying { stage, .. } => {
-                let label = match stage {
-                    VerifyStage::Checksum => "checksum",
-                    VerifyStage::Signature => "signature",
-                    VerifyStage::Passed => "passed",
-                    VerifyStage::Failed(ref e) => {
-                        op.status = OperationStatus::Failed(format!("Verification failed: {e}"));
-                        return;
+            SoarEvent::DownloadComplete { pkg_name, .. } => {
+                self.apply_soar_status(
+                    &pkg_name,
+                    OperationStatus::Downloading {
+                        current: 1,
+                        total: 1,
+                    },
+                );
+            }
+            SoarEvent::Verifying {
+                pkg_name, stage, ..
+            } => {
+                let status = match stage {
+                    VerifyStage::Checksum => OperationStatus::Verifying("checksum".into()),
+                    VerifyStage::Signature => OperationStatus::Verifying("signature".into()),
+                    VerifyStage::Passed => OperationStatus::Verifying("passed".into()),
+                    VerifyStage::Failed(e) => {
+                        OperationStatus::Failed(format!("Verification failed: {e}"))
                     }
                 };
-                op.status = OperationStatus::Verifying(label.into());
+                self.apply_soar_status(&pkg_name, status);
             }
-            SoarEvent::Installing { stage, .. } => {
-                let label = match stage {
-                    InstallStage::Extracting => "extracting",
-                    InstallStage::ExtractingNested => "extracting nested",
-                    InstallStage::LinkingBinaries => "linking binaries",
-                    InstallStage::DesktopIntegration => "desktop integration",
-                    InstallStage::SetupPortable => "setting up portable",
-                    InstallStage::RecordingDatabase => "recording to database",
-                    InstallStage::RunningHook(ref h) => {
-                        op.status = OperationStatus::Installing(format!("hook: {h}"));
-                        return;
+            SoarEvent::Installing {
+                pkg_name, stage, ..
+            } => {
+                let status = match stage {
+                    InstallStage::Extracting => OperationStatus::Installing("extracting".into()),
+                    InstallStage::ExtractingNested => {
+                        OperationStatus::Installing("extracting nested".into())
                     }
-                    InstallStage::Complete => "complete",
-                };
-                op.status = OperationStatus::Installing(label.into());
-            }
-            SoarEvent::Removing { stage, .. } => {
-                let label = match stage {
-                    RemoveStage::RunningHook(ref h) => {
-                        op.status = OperationStatus::Removing(format!("hook: {h}"));
-                        return;
+                    InstallStage::LinkingBinaries => {
+                        OperationStatus::Installing("linking binaries".into())
                     }
-                    RemoveStage::UnlinkingBinaries => "unlinking binaries",
-                    RemoveStage::UnlinkingDesktop => "unlinking desktop",
-                    RemoveStage::UnlinkingIcons => "unlinking icons",
-                    RemoveStage::RemovingDirectory => "removing directory",
-                    RemoveStage::CleaningDatabase => "cleaning database",
-                    RemoveStage::Complete { .. } => "complete",
+                    InstallStage::DesktopIntegration => {
+                        OperationStatus::Installing("desktop integration".into())
+                    }
+                    InstallStage::SetupPortable => {
+                        OperationStatus::Installing("setting up portable".into())
+                    }
+                    InstallStage::RecordingDatabase => {
+                        OperationStatus::Installing("recording to database".into())
+                    }
+                    InstallStage::RunningHook(h) => {
+                        OperationStatus::Installing(format!("hook: {h}"))
+                    }
+                    InstallStage::Complete => OperationStatus::Installing("complete".into()),
                 };
-                op.status = OperationStatus::Removing(label.into());
+                self.apply_soar_status(&pkg_name, status);
             }
-            SoarEvent::OperationComplete { .. } => {
-                op.status = OperationStatus::Completed;
+            SoarEvent::Removing {
+                pkg_name, stage, ..
+            } => {
+                let status = match stage {
+                    RemoveStage::RunningHook(h) => OperationStatus::Removing(format!("hook: {h}")),
+                    RemoveStage::UnlinkingBinaries => {
+                        OperationStatus::Removing("unlinking binaries".into())
+                    }
+                    RemoveStage::UnlinkingDesktop => {
+                        OperationStatus::Removing("unlinking desktop".into())
+                    }
+                    RemoveStage::UnlinkingIcons => {
+                        OperationStatus::Removing("unlinking icons".into())
+                    }
+                    RemoveStage::RemovingDirectory => {
+                        OperationStatus::Removing("removing directory".into())
+                    }
+                    RemoveStage::CleaningDatabase => {
+                        OperationStatus::Removing("cleaning database".into())
+                    }
+                    RemoveStage::Complete { .. } => OperationStatus::Removing("complete".into()),
+                };
+                self.apply_soar_status(&pkg_name, status);
             }
-            SoarEvent::OperationFailed { error, .. } => {
-                op.status = OperationStatus::Failed(error);
+            SoarEvent::OperationComplete { pkg_name, .. } => {
+                self.apply_soar_status(&pkg_name, OperationStatus::Completed);
+            }
+            SoarEvent::OperationFailed {
+                pkg_name, error, ..
+            } => {
+                self.apply_soar_status(&pkg_name, OperationStatus::Failed(error));
             }
             _ => {}
+        }
+    }
+
+    fn apply_soar_status(&mut self, pkg_name: &str, status: OperationStatus) {
+        // Update per-package progress
+        self.package_progress
+            .insert(pkg_name.to_string(), status.clone());
+
+        // Update global active_operation with current package context
+        if let Some(op) = self.active_operation.as_mut() {
+            op.package_name = pkg_name.to_string();
+            op.status = status;
+        }
+    }
+
+    fn handle_progress_event(&mut self, event: crate::core::adapter::ProgressEvent) {
+        use crate::core::adapter::ProgressEvent;
+        match event {
+            ProgressEvent::Download {
+                current_bytes,
+                total_bytes,
+                ..
+            } => {
+                if let Some(op) = self.operations.last_mut() {
+                    op.status = OperationStatus::Downloading {
+                        current: current_bytes,
+                        total: total_bytes,
+                    };
+                }
+            }
+            ProgressEvent::Phase { phase, .. } => {
+                if let Some(op) = self.operations.last_mut() {
+                    op.status = OperationStatus::Installing(phase);
+                }
+            }
+            ProgressEvent::Status { message, .. } => {
+                if let Some(op) = self.operations.last_mut() {
+                    op.status = OperationStatus::Installing(message);
+                }
+            }
+            ProgressEvent::Completed { .. } => {
+                if let Some(op) = self.operations.last_mut() {
+                    op.status = OperationStatus::Completed;
+                }
+            }
+            ProgressEvent::Failed { error, .. } => {
+                if let Some(op) = self.operations.last_mut() {
+                    op.status = OperationStatus::Failed(error);
+                }
+            }
+            ProgressEvent::BatchProgress { .. } => {}
         }
     }
 
@@ -1953,6 +2536,108 @@ impl App {
         container(content)
             .width(Length::Fill)
             .style(styles::progress_container)
+            .into()
+    }
+
+    fn progress_panel_view(&self) -> Element<'_, Message> {
+        let mut col = column![].spacing(spacing::XXS);
+
+        for op in &self.operations {
+            let label =
+                text(format!("{} {}", op.operation_type, op.package_name)).size(font_size::SMALL);
+            let status = text(op.status.label()).size(font_size::CAPTION + 1.0);
+
+            let mut op_content = column![label, status]
+                .spacing(spacing::XXS)
+                .padding([10.0, spacing::LG]);
+
+            if let Some(progress) = op.status.progress() {
+                op_content = op_content.push(progress_bar(0.0..=1.0, progress));
+            }
+
+            col = col.push(op_content);
+        }
+
+        for queued in &self.operation_queue {
+            let action_label = match &queued.action {
+                message::ConfirmAction::Install(pkg, _) => format!("Install {}", pkg.name),
+                message::ConfirmAction::Remove(pkg, _) => format!("Remove {}", pkg.name),
+                message::ConfirmAction::Update(pkg, _) => format!("Update {}", pkg.name),
+                message::ConfirmAction::UpdateAll(_) => "Update All".into(),
+                message::ConfirmAction::BatchInstall(pkgs, _) => {
+                    format!("Install {} packages", pkgs.len())
+                }
+                message::ConfirmAction::BatchRemove(pkgs, _) => {
+                    format!("Remove {} packages", pkgs.len())
+                }
+                message::ConfirmAction::BatchUpdate(pkgs, _) => {
+                    format!("Update {} packages", pkgs.len())
+                }
+            };
+
+            let queued_id = queued.id;
+            let queued_row = row![
+                text(action_label).size(font_size::SMALL),
+                container(text("Queued").size(font_size::BADGE))
+                    .padding([spacing::XXXS, spacing::XS])
+                    .style(styles::badge_neutral),
+                space().width(Length::Fill),
+                button(text("\u{00d7}").size(font_size::BODY))
+                    .on_press(Message::CancelQueuedOperation(queued_id))
+                    .style(styles::header_icon_button)
+                    .padding([spacing::XXXS, spacing::XS]),
+            ]
+            .spacing(spacing::SM)
+            .align_y(Alignment::Center)
+            .padding([spacing::XS, spacing::LG]);
+
+            col = col.push(queued_row);
+        }
+
+        container(col)
+            .width(Length::Fill)
+            .style(styles::progress_container)
+            .into()
+    }
+
+    fn toast_overlay_view(&self) -> Element<'_, Message> {
+        let mut toast_col = column![].spacing(spacing::XS);
+
+        for toast in &self.toasts {
+            let toast_id = toast.id;
+            let style = match toast.level {
+                ToastLevel::Success => {
+                    styles::badge_success as fn(&iced::Theme) -> container::Style
+                }
+                ToastLevel::Error => styles::error_banner,
+                ToastLevel::Info => styles::badge_neutral,
+            };
+
+            let dismiss_btn = button(text("\u{00d7}").size(font_size::BODY))
+                .on_press(Message::DismissToast(toast_id))
+                .style(styles::header_icon_button)
+                .padding([spacing::XXXS, spacing::XS]);
+
+            let toast_row = container(
+                row![
+                    text(toast.message.clone()).size(font_size::SMALL),
+                    space().width(Length::Fill),
+                    dismiss_btn,
+                ]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center)
+                .padding([spacing::SM, spacing::MD]),
+            )
+            .style(styles::toast_container)
+            .width(320);
+
+            toast_col = toast_col.push(toast_row);
+        }
+
+        container(toast_col)
+            .width(Length::Fill)
+            .align_x(Alignment::End)
+            .padding(spacing::MD)
             .into()
     }
 

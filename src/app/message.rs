@@ -13,6 +13,9 @@ pub enum ConfirmAction {
     Remove(Package, PackageMode),
     Update(Package, PackageMode),
     UpdateAll(PackageMode),
+    BatchInstall(Vec<Package>, PackageMode),
+    BatchRemove(Vec<Package>, PackageMode),
+    BatchUpdate(Vec<Package>, PackageMode),
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,9 @@ pub enum Message {
     ConfirmAction,
     CancelAction,
 
+    DismissToast(u64),
+    CancelQueuedOperation(u64),
+    ProcessNextQueued,
     ProgressTick,
 }
 
@@ -50,6 +56,10 @@ pub enum BrowseMessage {
     DismissInstallError,
     CloseDetail,
     InstallModeChanged(PackageMode),
+    ToggleSelect(String),
+    SelectAll,
+    ClearSelection,
+    InstallSelected,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +71,10 @@ pub enum InstalledMessage {
     RemovePackage(Package),
     RemoveComplete(Result<(), String>),
     UpdatePackage(Package),
+    ToggleSelect(String),
+    SelectAll,
+    ClearSelection,
+    RemoveSelected,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +90,10 @@ pub enum UpdatesMessage {
     UpdateAll,
     /// Trigger update for all installed packages from a specific adapter (by id).
     UpdateAdapterAll(String),
+    ToggleSelect(String),
+    SelectAll,
+    ClearSelection,
+    UpdateSelected,
 }
 
 #[derive(Debug, Clone)]

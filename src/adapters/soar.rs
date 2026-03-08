@@ -753,11 +753,87 @@ impl Adapter for SoarAdapter {
 
     async fn install(
         &self,
-        _packages: &[Package],
+        packages: &[Package],
         _progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
-        Err(AdapterError::NotSupported)
+        if mode == PackageMode::System {
+            let settings = HashMap::new();
+            for pkg in packages {
+                let query = pkg.soar_query().ok_or_else(|| {
+                    AdapterError::Other(format!("Invalid package id: {}", pkg.id))
+                })?;
+                self.install_system_package(&query, &settings).await?;
+            }
+            return Ok(packages
+                .iter()
+                .map(|p| InstallResult {
+                    package_name: p.name.clone(),
+                    package_id: p.id.clone(),
+                    version: p.version.clone(),
+                    success: true,
+                    error: None,
+                })
+                .collect());
+        }
+
+        let queries: Vec<String> = packages
+            .iter()
+            .map(|p| {
+                p.soar_query()
+                    .ok_or_else(|| AdapterError::Other(format!("Invalid package id: {}", p.id)))
+            })
+            .collect::<Result<_>>()?;
+
+        let ctx = self.user_ctx();
+        let options = InstallOptions::default();
+        let results = install::resolve_packages(&ctx, &queries, &options)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        let mut targets = Vec::new();
+        for result in results {
+            match result {
+                ResolveResult::Resolved(t) => targets.extend(t),
+                ResolveResult::AlreadyInstalled { pkg_name, .. } => {
+                    return Err(AdapterError::Other(format!(
+                        "{pkg_name} is already installed"
+                    )));
+                }
+                ResolveResult::NotFound(q) => {
+                    return Err(AdapterError::Other(format!("Package not found: {q}")));
+                }
+                ResolveResult::Ambiguous(amb) => {
+                    return Err(AdapterError::Other(format!(
+                        "Ambiguous package query: {}",
+                        amb.query
+                    )));
+                }
+            }
+        }
+
+        if targets.is_empty() {
+            return Err(AdapterError::Other("No packages to install".into()));
+        }
+
+        let report = install::perform_installation(&ctx, targets, &options)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if let Some(failed) = report.failed.first() {
+            return Err(AdapterError::Other(failed.error.clone()));
+        }
+
+        Ok(packages
+            .iter()
+            .map(|p| InstallResult {
+                package_name: p.name.clone(),
+                package_id: p.id.clone(),
+                version: p.version.clone(),
+                success: true,
+                error: None,
+            })
+            .collect())
     }
 
     async fn remove(
@@ -805,11 +881,65 @@ impl Adapter for SoarAdapter {
 
     async fn update(
         &self,
-        _packages: &[Package],
+        packages: &[Package],
         _progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
-        Err(AdapterError::NotSupported)
+        if mode == PackageMode::System {
+            let settings = HashMap::new();
+            for pkg in packages {
+                let query = pkg.soar_query().ok_or_else(|| {
+                    AdapterError::Other(format!("Invalid package id: {}", pkg.id))
+                })?;
+                self.update_system_package(&query, &settings).await?;
+            }
+            return Ok(packages
+                .iter()
+                .map(|p| InstallResult {
+                    package_name: p.name.clone(),
+                    package_id: p.id.clone(),
+                    version: p.version.clone(),
+                    success: true,
+                    error: None,
+                })
+                .collect());
+        }
+
+        let queries: Vec<String> = packages
+            .iter()
+            .map(|p| {
+                p.soar_query()
+                    .ok_or_else(|| AdapterError::Other(format!("Invalid package id: {}", p.id)))
+            })
+            .collect::<Result<_>>()?;
+
+        let ctx = self.user_ctx();
+        let updates = update::check_updates(&ctx, Some(&queries))
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if updates.is_empty() {
+            return Err(AdapterError::Other("No updates available".into()));
+        }
+
+        let report = update::perform_update(&ctx, updates, false, false)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        if let Some(failed) = report.failed.first() {
+            return Err(AdapterError::Other(failed.error.clone()));
+        }
+
+        Ok(packages
+            .iter()
+            .map(|p| InstallResult {
+                package_name: p.name.clone(),
+                package_id: p.id.clone(),
+                version: p.version.clone(),
+                success: true,
+                error: None,
+            })
+            .collect())
     }
 
     async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {

@@ -1,10 +1,18 @@
+use std::collections::{HashMap, HashSet};
+
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, lazy, row, rule, scrollable, space, text, text_input},
+    widget::{
+        button, checkbox, column, container, lazy, progress_bar, row, rule, scrollable, space,
+        text, text_input,
+    },
 };
 
 use crate::{
-    app::message::{BrowseMessage, Message},
+    app::{
+        OperationStatus,
+        message::{BrowseMessage, Message},
+    },
     core::package::Package,
     styles::{self, font_size, spacing},
 };
@@ -20,8 +28,11 @@ pub struct BrowseState {
     pub install_error: Option<String>,
     pub result_version: u64,
     pub installing: Option<String>,
+    pub installing_batch_ids: Vec<String>,
     pub selected_package: Option<Package>,
     pub search_debounce_version: u64,
+    pub selected: HashSet<String>,
+    pub package_progress: HashMap<String, OperationStatus>,
 }
 
 pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
@@ -80,10 +91,12 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
         let version = state.result_version;
         let results = state.search_results.clone();
         let installing = state.installing.clone();
+        let selected = state.selected.clone();
+        let package_progress = state.package_progress.clone();
         lazy(("browse", version), move |_| {
             let cards: Vec<Element<'_, Message>> = results
                 .iter()
-                .map(|pkg| package_card(pkg, &installing))
+                .map(|pkg| package_card(pkg, &installing, &selected, &package_progress))
                 .collect();
 
             scrollable(column(cards).spacing(spacing::SM).width(Length::Fill)).height(Length::Fill)
@@ -118,6 +131,16 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
 
     browse_list = browse_list.push(results_content);
 
+    if !state.selected.is_empty() {
+        browse_list = browse_list.push(floating_action_bar(
+            state.selected.len(),
+            "Install",
+            Message::Browse(BrowseMessage::InstallSelected),
+            Message::Browse(BrowseMessage::ClearSelection),
+            false,
+        ));
+    }
+
     let browse_panel = container(browse_list)
         .padding(spacing::XL)
         .width(Length::Fill)
@@ -133,16 +156,20 @@ pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
     }
 }
 
-fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, Message> {
+fn package_card(
+    pkg: &Package,
+    installing: &Option<String>,
+    selected: &HashSet<String>,
+    package_progress: &HashMap<String, OperationStatus>,
+) -> Element<'static, Message> {
     let pkg_id = pkg.id.clone();
+    let is_selected = selected.contains(&pkg.id);
     let name = text(pkg.name.clone()).size(font_size::HEADING);
     let adapter = container(text(pkg.adapter_id.clone()).size(font_size::BADGE))
         .padding([spacing::XXXS, spacing::XS])
         .style(styles::badge_adapter(&pkg.adapter_id));
 
-    let mut header = row![name]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center);
+    let mut header = row![name].spacing(spacing::SM).align_y(Alignment::Center);
 
     if !pkg.version.is_empty() {
         header = header.push(
@@ -170,7 +197,10 @@ fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, 
     }
     let info_row = row(info_parts).spacing(spacing::MD);
 
-    let is_installing = installing.as_deref() == Some(&pkg.id);
+    let is_installing = installing.as_deref() == Some(&pkg.id)
+        || (installing.as_deref() == Some("__batch__") && package_progress.contains_key(&pkg.name));
+    let pkg_status = package_progress.get(&pkg.name);
+
     let install_btn: Element<'static, Message> = if pkg.installed && pkg.update_available {
         container(text("Update Available").size(font_size::CAPTION))
             .padding([spacing::XXS, 10.0])
@@ -182,7 +212,10 @@ fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, 
             .style(styles::badge_success)
             .into()
     } else if is_installing {
-        container(text("Installing...").size(font_size::CAPTION))
+        let label = pkg_status
+            .map(|s| s.label())
+            .unwrap_or_else(|| "Installing...".into());
+        container(text(label).size(font_size::CAPTION))
             .padding([spacing::XXS, 10.0])
             .style(styles::badge_primary)
             .into()
@@ -196,13 +229,41 @@ fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, 
         btn.into()
     };
 
-    let left = column![header, description, info_row]
+    let mut left = column![header, description, info_row]
         .spacing(spacing::XXS)
         .width(Length::Fill);
 
-    let card_content = row![left, install_btn]
-        .spacing(spacing::MD)
-        .align_y(Alignment::Center);
+    // Add inline progress bar when downloading
+    if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
+        left = left.push(
+            container(progress_bar(0.0..=1.0, progress))
+                .height(4)
+                .width(Length::Fill),
+        );
+    }
+
+    // Only show checkbox for non-installed packages
+    let card_content: Element<'static, Message> = if !pkg.installed {
+        let cb_id = pkg.id.clone();
+        let cb = checkbox(is_selected)
+            .on_toggle(move |_| Message::Browse(BrowseMessage::ToggleSelect(cb_id.clone())));
+        row![cb, left, install_btn]
+            .spacing(spacing::MD)
+            .align_y(Alignment::Center)
+            .into()
+    } else {
+        row![left, install_btn]
+            .spacing(spacing::MD)
+            .align_y(Alignment::Center)
+            .into()
+    };
+
+    let card_style = if is_selected {
+        styles::card_button_selected
+            as fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style
+    } else {
+        styles::card_button
+    };
 
     button(
         container(card_content)
@@ -211,7 +272,7 @@ fn package_card(pkg: &Package, installing: &Option<String>) -> Element<'static, 
     )
     .on_press(Message::Browse(BrowseMessage::SelectPackage(pkg_id)))
     .width(Length::Fill)
-    .style(styles::card_button)
+    .style(card_style)
     .into()
 }
 
@@ -327,5 +388,44 @@ fn detail_row<'a>(label: &str, value: &str) -> Element<'a, Message> {
         text(value.to_string()).size(font_size::SMALL),
     ]
     .spacing(spacing::SM)
+    .into()
+}
+
+pub fn floating_action_bar<'a>(
+    count: usize,
+    action_label: &str,
+    action_msg: Message,
+    clear_msg: Message,
+    is_danger: bool,
+) -> Element<'a, Message> {
+    let label = text(format!("{count} selected")).size(font_size::BODY);
+
+    let clear_btn = button(text("Clear").size(font_size::CAPTION + 1.0).center())
+        .on_press(clear_msg)
+        .style(button::secondary)
+        .padding([spacing::XS, 14.0]);
+
+    let action_btn = button(
+        text(format!("{action_label} {count}"))
+            .size(font_size::CAPTION + 1.0)
+            .center(),
+    )
+    .on_press(action_msg)
+    .padding([spacing::XS, 14.0]);
+
+    let action_btn = if is_danger {
+        action_btn.style(button::danger)
+    } else {
+        action_btn.style(button::primary)
+    };
+
+    container(
+        row![label, space().width(Length::Fill), clear_btn, action_btn]
+            .spacing(spacing::SM)
+            .align_y(Alignment::Center)
+            .padding([spacing::SM, spacing::LG]),
+    )
+    .width(Length::Fill)
+    .style(styles::progress_container)
     .into()
 }

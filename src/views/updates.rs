@@ -1,10 +1,17 @@
+use std::collections::{HashMap, HashSet};
+
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, lazy, row, scrollable, space, text},
+    widget::{
+        button, checkbox, column, container, lazy, progress_bar, row, scrollable, space, text,
+    },
 };
 
 use crate::{
-    app::message::{Message, UpdatesMessage},
+    app::{
+        OperationStatus,
+        message::{Message, UpdatesMessage},
+    },
     core::{package::Update, privilege::PackageMode},
     styles::{self, font_size, spacing},
 };
@@ -20,6 +27,8 @@ pub struct UpdatesState {
     pub updating: Option<String>,
     /// Adapters (id, name) that were checked but don't support listing available updates.
     pub no_update_listing: Vec<(String, String)>,
+    pub selected: HashSet<String>,
+    pub package_progress: HashMap<String, OperationStatus>,
 }
 
 pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Message> {
@@ -77,10 +86,8 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
         if state.checked && !state.no_update_listing.is_empty() {
             for (adapter_id, adapter_name) in &state.no_update_listing {
                 let mut note_row = row![
-                    text(format!(
-                        "{adapter_name} cannot detect available updates."
-                    ))
-                    .size(font_size::CAPTION),
+                    text(format!("{adapter_name} cannot detect available updates."))
+                        .size(font_size::CAPTION),
                 ]
                 .spacing(spacing::SM)
                 .align_y(Alignment::Center);
@@ -94,9 +101,9 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
                         )
                         .padding([spacing::XXXS, spacing::SM])
                         .style(button::secondary)
-                        .on_press(Message::Updates(UpdatesMessage::UpdateAdapterAll(
-                            adapter_id.clone(),
-                        ))),
+                        .on_press(Message::Updates(
+                            UpdatesMessage::UpdateAdapterAll(adapter_id.clone()),
+                        )),
                     );
                 }
 
@@ -113,18 +120,20 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
         let updates = state.updates.clone();
         let updating = state.updating.clone();
         let no_update_listing = state.no_update_listing.clone();
+        let selected = state.selected.clone();
+        let package_progress = state.package_progress.clone();
         lazy(("updates", version), move |_| {
-            let cards: Vec<Element<'_, Message>> =
-                updates.iter().map(|u| update_card(u, &updating)).collect();
+            let cards: Vec<Element<'_, Message>> = updates
+                .iter()
+                .map(|u| update_card(u, &updating, &selected, &package_progress))
+                .collect();
 
             let mut col = column(cards).spacing(spacing::SM).width(Length::Fill);
 
             for (adapter_id, adapter_name) in &no_update_listing {
                 let note_row = row![
-                    text(format!(
-                        "{adapter_name} cannot detect available updates."
-                    ))
-                    .size(font_size::CAPTION),
+                    text(format!("{adapter_name} cannot detect available updates."))
+                        .size(font_size::CAPTION),
                     button(
                         text(format!("Update All {adapter_name}"))
                             .size(font_size::CAPTION)
@@ -132,9 +141,9 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
                     )
                     .padding([spacing::XXXS, spacing::SM])
                     .style(button::secondary)
-                    .on_press(Message::Updates(UpdatesMessage::UpdateAdapterAll(
-                        adapter_id.clone(),
-                    ))),
+                    .on_press(Message::Updates(
+                        UpdatesMessage::UpdateAdapterAll(adapter_id.clone(),)
+                    )),
                 ]
                 .spacing(spacing::SM)
                 .align_y(Alignment::Center);
@@ -147,19 +156,35 @@ pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Messa
         .into()
     };
 
-    container(
-        column![header_row, content]
-            .spacing(spacing::MD)
-            .width(Length::Fill)
-            .height(Length::Fill),
-    )
-    .padding(spacing::XL)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    let mut main_col = column![header_row, content]
+        .spacing(spacing::MD)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    if !state.selected.is_empty() {
+        main_col = main_col.push(super::browse::floating_action_bar(
+            state.selected.len(),
+            "Update",
+            Message::Updates(UpdatesMessage::UpdateSelected),
+            Message::Updates(UpdatesMessage::ClearSelection),
+            false,
+        ));
+    }
+
+    container(main_col)
+        .padding(spacing::XL)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
-fn update_card(update: &Update, updating: &Option<String>) -> Element<'static, Message> {
+fn update_card(
+    update: &Update,
+    updating: &Option<String>,
+    selected: &HashSet<String>,
+    package_progress: &HashMap<String, OperationStatus>,
+) -> Element<'static, Message> {
+    let is_selected = selected.contains(&update.package.id);
     let name = text(update.package.name.clone()).size(font_size::HEADING);
 
     let old_version = container(text(update.current_version.clone()).size(font_size::CAPTION))
@@ -197,10 +222,15 @@ fn update_card(update: &Update, updating: &Option<String>) -> Element<'static, M
         .spacing(spacing::MD)
         .align_y(Alignment::Center);
 
+    let pkg_status = package_progress.get(&update.package.name);
     let is_updating_this = updating.as_deref() == Some(&update.package.id);
     let is_updating_all = updating.as_deref() == Some("__all__");
-    let update_btn = if is_updating_this || is_updating_all {
-        button(text("Updating...").size(font_size::CAPTION + 1.0).center())
+    let is_updating_batch = updating.as_deref() == Some("__batch__") && pkg_status.is_some();
+    let update_btn = if is_updating_this || is_updating_all || is_updating_batch {
+        let label = pkg_status
+            .map(|s| s.label())
+            .unwrap_or_else(|| "Updating...".into());
+        button(text(label).size(font_size::CAPTION + 1.0).center())
             .padding([spacing::XXS, spacing::MD])
             .style(button::secondary)
     } else {
@@ -215,13 +245,33 @@ fn update_card(update: &Update, updating: &Option<String>) -> Element<'static, M
         btn
     };
 
-    let left = column![header, info_row]
+    let mut left = column![header, info_row]
         .spacing(spacing::XXS)
         .width(Length::Fill);
 
-    let card_content = row![left, update_btn]
+    // Add inline progress bar when downloading
+    if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
+        left = left.push(
+            container(progress_bar(0.0..=1.0, progress))
+                .height(4)
+                .width(Length::Fill),
+        );
+    }
+
+    let cb_id = update.package.id.clone();
+    let cb = checkbox(is_selected)
+        .on_toggle(move |_| Message::Updates(UpdatesMessage::ToggleSelect(cb_id.clone())));
+
+    let card_content = row![cb, left, update_btn]
         .spacing(spacing::MD)
         .align_y(Alignment::Center);
+
+    let card_style = if is_selected {
+        styles::card_button_selected
+            as fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style
+    } else {
+        styles::card_button
+    };
 
     button(
         container(card_content)
@@ -229,6 +279,6 @@ fn update_card(update: &Update, updating: &Option<String>) -> Element<'static, M
             .width(Length::Fill),
     )
     .width(Length::Fill)
-    .style(styles::card_button)
+    .style(card_style)
     .into()
 }
