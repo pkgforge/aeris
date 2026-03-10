@@ -1,18 +1,25 @@
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, row, rule, scrollable, text, toggler},
+    widget::{button, column, container, lazy, row, rule, scrollable, space, text, toggler},
 };
 
 use crate::{
     app::{
         AdapterViewState,
-        message::{AdapterMessage, Message},
+        message::{AdapterMessage, Message, RepoInfo, RepositoriesMessage},
     },
-    core::{adapter::AdapterInfo, capabilities::Capabilities, registry::PluginEntry},
+    core::{
+        adapter::AdapterInfo, capabilities::Capabilities, privilege::PackageMode,
+        registry::PluginEntry,
+    },
     styles::{self, font_size, spacing},
 };
 
-pub fn view(state: &AdapterViewState, adapters: Vec<(AdapterInfo, bool)>) -> Element<'_, Message> {
+pub fn view(
+    state: &AdapterViewState,
+    adapters: Vec<(AdapterInfo, bool)>,
+    mode: PackageMode,
+) -> Element<'_, Message> {
     let header = text("Adapters").size(font_size::TITLE);
 
     let mut content = column![header].spacing(spacing::LG).width(Length::Fill);
@@ -24,7 +31,14 @@ pub fn view(state: &AdapterViewState, adapters: Vec<(AdapterInfo, bool)>) -> Ele
     let installed_ids: Vec<String> = adapters.iter().map(|(info, _)| info.id.clone()).collect();
 
     for (info, enabled) in adapters {
+        let has_repos = info.capabilities.can_list_repos && enabled;
         content = content.push(adapter_card(info, enabled));
+
+        // Show repos section inline for adapters that support it
+        if has_repos {
+            content = content.push(repos_section(state, mode));
+        }
+
         content = content.push(rule::horizontal(1));
     }
 
@@ -78,6 +92,206 @@ pub fn view(state: &AdapterViewState, adapters: Vec<(AdapterInfo, bool)>) -> Ele
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+fn repos_section<'a>(state: &'a AdapterViewState, mode: PackageMode) -> Element<'a, Message> {
+    let title = match mode {
+        PackageMode::User => "Repositories (User)",
+        PackageMode::System => "Repositories (System)",
+    };
+    let mut header_row = row![text(title).size(font_size::HEADING)].spacing(spacing::SM);
+
+    let sync_all_btn = if state.syncing.is_some() {
+        button(text("Syncing...").size(font_size::SMALL))
+            .padding([spacing::XS, 14.0])
+            .style(button::secondary)
+    } else {
+        button(text("Sync All").size(font_size::SMALL))
+            .padding([spacing::XS, 14.0])
+            .style(button::primary)
+            .on_press(Message::Repositories(RepositoriesMessage::SyncAll))
+    };
+
+    let refresh_btn = if state.repos_loading {
+        button(text("Loading...").size(font_size::SMALL))
+            .padding([spacing::XS, 14.0])
+            .style(button::secondary)
+    } else {
+        button(text("Refresh").size(font_size::SMALL))
+            .padding([spacing::XS, 14.0])
+            .style(button::secondary)
+            .on_press(Message::Repositories(RepositoriesMessage::Refresh))
+    };
+
+    header_row = header_row
+        .push(space().width(Length::Fill))
+        .push(sync_all_btn)
+        .push(refresh_btn)
+        .align_y(Alignment::Center);
+
+    let repos_content: Element<'_, Message> = if state.repos_loading {
+        text("Loading repositories...").size(font_size::BODY).into()
+    } else if let Some(ref err) = state.repos_error {
+        text(format!("Failed to load: {err}"))
+            .size(font_size::BODY)
+            .into()
+    } else if state.repositories.is_empty() {
+        text("No repositories configured")
+            .size(font_size::BODY)
+            .into()
+    } else {
+        let version = state.repos_version;
+        let repos = state.repositories.clone();
+        let syncing = state.syncing.clone();
+        lazy(("repos", version), move |_| {
+            let cards: Vec<Element<'_, Message>> =
+                repos.iter().map(|repo| repo_card(repo, &syncing)).collect();
+            column(cards).spacing(spacing::SM).width(Length::Fill)
+        })
+        .into()
+    };
+
+    let mut section = column![header_row, repos_content]
+        .spacing(spacing::MD)
+        .width(Length::Fill);
+
+    if let Some(ref err) = state.sync_error {
+        section = section.push(
+            container(text(format!("Sync error: {err}")).size(font_size::CAPTION + 1.0))
+                .padding([spacing::XS, spacing::MD])
+                .width(Length::Fill)
+                .style(styles::error_banner),
+        );
+    }
+
+    container(section)
+        .padding([spacing::MD, spacing::LG])
+        .width(Length::Fill)
+        .into()
+}
+
+fn repo_card(repo: &RepoInfo, syncing: &Option<String>) -> Element<'static, Message> {
+    let name = text(repo.name.clone()).size(font_size::HEADING);
+    let url = text(repo.url.clone()).size(font_size::CAPTION + 1.0);
+
+    let header = row![name].spacing(spacing::SM).align_y(Alignment::Center);
+
+    let mut tags: Vec<Element<'_, Message>> = Vec::new();
+
+    if repo.enabled {
+        tags.push(
+            container(text("Enabled").size(font_size::BADGE))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_success)
+                .into(),
+        );
+    } else {
+        tags.push(
+            container(text("Disabled").size(font_size::BADGE))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_danger)
+                .into(),
+        );
+    }
+    if repo.desktop_integration {
+        tags.push(
+            container(text("Desktop").size(font_size::BADGE))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_neutral)
+                .into(),
+        );
+    }
+    if repo.has_pubkey {
+        tags.push(
+            container(text("Signed").size(font_size::BADGE))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_primary)
+                .into(),
+        );
+    }
+    if repo.signature_verification {
+        tags.push(
+            container(text("Verified").size(font_size::BADGE))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_primary)
+                .into(),
+        );
+    }
+    if let Some(ref interval) = repo.sync_interval {
+        tags.push(
+            container(text(format!("Sync: {interval}")).size(font_size::BADGE))
+                .padding([spacing::XXXS, spacing::XS])
+                .style(styles::badge_neutral)
+                .into(),
+        );
+    }
+
+    let tags_row = row(tags).spacing(spacing::XS);
+
+    let is_syncing =
+        syncing.as_deref() == Some(&repo.name) || syncing.as_deref() == Some("__all__");
+
+    let toggle_btn = if syncing.is_some() {
+        if repo.enabled {
+            button(text("Disable").size(font_size::CAPTION + 1.0))
+                .padding([spacing::XXS, 10.0])
+                .style(button::secondary)
+        } else {
+            button(text("Enable").size(font_size::CAPTION + 1.0))
+                .padding([spacing::XXS, 10.0])
+                .style(button::secondary)
+        }
+    } else if repo.enabled {
+        button(text("Disable").size(font_size::CAPTION + 1.0))
+            .padding([spacing::XXS, 10.0])
+            .style(button::secondary)
+            .on_press(Message::Repositories(RepositoriesMessage::ToggleEnabled(
+                repo.name.clone(),
+                false,
+            )))
+    } else {
+        button(text("Enable").size(font_size::CAPTION + 1.0))
+            .padding([spacing::XXS, 10.0])
+            .style(button::primary)
+            .on_press(Message::Repositories(RepositoriesMessage::ToggleEnabled(
+                repo.name.clone(),
+                true,
+            )))
+    };
+
+    let sync_btn = if is_syncing {
+        button(text("Syncing...").size(font_size::CAPTION + 1.0))
+            .padding([spacing::XXS, 10.0])
+            .style(button::secondary)
+    } else if syncing.is_some() {
+        button(text("Sync").size(font_size::CAPTION + 1.0))
+            .padding([spacing::XXS, 10.0])
+            .style(button::secondary)
+    } else {
+        button(text("Sync").size(font_size::CAPTION + 1.0))
+            .padding([spacing::XXS, 10.0])
+            .style(button::primary)
+            .on_press(Message::Repositories(RepositoriesMessage::SyncRepo(
+                repo.name.clone(),
+            )))
+    };
+
+    let left = column![header, url, tags_row]
+        .spacing(spacing::XXS)
+        .width(Length::Fill);
+
+    let card_content = row![left, toggle_btn, sync_btn]
+        .spacing(spacing::MD)
+        .align_y(Alignment::Center);
+
+    button(
+        container(card_content)
+            .padding(spacing::MD)
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .style(styles::card_button)
+    .into()
 }
 
 fn adapter_card(info: AdapterInfo, enabled: bool) -> Element<'static, Message> {

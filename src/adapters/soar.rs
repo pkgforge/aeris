@@ -7,7 +7,8 @@ use std::{
 use soar_config::config::Config;
 use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
 use soar_operations::{
-    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove, update,
+    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove,
+    repo::RepoUpdate, update,
 };
 
 use crate::core::{
@@ -1048,38 +1049,27 @@ impl Adapter for SoarAdapter {
     }
 
     async fn set_repo_enabled(&self, name: &str, enabled: bool, mode: PackageMode) -> Result<()> {
-        use toml_edit::DocumentMut;
-
-        let config_path = match mode {
-            PackageMode::User => soar_config::config::CONFIG_PATH
-                .read()
-                .unwrap()
-                .to_path_buf(),
-            PackageMode::System => PathBuf::from("/etc/soar/config.toml"),
+        let ctx = match mode {
+            PackageMode::User => self.user_ctx(),
+            PackageMode::System => self
+                .system_ctx()
+                .ok_or_else(|| AdapterError::Other("System mode not available".into()))?,
         };
 
-        let content = std::fs::read_to_string(&config_path)
-            .map_err(|e| AdapterError::Other(e.to_string()))?;
-        let mut doc: DocumentMut = content
-            .parse()
-            .map_err(|e: toml_edit::TomlError| AdapterError::Other(e.to_string()))?;
+        ctx.update_repository(
+            name,
+            RepoUpdate {
+                url: None,
+                enabled: Some(enabled),
+                pubkey: None,
+                desktop_integration: None,
+                signature_verification: None,
+                sync_interval: None,
+            },
+        )
+        .map_err(|e| AdapterError::Other(e.to_string()))?;
 
-        if let Some(repos) = doc
-            .get_mut("repositories")
-            .and_then(|v| v.as_array_of_tables_mut())
-        {
-            for repo in repos.iter_mut() {
-                if repo.get("name").and_then(|v| v.as_str()) == Some(name) {
-                    repo["enabled"] = toml_edit::value(enabled);
-                    break;
-                }
-            }
-        }
-
-        std::fs::write(&config_path, doc.to_string())
-            .map_err(|e| AdapterError::Other(e.to_string()))?;
-
-        // Recreate the context with fresh config so enabled/disabled state takes effect
+        // Refresh context so it picks up the config change
         match mode {
             PackageMode::User => {
                 let new_config = Config::new().map_err(|e| AdapterError::Other(e.to_string()))?;

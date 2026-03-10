@@ -61,7 +61,6 @@ pub enum View {
     Browse,
     Installed,
     Updates,
-    Repositories,
     AdapterInfo,
     Settings,
 }
@@ -82,7 +81,6 @@ impl std::fmt::Display for View {
             View::Browse => write!(f, "Browse"),
             View::Installed => write!(f, "Installed"),
             View::Updates => write!(f, "Updates"),
-            View::Repositories => write!(f, "Repositories"),
             View::AdapterInfo => write!(f, "Adapter"),
             View::Settings => write!(f, "Settings"),
         }
@@ -194,6 +192,13 @@ pub struct AdapterViewState {
     pub registry_error: Option<String>,
     pub installing_plugin: Option<String>,
     pub removing_plugin: Option<String>,
+    pub repositories: Vec<message::RepoInfo>,
+    pub repos_loading: bool,
+    pub repos_loaded: bool,
+    pub repos_error: Option<String>,
+    pub repos_version: u64,
+    pub syncing: Option<String>,
+    pub sync_error: Option<String>,
 }
 
 pub struct App {
@@ -204,7 +209,6 @@ pub struct App {
     installed: views::installed::InstalledState,
     updates: views::updates::UpdatesState,
     settings: views::settings::SettingsState,
-    repositories: views::repositories::RepositoriesState,
     aeris_config: AerisConfig,
     adapter: Arc<SoarAdapter>,
     adapter_manager: AdapterManager,
@@ -294,7 +298,6 @@ impl App {
                 },
                 updates: views::updates::UpdatesState::default(),
                 settings,
-                repositories: views::repositories::RepositoriesState::default(),
                 aeris_config,
                 adapter,
                 adapter_manager,
@@ -331,7 +334,9 @@ impl App {
                 self.updates.selected.clear();
                 return match view {
                     View::Installed if !self.installed.loaded => self.load_installed(),
-                    View::Repositories if !self.repositories.loaded => self.load_repositories(),
+                    View::AdapterInfo if !self.adapter_view.repos_loaded => {
+                        self.load_repositories()
+                    }
                     _ => Task::none(),
                 };
             }
@@ -341,7 +346,7 @@ impl App {
                     self.selected_install_mode = mode;
                     self.installed.loaded = false;
                     self.updates.checked = false;
-                    self.repositories.loaded = false;
+                    self.adapter_view.repos_loaded = false;
                     self.browse.search_results.clear();
                     self.browse.has_searched = false;
                     self.browse.result_version += 1;
@@ -352,7 +357,7 @@ impl App {
                     self.settings.adapter_save_success = false;
                     self.settings.adapter_save_error = None;
                     let mut tasks = vec![self.load_installed()];
-                    if self.current_view == View::Repositories {
+                    if self.current_view == View::AdapterInfo {
                         tasks.push(self.load_repositories());
                     }
                     return Task::batch(tasks);
@@ -1297,7 +1302,7 @@ impl App {
     }
 
     fn load_repositories(&mut self) -> Task<Message> {
-        self.repositories.loading = true;
+        self.adapter_view.repos_loading = true;
         let config = self.adapter.config_for_mode(self.current_mode);
         let repos: Vec<message::RepoInfo> = config
             .repositories
@@ -1323,24 +1328,24 @@ impl App {
                 return self.load_repositories();
             }
             message::RepositoriesMessage::Loaded(result) => {
-                self.repositories.loading = false;
-                self.repositories.loaded = true;
-                self.repositories.result_version += 1;
+                self.adapter_view.repos_loading = false;
+                self.adapter_view.repos_loaded = true;
+                self.adapter_view.repos_version += 1;
                 match result {
                     Ok(repos) => {
-                        self.repositories.error = None;
-                        self.repositories.repositories = repos;
+                        self.adapter_view.repos_error = None;
+                        self.adapter_view.repositories = repos;
                     }
                     Err(e) => {
                         log::error!("Failed to load repositories: {e}");
-                        self.repositories.error = Some(e);
+                        self.adapter_view.repos_error = Some(e);
                     }
                 }
             }
             message::RepositoriesMessage::SyncRepo(_name) => {
-                self.repositories.syncing = Some("__all__".into());
-                self.repositories.sync_error = None;
-                self.repositories.result_version += 1;
+                self.adapter_view.syncing = Some("__all__".into());
+                self.adapter_view.sync_error = None;
+                self.adapter_view.repos_version += 1;
                 let adapter = self.adapter.clone();
                 return Task::perform(
                     async move { adapter.sync(None).await.map_err(|e| e.to_string()) },
@@ -1350,9 +1355,9 @@ impl App {
                 );
             }
             message::RepositoriesMessage::SyncAll => {
-                self.repositories.syncing = Some("__all__".into());
-                self.repositories.sync_error = None;
-                self.repositories.result_version += 1;
+                self.adapter_view.syncing = Some("__all__".into());
+                self.adapter_view.sync_error = None;
+                self.adapter_view.repos_version += 1;
                 let adapter = self.adapter.clone();
                 return Task::perform(
                     async move { adapter.sync(None).await.map_err(|e| e.to_string()) },
@@ -1362,15 +1367,15 @@ impl App {
                 );
             }
             message::RepositoriesMessage::SyncComplete(result) => {
-                self.repositories.syncing = None;
-                self.repositories.result_version += 1;
+                self.adapter_view.syncing = None;
+                self.adapter_view.repos_version += 1;
                 match result {
                     Ok(()) => {
                         log::info!("Repository sync completed");
                     }
                     Err(e) => {
                         log::error!("Sync failed: {e}");
-                        self.repositories.sync_error = Some(e);
+                        self.adapter_view.sync_error = Some(e);
                     }
                 }
             }
@@ -1391,7 +1396,7 @@ impl App {
             }
             message::RepositoriesMessage::ToggleResult(result) => match result {
                 Ok(()) => return self.load_repositories(),
-                Err(e) => self.repositories.sync_error = Some(e),
+                Err(e) => self.adapter_view.repos_error = Some(e),
             },
         }
         Task::none()
@@ -1952,10 +1957,9 @@ impl App {
             View::Installed => views::installed::view(&self.installed, self.current_mode),
             View::Updates => views::updates::view(&self.updates, self.current_mode),
             View::Settings => views::settings::view(&self.settings, self.current_mode),
-            View::Repositories => views::repositories::view(&self.repositories, self.current_mode),
             View::AdapterInfo => {
                 let adapters = self.adapter_manager.list_adapters_with_status();
-                views::adapter_info::view(&self.adapter_view, adapters)
+                views::adapter_info::view(&self.adapter_view, adapters, self.current_mode)
             }
         };
 
@@ -2229,12 +2233,11 @@ impl App {
     }
 
     fn sidebar_view(&self) -> Element<'_, Message> {
-        let nav_items: [(View, &str, &str); 6] = [
+        let nav_items: [(View, &str, &str); 5] = [
             (View::Dashboard, "Dashboard", "\u{2302}"),
             (View::Browse, "Browse", "\u{26b2}"),
             (View::Installed, "Installed", "\u{22a1}"),
             (View::Updates, "Updates", "\u{21bb}"),
-            (View::Repositories, "Repositories", "\u{22a0}"),
             (View::AdapterInfo, "Adapter", "\u{26a1}"),
         ];
 

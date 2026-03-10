@@ -54,7 +54,7 @@ pub fn view<'a>(stats: &DashboardStats) -> Element<'a, Message> {
         stat_card_button(
             "Repositories",
             &stats.repo_count.to_string(),
-            Message::NavigateTo(View::Repositories),
+            Message::NavigateTo(View::AdapterInfo),
         ),
     ]
     .spacing(spacing::MD)
