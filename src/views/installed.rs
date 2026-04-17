@@ -168,12 +168,15 @@ impl App {
         let warning = theme.warning;
         let text_muted = theme.text_muted;
 
-        let is_selected = self.installed_state.selected.contains(&pkg.package.id);
+        let unique_key = pkg.unique_key();
+        let is_selected = self.installed_state.selected.contains(&unique_key);
         let pkey = crate::core::adapter::progress_key(&pkg.package.adapter_id, &pkg.package.id);
         let pkg_status = self.installed_state.package_progress.get(&pkey);
-        let is_removing = self.installed_state.removing.is_some()
-            && (self.installed_state.removing.as_deref() == Some(&pkg.package.id)
-                || self.installed_state.package_progress.contains_key(&pkey));
+        let is_removing = match self.installed_state.removing.as_deref() {
+            Some("__batch__") => self.installed_state.package_progress.contains_key(&pkey),
+            Some(key) => key == unique_key,
+            None => false,
+        };
 
         // Header
         let mut header = div()
@@ -354,8 +357,14 @@ impl App {
             );
         } else {
             let remove_pkg = pkg.package.clone();
+            let remove_unique_key = unique_key.clone();
             let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
-                app.remove_package(remove_pkg.clone(), app.current_mode, cx);
+                app.remove_installed_package(
+                    remove_pkg.clone(),
+                    remove_unique_key.clone(),
+                    app.current_mode,
+                    cx,
+                );
             });
             buttons = buttons.child(
                 div()
@@ -402,12 +411,12 @@ impl App {
             border
         };
 
-        let toggle_pkg_id = pkg.package.id.clone();
+        let toggle_key = pkg.unique_key();
         let card_listener = cx.listener(move |app, _: &ClickEvent, _window, _cx| {
-            if app.installed_state.selected.contains(&toggle_pkg_id) {
-                app.installed_state.selected.remove(&toggle_pkg_id);
+            if app.installed_state.selected.contains(&toggle_key) {
+                app.installed_state.selected.remove(&toggle_key);
             } else {
-                app.installed_state.selected.insert(toggle_pkg_id.clone());
+                app.installed_state.selected.insert(toggle_key.clone());
             }
         });
 

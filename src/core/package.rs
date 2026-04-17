@@ -15,6 +15,15 @@ impl Package {
         let (repo_name, pkg_id) = self.soar_query_parts()?;
         Some(format!("{}#{}:{}", self.name, pkg_id, repo_name))
     }
+
+    /// Build a soar query string with version "name#pkg_id@version:repo_name"
+    pub fn soar_query_versioned(&self) -> Option<String> {
+        let (repo_name, pkg_id) = self.soar_query_parts()?;
+        Some(format!(
+            "{}#{}@{}:{}",
+            self.name, pkg_id, self.version, repo_name
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +86,13 @@ pub struct InstalledPackage {
     pub auto_installed: bool,
     pub is_healthy: bool,
     pub profile: Option<String>,
+}
+
+impl InstalledPackage {
+    /// Unique key for selection/tracking, distinguishing different installs of the same package.
+    pub fn unique_key(&self) -> String {
+        format!("{}@{}", self.package.id, self.package.version)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

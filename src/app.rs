@@ -703,7 +703,7 @@ impl App {
             .installed_state
             .packages
             .iter()
-            .filter(|p| selected.contains(&p.package.id))
+            .filter(|p| selected.contains(&p.unique_key()))
             .map(|p| p.package.clone())
             .collect();
         let progress_keys: Vec<String> = packages
@@ -728,7 +728,7 @@ impl App {
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in &packages {
@@ -738,6 +738,7 @@ impl App {
                             .push(pkg.clone());
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -748,11 +749,13 @@ impl App {
                             {
                                 Ok(_) => log::info!("Removed selected packages for {adapter_id}"),
                                 Err(e) => {
-                                    log::error!("Remove selected failed for {adapter_id}: {e}")
+                                    log::error!("Remove selected failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
                                 }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -765,7 +768,16 @@ impl App {
                             app.installed_state.package_progress.remove(key);
                         }
                         app.installed_state.result_version += 1;
-                        app.add_toast(ToastLevel::Success, format!("Removed {count} packages"));
+                        if errors.is_empty() {
+                            app.add_toast(ToastLevel::Success, format!("Removed {count} packages"));
+                        } else {
+                            for err in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to remove: {err}"),
+                                );
+                            }
+                        }
                         app.load_installed(cx);
                     })
                 });
@@ -1650,9 +1662,21 @@ impl App {
         mode: PackageMode,
         cx: &mut Context<Self>,
     ) {
+        self.remove_installed_package(pkg.clone(), pkg.id.clone(), mode, cx);
+    }
+
+    /// Remove from installed view — uses unique_key so duplicate package names
+    /// don't cause the wrong card to show "Removing…".
+    pub(crate) fn remove_installed_package(
+        &mut self,
+        pkg: crate::core::package::Package,
+        unique_key: String,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
         let pkg_name = pkg.name.clone();
         let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
-        self.installed_state.removing = Some(pkg.id.clone());
+        self.installed_state.removing = Some(unique_key);
         self.installed_state
             .package_progress
             .insert(progress_key.clone(), OperationStatus::Starting);

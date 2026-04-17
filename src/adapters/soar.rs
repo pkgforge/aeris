@@ -848,7 +848,13 @@ impl Adapter for SoarAdapter {
         }
 
         let ctx = self.user_ctx();
-        let pkg_ids: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+        let pkg_ids: Vec<String> = packages
+            .iter()
+            .map(|p| {
+                p.soar_query_versioned()
+                    .ok_or_else(|| AdapterError::Other(format!("Invalid package id: {}", p.id)))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let results = remove::resolve_removals(&ctx, &pkg_ids, false)
             .map_err(|e| AdapterError::Other(e.to_string()))?;
 
