@@ -5,21 +5,10 @@ edition = "2024"
 description = "Unbounded package management"
 license = "MIT"
 
-[features]
-debug = ["iced/hot"]
-
 [dependencies]
 async-trait = "0.1.89"
 env_logger = "0.11.8"
-iced = { version = "0.14.0", default-features = false, features = [
-  "lazy",
-  "linux-theme-detection",
-  "tiny-skia",
-  "tokio",
-  "wayland",
-  "wgpu",
-  "x11",
-] }
+gpui = "0.2"
 log = "0.4.29"
 rfd = "0.15"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -31,7 +20,8 @@ soar-events = { git = "https://github.com/pkgforge/soar" }
 soar-operations = { git = "https://github.com/pkgforge/soar" }
 soar-utils = { git = "https://github.com/pkgforge/soar" }
 thiserror = "2.0.18"
-tokio = { version = "1.49.0", features = ["sync", "fs"] }
+tokio = { version = "1.49.0", features = ["sync", "fs", "rt-multi-thread"] }
+unicode-segmentation = "1.12"
 toml = "1.0.1"
 toml_edit = "0.25.1"
 shellexpand = "3.0"

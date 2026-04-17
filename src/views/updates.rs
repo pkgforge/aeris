@@ -1,21 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use iced::{
-    Alignment, Element, Length,
-    widget::{
-        button, checkbox, column, container, lazy, progress_bar, row, scrollable, space, text,
-    },
-};
+use gpui::*;
 
 use crate::{
-    app::{
-        OperationStatus,
-        message::{Message, UpdatesMessage},
-    },
+    app::{App, OperationStatus},
     core::{package::Update, privilege::PackageMode},
-    styles::{self, font_size, spacing},
+    styles, theme,
 };
-use soar_utils::bytes::format_bytes;
 
 #[derive(Debug, Default)]
 pub struct UpdatesState {
@@ -25,260 +16,415 @@ pub struct UpdatesState {
     pub error: Option<String>,
     pub result_version: u64,
     pub updating: Option<String>,
-    /// Adapters (id, name) that were checked but don't support listing available updates.
     pub no_update_listing: Vec<(String, String)>,
     pub selected: HashSet<String>,
     pub package_progress: HashMap<String, OperationStatus>,
 }
 
-pub fn view<'a>(state: &'a UpdatesState, mode: PackageMode) -> Element<'a, Message> {
-    let title = match mode {
-        PackageMode::User => "Updates (User)",
-        PackageMode::System => "Updates (System)",
-    };
-    let mut header_row = row![
-        text(title).size(font_size::TITLE),
-        space().width(Length::Fill)
-    ]
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
-
-    let is_busy = state.updating.is_some() || state.loading;
-
-    if !state.updates.is_empty() {
-        let mut update_all_btn = button(text("Update All").size(font_size::SMALL).center())
-            .padding([spacing::SM, 18.0])
-            .style(button::primary);
-        if !is_busy {
-            update_all_btn = update_all_btn.on_press(Message::Updates(UpdatesMessage::UpdateAll));
+impl App {
+    pub fn render_updates(
+        &mut self,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // Auto-load on first render
+        if !self.updates_state.checked && !self.updates_state.loading {
+            self.check_updates(cx);
         }
-        header_row = header_row.push(update_all_btn);
-    }
 
-    let mut check_btn = button(text("Check").size(font_size::CAPTION + 1.0).center())
-        .padding([spacing::XS, 14.0])
-        .style(button::secondary);
-    if !is_busy {
-        check_btn = check_btn.on_press(Message::Updates(UpdatesMessage::CheckUpdates));
-    }
-    header_row = header_row.push(check_btn);
+        let surface = theme.surface;
+        let border = theme.border;
+        let text_muted = theme.text_muted;
+        let primary = theme.primary;
+        let hover = theme.hover;
 
-    let content: Element<'_, Message> = if state.loading {
-        container(text("Checking for updates...").size(font_size::BODY))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-    } else if let Some(ref err) = state.error {
-        container(text(format!("Failed: {err}")).size(font_size::BODY))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-    } else if state.updates.is_empty() {
-        let msg = if state.checked {
-            "All packages are up to date"
-        } else {
-            "Click Check to look for updates"
+        let mode = self.current_mode;
+        let title = match mode {
+            PackageMode::User => "Updates (User)",
+            PackageMode::System => "Updates (System)",
         };
-        let mut col = column![text(msg).size(font_size::BODY)]
-            .spacing(spacing::SM)
-            .align_x(Alignment::Center);
 
-        if state.checked && !state.no_update_listing.is_empty() {
-            for (adapter_id, adapter_name) in &state.no_update_listing {
-                let mut note_row = row![
-                    text(format!("{adapter_name} cannot detect available updates."))
-                        .size(font_size::CAPTION),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center);
+        let is_busy = self.updates_state.updating.is_some() || self.updates_state.loading;
 
-                if !is_busy {
-                    note_row = note_row.push(
-                        button(
-                            text(format!("Update All {adapter_name}"))
-                                .size(font_size::CAPTION)
-                                .center(),
-                        )
-                        .padding([spacing::XXXS, spacing::SM])
-                        .style(button::secondary)
-                        .on_press(Message::Updates(
-                            UpdatesMessage::UpdateAdapterAll(adapter_id.clone()),
-                        )),
+        // Header
+        let mut header_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .child(div().text_size(px(styles::font_size::TITLE)).child(title));
+
+        let mut header_buttons = div().flex().flex_row().gap(px(styles::spacing::SM));
+
+        // Update All button
+        if !self.updates_state.updates.is_empty() && !is_busy {
+            let update_all_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.update_all(cx);
+            });
+            header_buttons = header_buttons.child(
+                div()
+                    .id("update-all-btn")
+                    .px(px(18.0))
+                    .py(px(styles::spacing::SM))
+                    .rounded(px(styles::radius::MD))
+                    .bg(primary)
+                    .text_color(gpui::white())
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::SMALL))
+                    .on_click(update_all_listener)
+                    .child("Update All"),
+            );
+        }
+
+        // Check button
+        if !is_busy {
+            let check_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.check_updates(cx);
+            });
+            header_buttons = header_buttons.child(
+                div()
+                    .id("check-updates-btn")
+                    .px(px(14.0))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::SMALL))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(check_listener)
+                    .child("Check"),
+            );
+        }
+
+        header_row = header_row.child(header_buttons);
+
+        // Content
+        let content = if self.updates_state.loading {
+            div().flex_1().flex().items_center().justify_center().child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .child("Checking for updates..."),
+            )
+        } else if let Some(ref err) = self.updates_state.error {
+            div().flex_1().flex().items_center().justify_center().child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .child(format!("Failed: {err}")),
+            )
+        } else if self.updates_state.updates.is_empty() {
+            let msg = if self.updates_state.checked {
+                "All packages are up to date"
+            } else {
+                "Click Check to look for updates"
+            };
+
+            let mut col = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::SM))
+                .items_center()
+                .child(div().text_size(px(styles::font_size::BODY)).child(msg));
+
+            // Show adapter-specific update notes
+            if self.updates_state.checked && !self.updates_state.no_update_listing.is_empty() {
+                for (_adapter_id, adapter_name) in &self.updates_state.no_update_listing {
+                    col = col.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(styles::spacing::SM))
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::CAPTION))
+                                    .text_color(text_muted)
+                                    .child(format!(
+                                        "{adapter_name} cannot detect available updates."
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .px(px(styles::spacing::SM))
+                                    .py(px(styles::spacing::XXXS))
+                                    .rounded(px(styles::radius::MD))
+                                    .bg(surface)
+                                    .border_1()
+                                    .border_color(border)
+                                    .text_size(px(styles::font_size::CAPTION))
+                                    .child(format!("Update All {adapter_name}")),
+                            ),
                     );
                 }
-
-                col = col.push(note_row);
             }
+
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(col)
+        } else {
+            let mut cards_col = div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::SM));
+
+            for (idx, update) in self.updates_state.updates.iter().enumerate() {
+                cards_col = cards_col.child(self.render_update_card(update, idx, theme));
+            }
+
+            // Per-adapter notes
+            for (_adapter_id, adapter_name) in &self.updates_state.no_update_listing {
+                cards_col = cards_col.child(
+                    div()
+                        .py(px(styles::spacing::SM))
+                        .flex()
+                        .flex_row()
+                        .gap(px(styles::spacing::SM))
+                        .items_center()
+                        .child(
+                            div()
+                                .text_size(px(styles::font_size::CAPTION))
+                                .text_color(text_muted)
+                                .child(format!("{adapter_name} cannot detect available updates.")),
+                        )
+                        .child(
+                            div()
+                                .px(px(styles::spacing::SM))
+                                .py(px(styles::spacing::XXXS))
+                                .rounded(px(styles::radius::MD))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .text_size(px(styles::font_size::CAPTION))
+                                .child(format!("Update All {adapter_name}")),
+                        ),
+                );
+            }
+
+            cards_col
+        };
+
+        let mut main_col = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::MD))
+            .w_full()
+            .child(header_row)
+            .child(content);
+
+        // Floating action bar for batch update
+        if !self.updates_state.selected.is_empty() {
+            let count = self.updates_state.selected.len();
+            let update_selected = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.update_selected(cx);
+            });
+            let clear_selection = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+                app.updates_state.selected.clear();
+            });
+
+            main_col = main_col.child(self.floating_action_bar(
+                count,
+                "Update",
+                "updates-update-selected",
+                update_selected,
+                "updates-clear-selection",
+                clear_selection,
+                false,
+                theme,
+            ));
         }
 
-        container(col)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-    } else {
-        let version = state.result_version;
-        let updates = state.updates.clone();
-        let updating = state.updating.clone();
-        let no_update_listing = state.no_update_listing.clone();
-        let selected = state.selected.clone();
-        let package_progress = state.package_progress.clone();
-        lazy(("updates", version), move |_| {
-            let cards: Vec<Element<'_, Message>> = updates
-                .iter()
-                .map(|u| update_card(u, &updating, &selected, &package_progress))
-                .collect();
+        div()
+            .p(px(styles::spacing::XL))
+            .flex_1()
+            .flex()
+            .flex_col()
+            .child(main_col)
+    }
 
-            let mut col = column(cards).spacing(spacing::SM).width(Length::Fill);
+    fn render_update_card(
+        &self,
+        update: &Update,
+        idx: usize,
+        theme: &theme::Theme,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+        let hover = theme.hover;
+        let success = theme.success;
+        let warning = theme.warning;
+        let text_muted = theme.text_muted;
 
-            for (adapter_id, adapter_name) in &no_update_listing {
-                let note_row = row![
-                    text(format!("{adapter_name} cannot detect available updates."))
-                        .size(font_size::CAPTION),
-                    button(
-                        text(format!("Update All {adapter_name}"))
-                            .size(font_size::CAPTION)
-                            .center(),
-                    )
-                    .padding([spacing::XXXS, spacing::SM])
-                    .style(button::secondary)
-                    .on_press(Message::Updates(
-                        UpdatesMessage::UpdateAdapterAll(adapter_id.clone(),)
+        let is_selected = self.updates_state.selected.contains(&update.package.id);
+        let pkey =
+            crate::core::adapter::progress_key(&update.package.adapter_id, &update.package.id);
+        let pkg_status = self.updates_state.package_progress.get(&pkey);
+        let is_updating_this = self.updates_state.updating.as_deref() == Some(&update.package.id);
+        let is_updating_all = self.updates_state.updating.as_deref() == Some("__all__");
+        let is_updating_batch =
+            self.updates_state.updating.as_deref() == Some("__batch__") && pkg_status.is_some();
+
+        // Header
+        let header = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::XS))
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .child(update.package.name.clone()),
+            )
+            .child(
+                div()
+                    .px(px(styles::spacing::XS))
+                    .py(px(styles::spacing::XXXS))
+                    .rounded(px(styles::radius::SM))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .text_size(px(styles::font_size::CAPTION))
+                    .child(update.current_version.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .child("\u{2192}"),
+            )
+            .child(
+                div()
+                    .px(px(styles::spacing::XS))
+                    .py(px(styles::spacing::XXXS))
+                    .rounded(px(styles::radius::SM))
+                    .bg(success.opacity(0.2))
+                    .border_1()
+                    .border_color(success.opacity(0.4))
+                    .text_size(px(styles::font_size::CAPTION))
+                    .child(update.new_version.clone()),
+            );
+
+        // Info row
+        let mut info_row = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::MD))
+            .items_center();
+
+        if let Some(size) = update.download_size {
+            info_row = info_row.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(format!(
+                        "Download: {}",
+                        crate::views::browse::format_bytes_pub(size)
                     )),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center);
-
-                col = col.push(container(note_row).padding([spacing::SM, 0.0]));
-            }
-
-            scrollable(col).height(Length::Fill)
-        })
-        .into()
-    };
-
-    let mut main_col = column![header_row, content]
-        .spacing(spacing::MD)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    if !state.selected.is_empty() {
-        main_col = main_col.push(super::browse::floating_action_bar(
-            state.selected.len(),
-            "Update",
-            Message::Updates(UpdatesMessage::UpdateSelected),
-            Message::Updates(UpdatesMessage::ClearSelection),
-            false,
-        ));
-    }
-
-    container(main_col)
-        .padding(spacing::XL)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
-
-fn update_card(
-    update: &Update,
-    updating: &Option<String>,
-    selected: &HashSet<String>,
-    package_progress: &HashMap<String, OperationStatus>,
-) -> Element<'static, Message> {
-    let is_selected = selected.contains(&update.package.id);
-    let name = text(update.package.name.clone()).size(font_size::HEADING);
-
-    let old_version = container(text(update.current_version.clone()).size(font_size::CAPTION))
-        .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_neutral);
-    let arrow = text("\u{2192}").size(font_size::SMALL);
-    let new_version = container(text(update.new_version.clone()).size(font_size::CAPTION))
-        .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_success);
-
-    let header = row![name, old_version, arrow, new_version]
-        .spacing(spacing::XS)
-        .align_y(Alignment::Center);
-
-    let mut info_parts: Vec<Element<'_, Message>> = Vec::new();
-
-    if let Some(size) = update.download_size {
-        info_parts.push(
-            text(format!("Download: {}", format_bytes(size, 2)))
-                .size(font_size::CAPTION)
-                .into(),
-        );
-    }
-
-    if update.is_security {
-        info_parts.push(
-            container(text("Security").size(font_size::BADGE))
-                .padding([spacing::XXXS, spacing::XS])
-                .style(styles::badge_warning)
-                .into(),
-        );
-    }
-
-    let info_row = row(info_parts)
-        .spacing(spacing::MD)
-        .align_y(Alignment::Center);
-
-    let pkg_status = package_progress.get(&update.package.name);
-    let is_updating_this = updating.as_deref() == Some(&update.package.id);
-    let is_updating_all = updating.as_deref() == Some("__all__");
-    let is_updating_batch = updating.as_deref() == Some("__batch__") && pkg_status.is_some();
-    let update_btn = if is_updating_this || is_updating_all || is_updating_batch {
-        let label = pkg_status
-            .map(|s| s.label())
-            .unwrap_or_else(|| "Updating...".into());
-        button(text(label).size(font_size::CAPTION + 1.0).center())
-            .padding([spacing::XXS, spacing::MD])
-            .style(button::secondary)
-    } else {
-        let mut btn = button(text("Update").size(font_size::CAPTION + 1.0).center())
-            .padding([spacing::XXS, spacing::MD])
-            .style(button::primary);
-        if updating.is_none() {
-            btn = btn.on_press(Message::Updates(UpdatesMessage::UpdatePackage(
-                update.package.clone(),
-            )));
+            );
         }
-        btn
-    };
 
-    let mut left = column![header, info_row]
-        .spacing(spacing::XXS)
-        .width(Length::Fill);
+        if update.is_security {
+            info_row = info_row.child(
+                div()
+                    .px(px(styles::spacing::XS))
+                    .py(px(styles::spacing::XXXS))
+                    .rounded(px(styles::radius::SM))
+                    .bg(warning.opacity(0.2))
+                    .border_1()
+                    .border_color(warning.opacity(0.4))
+                    .text_size(px(styles::font_size::BADGE))
+                    .child("Security"),
+            );
+        }
 
-    // Add inline progress bar when downloading
-    if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
-        left = left.push(
-            container(progress_bar(0.0..=1.0, progress))
-                .height(4)
-                .width(Length::Fill),
-        );
+        // Update button
+        let update_btn = if is_updating_this || is_updating_all || is_updating_batch {
+            let label = pkg_status
+                .map(|s| s.label())
+                .unwrap_or_else(|| "Updating...".into());
+            div()
+                .px(px(styles::spacing::MD))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::MD))
+                .bg(surface)
+                .border_1()
+                .border_color(border)
+                .text_size(px(styles::font_size::SMALL))
+                .child(label)
+        } else {
+            div()
+                .px(px(styles::spacing::MD))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::MD))
+                .bg(primary)
+                .text_color(gpui::white())
+                .text_size(px(styles::font_size::SMALL))
+                .cursor_pointer()
+                .child("Update")
+        };
+
+        // Left column
+        let mut left = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::XXS))
+            .child(header)
+            .child(info_row);
+
+        // Progress bar
+        if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
+            left = left.child(
+                div().w_full().h(px(4.0)).rounded(px(2.0)).bg(border).child(
+                    div()
+                        .h(px(4.0))
+                        .rounded(px(2.0))
+                        .bg(primary)
+                        .w(relative(progress)),
+                ),
+            );
+        }
+
+        // Checkbox
+        let checkbox_label = if is_selected { "[x]" } else { "[ ]" };
+
+        let card_bg = if is_selected {
+            primary.opacity(0.1)
+        } else {
+            surface
+        };
+        let card_border = if is_selected {
+            primary.opacity(0.3)
+        } else {
+            border
+        };
+
+        div()
+            .id(SharedString::from(format!("update-pkg-{idx}")))
+            .px(px(styles::spacing::MD))
+            .py(px(styles::spacing::MD))
+            .rounded(px(styles::radius::MD))
+            .bg(card_bg)
+            .border_1()
+            .border_color(card_border)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::MD))
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .child(checkbox_label),
+            )
+            .child(left)
+            .child(update_btn)
     }
-
-    let cb_id = update.package.id.clone();
-    let cb = checkbox(is_selected)
-        .on_toggle(move |_| Message::Updates(UpdatesMessage::ToggleSelect(cb_id.clone())));
-
-    let card_content = row![cb, left, update_btn]
-        .spacing(spacing::MD)
-        .align_y(Alignment::Center);
-
-    let card_style = if is_selected {
-        styles::card_button_selected
-            as fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style
-    } else {
-        styles::card_button
-    };
-
-    button(
-        container(card_content)
-            .padding(spacing::MD)
-            .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .style(card_style)
-    .into()
 }

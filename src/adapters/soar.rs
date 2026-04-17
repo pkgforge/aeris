@@ -1144,6 +1144,8 @@ impl Adapter for SoarAdapter {
                 ConfigValue::String(s) => {
                     if s.trim().is_empty() {
                         doc.remove(key.as_str());
+                    } else if let Ok(n) = s.trim().parse::<i64>() {
+                        doc[key.as_str()] = toml_edit::value(n);
                     } else {
                         doc[key.as_str()] = toml_edit::value(s.as_str());
                     }

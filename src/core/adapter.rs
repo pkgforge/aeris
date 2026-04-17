@@ -16,13 +16,13 @@ pub type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressEvent>;
 pub enum ProgressEvent {
     Download {
         adapter_id: AdapterId,
-        package_name: String,
+        package_id: String,
         current_bytes: u64,
         total_bytes: u64,
     },
     Phase {
         adapter_id: AdapterId,
-        package_name: String,
+        package_id: String,
         phase: String,
         progress_percent: f32,
     },
@@ -32,11 +32,11 @@ pub enum ProgressEvent {
     },
     Completed {
         adapter_id: AdapterId,
-        package_name: String,
+        package_id: String,
     },
     Failed {
         adapter_id: AdapterId,
-        package_name: String,
+        package_id: String,
         error: String,
     },
     BatchProgress {
@@ -45,6 +45,11 @@ pub enum ProgressEvent {
         total: u32,
         failed: u32,
     },
+}
+
+/// Composite key for tracking per-package progress: "adapter_id:package_id"
+pub fn progress_key(adapter_id: &str, package_id: &str) -> String {
+    format!("{adapter_id}:{package_id}")
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -1,22 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use iced::{
-    Alignment, Element, Length,
-    widget::{
-        button, checkbox, column, container, lazy, progress_bar, row, rule, scrollable, space,
-        text, text_input,
-    },
-};
+use gpui::*;
 
 use crate::{
-    app::{
-        OperationStatus,
-        message::{BrowseMessage, Message},
-    },
+    app::{App, OperationStatus},
     core::package::Package,
-    styles::{self, font_size, spacing},
+    styles, theme,
 };
-use soar_utils::bytes::format_bytes;
 
 #[derive(Debug, Default)]
 pub struct BrowseState {
@@ -35,397 +25,776 @@ pub struct BrowseState {
     pub package_progress: HashMap<String, OperationStatus>,
 }
 
-pub fn view<'a>(state: &'a BrowseState) -> Element<'a, Message> {
-    let search_bar = container(
-        text_input("Search packages...", &state.search_query)
-            .on_input(|s| Message::Browse(BrowseMessage::SearchQueryChanged(s)))
-            .on_submit(Message::Browse(BrowseMessage::SearchSubmit))
-            .padding(10)
-            .size(font_size::HEADING),
-    )
-    .style(styles::search_container)
-    .padding(spacing::XXS);
+impl App {
+    pub fn render_browse(
+        &mut self,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let text_muted = theme.text_muted;
+        let primary = theme.primary;
+        let hover = theme.hover;
+        let danger = theme.danger;
+        let success = theme.success;
+        let warning = theme.warning;
+        let text_color = theme.text;
 
-    let result_count: Element<'_, Message> = if state.loading {
-        text("Searching...").size(font_size::CAPTION + 1.0).into()
-    } else if !state.search_results.is_empty() {
-        let count = state.search_results.len();
-        text(format!(
-            "{count} package{} found",
-            if count == 1 { "" } else { "s" }
-        ))
-        .size(font_size::CAPTION + 1.0)
-        .into()
-    } else {
-        text("").size(font_size::CAPTION + 1.0).into()
-    };
-
-    let results_content: Element<'_, Message> = if state.loading {
-        container(text("Searching...").size(font_size::BODY))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-    } else if let Some(ref err) = state.error {
-        container(
-            column![
-                text("Search failed").size(font_size::HEADING),
-                text(err.as_str()).size(font_size::SMALL),
-            ]
-            .spacing(spacing::SM)
-            .align_x(Alignment::Center),
-        )
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .into()
-    } else if state.search_results.is_empty() {
-        let msg = if state.has_searched {
-            "No packages found"
-        } else {
-            "Type to search for packages"
-        };
-        container(text(msg).size(font_size::BODY))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-    } else {
-        let version = state.result_version;
-        let results = state.search_results.clone();
-        let installing = state.installing.clone();
-        let selected = state.selected.clone();
-        let package_progress = state.package_progress.clone();
-        lazy(("browse", version), move |_| {
-            let cards: Vec<Element<'_, Message>> = results
-                .iter()
-                .map(|pkg| package_card(pkg, &installing, &selected, &package_progress))
-                .collect();
-
-            scrollable(column(cards).spacing(spacing::SM).width(Length::Fill)).height(Length::Fill)
-        })
-        .into()
-    };
-
-    let mut browse_list = column![search_bar, result_count]
-        .spacing(spacing::SM)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    if let Some(ref err) = state.install_error {
-        let error_banner = row![
-            text(format!("Install failed: {err}")).size(font_size::SMALL),
-            space().width(Length::Fill),
-            button(text("Dismiss").size(font_size::CAPTION + 1.0))
-                .on_press(Message::Browse(BrowseMessage::DismissInstallError))
-                .style(button::secondary)
-                .padding([spacing::XXS, 10.0]),
-        ]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center);
-
-        browse_list = browse_list.push(
-            container(error_banner)
-                .padding([spacing::SM, spacing::MD])
-                .width(Length::Fill)
-                .style(styles::error_banner),
-        );
-    }
-
-    browse_list = browse_list.push(results_content);
-
-    if !state.selected.is_empty() {
-        browse_list = browse_list.push(floating_action_bar(
-            state.selected.len(),
-            "Install",
-            Message::Browse(BrowseMessage::InstallSelected),
-            Message::Browse(BrowseMessage::ClearSelection),
-            false,
-        ));
-    }
-
-    let browse_panel = container(browse_list)
-        .padding(spacing::XL)
-        .width(Length::Fill)
-        .height(Length::Fill);
-
-    if let Some(ref pkg) = state.selected_package {
-        row![browse_panel, rule::vertical(1), detail_side_panel(pkg),]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    } else {
-        browse_panel.into()
-    }
-}
-
-fn package_card(
-    pkg: &Package,
-    installing: &Option<String>,
-    selected: &HashSet<String>,
-    package_progress: &HashMap<String, OperationStatus>,
-) -> Element<'static, Message> {
-    let pkg_id = pkg.id.clone();
-    let is_selected = selected.contains(&pkg.id);
-    let name = text(pkg.name.clone()).size(font_size::HEADING);
-    let adapter = container(text(pkg.adapter_id.clone()).size(font_size::BADGE))
-        .padding([spacing::XXXS, spacing::XS])
-        .style(styles::badge_adapter(&pkg.adapter_id));
-
-    let mut header = row![name].spacing(spacing::SM).align_y(Alignment::Center);
-
-    if !pkg.version.is_empty() {
-        header = header.push(
-            container(text(pkg.version.clone()).size(font_size::CAPTION))
-                .padding([spacing::XXXS, spacing::XS])
-                .style(styles::badge_neutral),
-        );
-    }
-
-    header = header.push(adapter);
-
-    let description = text(
-        pkg.description
-            .clone()
-            .unwrap_or_else(|| "No description".into()),
-    )
-    .size(font_size::SMALL);
-
-    let mut info_parts: Vec<Element<'_, Message>> = Vec::new();
-    if let Some(size) = pkg.size {
-        info_parts.push(text(format_bytes(size, 2)).size(font_size::CAPTION).into());
-    }
-    if let Some(ref license) = pkg.license {
-        info_parts.push(text(license.clone()).size(font_size::CAPTION).into());
-    }
-    let info_row = row(info_parts).spacing(spacing::MD);
-
-    let is_installing = installing.as_deref() == Some(&pkg.id)
-        || (installing.as_deref() == Some("__batch__") && package_progress.contains_key(&pkg.name));
-    let pkg_status = package_progress.get(&pkg.name);
-
-    let install_btn: Element<'static, Message> = if pkg.installed && pkg.update_available {
-        container(text("Update Available").size(font_size::CAPTION))
-            .padding([spacing::XXS, 10.0])
-            .style(styles::badge_warning)
-            .into()
-    } else if pkg.installed {
-        container(text("Installed").size(font_size::CAPTION))
-            .padding([spacing::XXS, 10.0])
-            .style(styles::badge_success)
-            .into()
-    } else if is_installing {
-        let label = pkg_status
-            .map(|s| s.label())
-            .unwrap_or_else(|| "Installing...".into());
-        container(text(label).size(font_size::CAPTION))
-            .padding([spacing::XXS, 10.0])
-            .style(styles::badge_primary)
-            .into()
-    } else {
-        let mut btn = button(text("Install").size(font_size::CAPTION + 1.0).center())
-            .padding([spacing::XXS, 14.0])
-            .style(button::primary);
-        if installing.is_none() {
-            btn = btn.on_press(Message::Browse(BrowseMessage::InstallPackage(pkg.clone())));
+        // Sync search query from input entity
+        let current_query = self.search_input.read(cx).content().to_string();
+        if current_query != self.browse_state.search_query {
+            self.browse_state.search_query = current_query.clone();
+            if !current_query.is_empty() {
+                self.perform_search(cx);
+            } else {
+                self.browse_state.search_results.clear();
+                self.browse_state.has_searched = false;
+            }
         }
-        btn.into()
-    };
 
-    let mut left = column![header, description, info_row]
-        .spacing(spacing::XXS)
-        .width(Length::Fill);
+        // Search bar
+        let search_bar = div()
+            .px(px(styles::spacing::MD))
+            .py(px(10.0))
+            .rounded(px(styles::radius::MD))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .w_full()
+            .text_size(px(styles::font_size::HEADING))
+            .child(self.search_input.clone());
 
-    // Add inline progress bar when downloading
-    if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
-        left = left.push(
-            container(progress_bar(0.0..=1.0, progress))
-                .height(4)
-                .width(Length::Fill),
+        // Result count
+        let result_count_text = if self.browse_state.loading {
+            "Searching...".to_string()
+        } else if !self.browse_state.search_results.is_empty() {
+            let count = self.browse_state.search_results.len();
+            format!("{count} package{} found", if count == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        };
+
+        let result_count = div()
+            .text_size(px(styles::font_size::SMALL))
+            .text_color(text_muted)
+            .child(result_count_text);
+
+        // Results content
+        let results_content = if self.browse_state.loading {
+            div().flex_1().flex().items_center().justify_center().child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .child("Searching..."),
+            )
+        } else if let Some(ref err) = self.browse_state.error {
+            div().flex_1().flex().items_center().justify_center().child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(styles::spacing::SM))
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::HEADING))
+                            .child("Search failed"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::SMALL))
+                            .child(err.clone()),
+                    ),
+            )
+        } else if self.browse_state.search_results.is_empty() {
+            let msg = if self.browse_state.has_searched {
+                "No packages found"
+            } else {
+                "Type to search for packages"
+            };
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().text_size(px(styles::font_size::BODY)).child(msg))
+        } else {
+            let results = self.browse_state.search_results.clone();
+            let mut list = div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::SM));
+            for (idx, pkg) in results.iter().enumerate() {
+                list = list.child(self.render_package_card(pkg, idx, theme, cx));
+            }
+            list
+        };
+
+        // Build the browse list
+        let mut browse_list = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::SM))
+            .w_full()
+            .child(search_bar)
+            .child(result_count)
+            .child(results_content);
+
+        // Install error banner
+        if let Some(ref err) = self.browse_state.install_error {
+            let dismiss_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+                app.browse_state.install_error = None;
+            });
+
+            browse_list = browse_list.child(
+                div()
+                    .px(px(styles::spacing::MD))
+                    .py(px(styles::spacing::SM))
+                    .rounded(px(styles::radius::MD))
+                    .bg(danger.opacity(0.15))
+                    .border_1()
+                    .border_color(danger.opacity(0.3))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::SMALL))
+                            .child(format!("Install failed: {err}")),
+                    )
+                    .child(
+                        div()
+                            .id("dismiss-install-error")
+                            .px(px(10.0))
+                            .py(px(styles::spacing::XXS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .hover(move |s| s.bg(hover))
+                            .on_click(dismiss_listener)
+                            .child("Dismiss"),
+                    ),
+            );
+        }
+
+        // Floating action bar for batch selection
+        if !self.browse_state.selected.is_empty() {
+            let count = self.browse_state.selected.len();
+            let install_selected = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.install_selected_browse(cx);
+            });
+            let clear_selection = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+                app.browse_state.selected.clear();
+            });
+
+            browse_list = browse_list.child(self.floating_action_bar(
+                count,
+                "Install",
+                "browse-install-selected",
+                install_selected,
+                "browse-clear-selection",
+                clear_selection,
+                false,
+                theme,
+            ));
+        }
+
+        let browse_panel = div()
+            .p(px(styles::spacing::XL))
+            .flex_1()
+            .flex()
+            .flex_col()
+            .child(browse_list);
+
+        // Detail side panel
+        if let Some(ref pkg) = self.browse_state.selected_package.clone() {
+            div()
+                .flex_1()
+                .flex()
+                .flex_row()
+                .child(browse_panel)
+                .child(div().w(px(1.0)).h_full().bg(border))
+                .child(self.render_detail_panel(pkg, theme, cx))
+        } else {
+            div().flex_1().flex().flex_row().child(browse_panel)
+        }
+    }
+
+    fn render_package_card(
+        &self,
+        pkg: &Package,
+        idx: usize,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+        let success = theme.success;
+        let warning = theme.warning;
+        let hover = theme.hover;
+        let text_muted = theme.text_muted;
+
+        let is_selected = self.browse_state.selected.contains(&pkg.id);
+        let pkey = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+        let is_installing = self.browse_state.installing.is_some()
+            && (self.browse_state.installing.as_deref() == Some(&pkg.id)
+                || self.browse_state.package_progress.contains_key(&pkey));
+        let pkg_status = self.browse_state.package_progress.get(&pkey);
+
+        // Header: name + version badge + adapter badge
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::SM))
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .child(pkg.name.clone()),
+            );
+
+        if !pkg.version.is_empty() {
+            header = header.child(
+                div()
+                    .px(px(styles::spacing::XS))
+                    .py(px(styles::spacing::XXXS))
+                    .rounded(px(styles::radius::SM))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .text_size(px(styles::font_size::CAPTION))
+                    .child(pkg.version.clone()),
+            );
+        }
+
+        header = header.child(self.adapter_badge(&pkg.adapter_id, theme));
+
+        let description = div()
+            .text_size(px(styles::font_size::SMALL))
+            .text_color(text_muted)
+            .child(
+                pkg.description
+                    .clone()
+                    .unwrap_or_else(|| "No description".into()),
+            );
+
+        // Info row
+        let mut info_parts = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::MD))
+            .items_center();
+
+        if let Some(size) = pkg.size {
+            info_parts = info_parts.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(format_bytes(size)),
+            );
+        }
+        if let Some(ref license) = pkg.license {
+            info_parts = info_parts.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(license.clone()),
+            );
+        }
+
+        // Install button / status
+        let install_status = if pkg.installed && pkg.update_available {
+            div()
+                .px(px(10.0))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(warning.opacity(0.2))
+                .border_1()
+                .border_color(warning.opacity(0.4))
+                .text_size(px(styles::font_size::CAPTION))
+                .child("Update Available")
+        } else if pkg.installed {
+            div()
+                .px(px(10.0))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(success.opacity(0.2))
+                .border_1()
+                .border_color(success.opacity(0.4))
+                .text_size(px(styles::font_size::CAPTION))
+                .child("Installed")
+        } else if is_installing {
+            let label = pkg_status
+                .map(|s| s.label())
+                .unwrap_or_else(|| "Installing...".into());
+            div()
+                .px(px(10.0))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(primary.opacity(0.2))
+                .border_1()
+                .border_color(primary.opacity(0.4))
+                .text_size(px(styles::font_size::CAPTION))
+                .child(label)
+        } else {
+            div()
+                .px(px(14.0))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(primary)
+                .text_color(gpui::white())
+                .text_size(px(styles::font_size::SMALL))
+                .cursor_pointer()
+                .child("Install")
+        };
+
+        // Left column
+        let mut left = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::XXS))
+            .child(header)
+            .child(description)
+            .child(info_parts);
+
+        // Progress bar
+        if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
+            let pct = (progress * 100.0).min(100.0);
+            left = left.child(
+                div().w_full().h(px(4.0)).rounded(px(2.0)).bg(border).child(
+                    div()
+                        .h(px(4.0))
+                        .rounded(px(2.0))
+                        .bg(primary)
+                        .w(relative(progress)),
+                ),
+            );
+        }
+
+        // Checkbox for non-installed
+        let mut card_content = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::MD))
+            .items_center();
+
+        if !pkg.installed {
+            let checkbox = div()
+                .size(px(18.0))
+                .rounded(px(styles::radius::SM))
+                .border_1()
+                .border_color(if is_selected { primary } else { border })
+                .bg(if is_selected { primary } else { surface })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(if is_selected {
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(gpui::white())
+                        .child("\u{2713}")
+                } else {
+                    div()
+                });
+            card_content = card_content.child(checkbox);
+        }
+
+        card_content = card_content.child(left).child(install_status);
+
+        let card_bg = if is_selected {
+            primary.opacity(0.1)
+        } else {
+            surface
+        };
+        let card_border = if is_selected {
+            primary.opacity(0.3)
+        } else {
+            border
+        };
+
+        let pkg_id = pkg.id.clone();
+        let pkg_clone = pkg.clone();
+        let is_installed = pkg.installed;
+        let card_listener = cx.listener(move |app, _: &ClickEvent, _window, _cx| {
+            if !is_installed {
+                if app.browse_state.selected.contains(&pkg_id) {
+                    app.browse_state.selected.remove(&pkg_id);
+                } else {
+                    app.browse_state.selected.insert(pkg_id.clone());
+                }
+            }
+            app.browse_state.selected_package = Some(pkg_clone.clone());
+        });
+
+        div()
+            .id(SharedString::from(format!("browse-pkg-{idx}")))
+            .px(px(styles::spacing::MD))
+            .py(px(styles::spacing::MD))
+            .rounded(px(styles::radius::MD))
+            .bg(card_bg)
+            .border_1()
+            .border_color(card_border)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(card_listener)
+            .child(card_content)
+    }
+
+    fn render_detail_panel(
+        &self,
+        pkg: &Package,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let text_muted = theme.text_muted;
+        let primary = theme.primary;
+        let success = theme.success;
+        let hover = theme.hover;
+
+        let close_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+            app.browse_state.selected_package = None;
+        });
+
+        let mut content = div()
+            .w(px(320.0))
+            .h_full()
+            .bg(surface)
+            .border_l_1()
+            .border_color(border)
+            .p(px(styles::spacing::XL))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            // Header
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::TITLE))
+                            .child(pkg.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("close-detail")
+                            .px(px(styles::spacing::SM))
+                            .py(px(styles::spacing::XXS))
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::TITLE))
+                            .hover(move |s| s.bg(hover))
+                            .rounded(px(styles::radius::SM))
+                            .on_click(close_listener)
+                            .child("\u{00d7}"),
+                    ),
+            );
+
+        // Version badge
+        if !pkg.version.is_empty() {
+            content = content.child(
+                div()
+                    .px(px(styles::spacing::SM))
+                    .py(px(3.0))
+                    .rounded(px(styles::radius::SM))
+                    .bg(primary.opacity(0.2))
+                    .border_1()
+                    .border_color(primary.opacity(0.4))
+                    .text_size(px(styles::font_size::SMALL))
+                    .child(pkg.version.clone()),
+            );
+        }
+
+        // Description
+        content = content.child(
+            div().text_size(px(styles::font_size::BODY)).child(
+                pkg.description
+                    .clone()
+                    .unwrap_or_else(|| "No description available".into()),
+            ),
         );
-    }
 
-    // Only show checkbox for non-installed packages
-    let card_content: Element<'static, Message> = if !pkg.installed {
-        let cb_id = pkg.id.clone();
-        let cb = checkbox(is_selected)
-            .on_toggle(move |_| Message::Browse(BrowseMessage::ToggleSelect(cb_id.clone())));
-        row![cb, left, install_btn]
-            .spacing(spacing::MD)
-            .align_y(Alignment::Center)
-            .into()
-    } else {
-        row![left, install_btn]
-            .spacing(spacing::MD)
-            .align_y(Alignment::Center)
-            .into()
-    };
+        // Separator
+        content = content.child(div().w_full().h(px(1.0)).bg(border));
 
-    let card_style = if is_selected {
-        styles::card_button_selected
-            as fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style
-    } else {
-        styles::card_button
-    };
+        // Detail rows
+        if let Some(ref homepage) = pkg.homepage {
+            content = content.child(self.detail_row("Homepage", homepage, theme));
+        }
+        if let Some(ref license) = pkg.license {
+            content = content.child(self.detail_row("License", license, theme));
+        }
+        if let Some(size) = pkg.size {
+            content = content.child(self.detail_row("Size", &format_bytes(size), theme));
+        }
+        if let Some(ref category) = pkg.category {
+            content = content.child(self.detail_row("Category", category, theme));
+        }
+        if !pkg.tags.is_empty() {
+            content = content.child(self.detail_row("Tags", &pkg.tags.join(", "), theme));
+        }
 
-    button(
-        container(card_content)
-            .padding(spacing::MD)
-            .width(Length::Fill),
-    )
-    .on_press(Message::Browse(BrowseMessage::SelectPackage(pkg_id)))
-    .width(Length::Fill)
-    .style(card_style)
-    .into()
-}
+        // Status
+        let status_badge = if pkg.installed {
+            div()
+                .px(px(styles::spacing::SM))
+                .py(px(3.0))
+                .rounded(px(styles::radius::SM))
+                .bg(success.opacity(0.2))
+                .border_1()
+                .border_color(success.opacity(0.4))
+                .text_size(px(styles::font_size::CAPTION))
+                .child("Installed")
+        } else {
+            div()
+                .px(px(styles::spacing::SM))
+                .py(px(3.0))
+                .rounded(px(styles::radius::SM))
+                .bg(surface)
+                .border_1()
+                .border_color(border)
+                .text_size(px(styles::font_size::CAPTION))
+                .child("Not installed")
+        };
 
-fn detail_side_panel(pkg: &Package) -> Element<'_, Message> {
-    let close_btn = button(text("\u{00d7}").size(font_size::TITLE).center())
-        .on_press(Message::Browse(BrowseMessage::CloseDetail))
-        .style(styles::header_icon_button)
-        .padding([spacing::XXS, spacing::SM]);
-
-    let header = row![
-        text(pkg.name.clone()).size(font_size::TITLE),
-        space().width(Length::Fill),
-        close_btn,
-    ]
-    .align_y(Alignment::Center);
-
-    let description = text(
-        pkg.description
-            .clone()
-            .unwrap_or_else(|| "No description available".into()),
-    )
-    .size(font_size::BODY);
-
-    let mut details: Vec<Element<'_, Message>> = Vec::new();
-
-    if let Some(ref homepage) = pkg.homepage {
-        details.push(detail_row("Homepage", homepage));
-    }
-    if let Some(ref license) = pkg.license {
-        details.push(detail_row("License", license));
-    }
-    if let Some(size) = pkg.size {
-        details.push(detail_row("Size", &format_bytes(size, 2)));
-    }
-    if let Some(ref category) = pkg.category {
-        details.push(detail_row("Category", category));
-    }
-    if !pkg.tags.is_empty() {
-        details.push(detail_row("Tags", &pkg.tags.join(", ")));
-    }
-
-    let status_badge: Element<'_, Message> = if pkg.installed {
-        container(text("Installed").size(font_size::CAPTION))
-            .padding([3.0, spacing::SM])
-            .style(styles::badge_success)
-            .into()
-    } else {
-        container(text("Not installed").size(font_size::CAPTION))
-            .padding([3.0, spacing::SM])
-            .style(styles::badge_neutral)
-            .into()
-    };
-
-    let install_btn: Element<'_, Message> = if !pkg.installed {
-        button(text("Install").size(font_size::SMALL))
-            .padding([spacing::XS, spacing::LG])
-            .style(button::primary)
-            .on_press(Message::Browse(BrowseMessage::InstallPackage(pkg.clone())))
-            .into()
-    } else {
-        space().width(0).into()
-    };
-
-    let close_bottom_btn = button(text("Close").size(font_size::SMALL))
-        .padding([spacing::XS, spacing::LG])
-        .style(button::secondary)
-        .on_press(Message::Browse(BrowseMessage::CloseDetail));
-
-    let mut content = column![header].spacing(10).padding(spacing::XL);
-
-    if !pkg.version.is_empty() {
-        content = content.push(
-            container(text(pkg.version.clone()).size(font_size::CAPTION + 1.0))
-                .padding([3.0, spacing::SM])
-                .style(styles::badge_primary),
+        content = content.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(styles::spacing::SM))
+                .items_center()
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::SMALL))
+                        .w(px(100.0))
+                        .child("Status"),
+                )
+                .child(status_badge),
         );
+
+        // Separator
+        content = content.child(div().w_full().h(px(1.0)).bg(border));
+
+        // Bottom buttons
+        let close_bottom = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+            app.browse_state.selected_package = None;
+        });
+
+        let mut buttons = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::SM))
+            .items_center()
+            .justify_end();
+
+        if !pkg.installed {
+            let detail_pkey = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+            let is_installing = self
+                .browse_state
+                .package_progress
+                .contains_key(&detail_pkey)
+                || self.browse_state.installing.as_deref() == Some(&pkg.id);
+            if is_installing {
+                let status_label = self
+                    .browse_state
+                    .package_progress
+                    .get(&detail_pkey)
+                    .map(|s| s.label())
+                    .unwrap_or_else(|| "Installing...".into());
+                buttons = buttons.child(
+                    div()
+                        .px(px(styles::spacing::LG))
+                        .py(px(styles::spacing::XS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(primary.opacity(0.3))
+                        .text_color(text_muted)
+                        .text_size(px(styles::font_size::SMALL))
+                        .child(status_label),
+                );
+            } else {
+                let install_pkg = pkg.clone();
+                let install_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                    app.install_package(install_pkg.clone(), app.current_mode, cx);
+                });
+                buttons = buttons.child(
+                    div()
+                        .id("detail-install")
+                        .px(px(styles::spacing::LG))
+                        .py(px(styles::spacing::XS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(primary)
+                        .text_color(gpui::white())
+                        .cursor_pointer()
+                        .text_size(px(styles::font_size::SMALL))
+                        .on_click(install_listener)
+                        .child("Install"),
+                );
+            }
+        }
+
+        buttons = buttons.child(
+            div()
+                .id("detail-close-bottom")
+                .px(px(styles::spacing::LG))
+                .py(px(styles::spacing::XS))
+                .rounded(px(styles::radius::MD))
+                .bg(surface)
+                .border_1()
+                .border_color(border)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::SMALL))
+                .hover(move |s| s.bg(hover))
+                .on_click(close_bottom)
+                .child("Close"),
+        );
+
+        content = content.child(buttons);
+
+        content
     }
 
-    content = content.push(description);
-    content = content.push(rule::horizontal(1));
-
-    for detail in details {
-        content = content.push(detail);
+    fn detail_row(&self, label: &str, value: &str, _theme: &theme::Theme) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::SM))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .w(px(100.0))
+                    .child(label.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .child(value.to_string()),
+            )
     }
 
-    content = content.push(
-        row![
-            text("Status").size(font_size::SMALL).width(100),
-            status_badge
-        ]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center),
-    );
+    pub fn floating_action_bar(
+        &self,
+        count: usize,
+        action_label: &str,
+        action_id: &str,
+        action_handler: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        clear_id: &str,
+        clear_handler: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        is_danger: bool,
+        theme: &theme::Theme,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+        let danger = theme.danger;
+        let hover = theme.hover;
 
-    content = content.push(rule::horizontal(1));
+        let action_bg = if is_danger { danger } else { primary };
 
-    content = content.push(
-        row![space().width(Length::Fill), install_btn, close_bottom_btn]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center),
-    );
+        div()
+            .w_full()
+            .px(px(styles::spacing::LG))
+            .py(px(styles::spacing::SM))
+            .rounded(px(styles::radius::MD))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .child(format!("{count} selected")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(styles::spacing::SM))
+                    .child(
+                        div()
+                            .id(SharedString::from(clear_id.to_string()))
+                            .px(px(14.0))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .hover(move |s| s.bg(hover))
+                            .on_click(clear_handler)
+                            .child("Clear"),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(action_id.to_string()))
+                            .px(px(14.0))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(action_bg)
+                            .text_color(gpui::white())
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .on_click(action_handler)
+                            .child(format!("{action_label} {count}")),
+                    ),
+            )
+    }
 
-    container(scrollable(content).height(Length::Fill))
-        .style(styles::detail_panel)
-        .width(320)
-        .height(Length::Fill)
-        .into()
+    pub fn adapter_color(adapter_id: &str) -> Hsla {
+        // Deterministic hue from adapter ID
+        let hash = adapter_id
+            .bytes()
+            .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+        let hue = (hash % 360) as f32 / 360.0;
+        Hsla {
+            h: hue,
+            s: 0.65,
+            l: 0.55,
+            a: 1.0,
+        }
+    }
+
+    pub fn adapter_badge(&self, adapter_id: &str, _theme: &theme::Theme) -> Div {
+        let color = Self::adapter_color(adapter_id);
+        div()
+            .px(px(styles::spacing::XS))
+            .py(px(styles::spacing::XXXS))
+            .rounded(px(styles::radius::SM))
+            .bg(color.opacity(0.2))
+            .border_1()
+            .border_color(color.opacity(0.4))
+            .text_color(color)
+            .text_size(px(styles::font_size::BADGE))
+            .child(adapter_id.to_string())
+    }
 }
 
-fn detail_row<'a>(label: &str, value: &str) -> Element<'a, Message> {
-    row![
-        text(label.to_string()).size(font_size::SMALL).width(100),
-        text(value.to_string()).size(font_size::SMALL),
-    ]
-    .spacing(spacing::SM)
-    .into()
+pub fn format_bytes_pub(bytes: u64) -> String {
+    format_bytes(bytes)
 }
 
-pub fn floating_action_bar<'a>(
-    count: usize,
-    action_label: &str,
-    action_msg: Message,
-    clear_msg: Message,
-    is_danger: bool,
-) -> Element<'a, Message> {
-    let label = text(format!("{count} selected")).size(font_size::BODY);
-
-    let clear_btn = button(text("Clear").size(font_size::CAPTION + 1.0).center())
-        .on_press(clear_msg)
-        .style(button::secondary)
-        .padding([spacing::XS, 14.0]);
-
-    let action_btn = button(
-        text(format!("{action_label} {count}"))
-            .size(font_size::CAPTION + 1.0)
-            .center(),
-    )
-    .on_press(action_msg)
-    .padding([spacing::XS, 14.0]);
-
-    let action_btn = if is_danger {
-        action_btn.style(button::danger)
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1_048_576 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1_073_741_824 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
     } else {
-        action_btn.style(button::primary)
-    };
-
-    container(
-        row![label, space().width(Length::Fill), clear_btn, action_btn]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center)
-            .padding([spacing::SM, spacing::LG]),
-    )
-    .width(Length::Fill)
-    .style(styles::progress_container)
-    .into()
+        format!("{:.2} GB", bytes as f64 / 1_073_741_824.0)
+    }
 }

@@ -1,24 +1,16 @@
 use std::collections::HashMap;
 
-use iced::{
-    Alignment, Element, Length,
-    widget::{
-        button, column, container, pick_list, row, rule, scrollable, text, text_input, toggler,
-    },
-};
+use gpui::*;
 
 use crate::{
-    app::{
-        AppTheme, View,
-        message::{Message, SettingsMessage},
-    },
+    app::{App, AppTheme, View},
     config::AerisConfig,
     core::{
         adapter::Adapter,
         config::{AdapterConfig, ConfigFieldType, ConfigSchema, ConfigValue},
         privilege::PackageMode,
     },
-    styles::{self, font_size, spacing},
+    styles, theme,
 };
 
 #[derive(Debug)]
@@ -38,6 +30,27 @@ pub struct SettingsState {
     pub adapter_save_error: Option<String>,
     pub adapter_save_success: bool,
     pub saving: bool,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self {
+            selected_theme: AppTheme::System,
+            startup_view: View::Dashboard,
+            notifications: true,
+            aeris_dirty: false,
+            aeris_save_error: None,
+            aeris_save_success: false,
+            adapter_schema: None,
+            adapter_config: AdapterConfig::default(),
+            adapter_config_original: AdapterConfig::default(),
+            adapter_settings: HashMap::new(),
+            adapter_dirty: false,
+            adapter_save_error: None,
+            adapter_save_success: false,
+            saving: false,
+        }
+    }
 }
 
 impl SettingsState {
@@ -77,376 +90,499 @@ impl SettingsState {
     }
 }
 
-const VIEW_OPTIONS: [View; 4] = [
-    View::Dashboard,
-    View::Browse,
-    View::Installed,
-    View::Updates,
-];
+impl App {
+    pub fn render_settings(
+        &mut self,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let text_muted = theme.text_muted;
+        let primary = theme.primary;
+        let hover = theme.hover;
+        let danger = theme.danger;
+        let success = theme.success;
 
-fn render_config_field<'a>(
-    key: &str,
-    label: &'a str,
-    field_type: &ConfigFieldType,
-    value: Option<&ConfigValue>,
-    default: Option<&ConfigValue>,
-    original: Option<&ConfigValue>,
-    _aeris_managed: bool,
-) -> Element<'a, Message> {
-    let key_owned = key.to_string();
+        let mode = self.current_mode;
 
-    match field_type {
-        ConfigFieldType::Toggle => {
-            let checked = match value {
-                Some(ConfigValue::Bool(v)) => *v,
-                _ => match default {
+        let header = div()
+            .text_size(px(styles::font_size::TITLE))
+            .child("Settings");
+
+        // Appearance section
+        let appearance_section = div()
+            .p(px(styles::spacing::LG))
+            .rounded(px(styles::radius::LG))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .child("Appearance"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::BODY))
+                            .flex_1()
+                            .child("Theme"),
+                    )
+                    .child(self.render_theme_selector(theme, cx)),
+            );
+
+        // General section
+        let general_section = div()
+            .p(px(styles::spacing::LG))
+            .rounded(px(styles::radius::LG))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .child("General"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::BODY))
+                            .flex_1()
+                            .child("Startup view"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::BODY))
+                            .text_color(text_muted)
+                            .child(format!("{}", self.settings_state.startup_view)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::BODY))
+                            .flex_1()
+                            .child("Notifications"),
+                    )
+                    .child(self.render_toggle(
+                        "notifications-toggle",
+                        self.settings_state.notifications,
+                        theme,
+                        cx,
+                    )),
+            );
+
+        // Save button
+        let save_enabled = self.settings_state.aeris_dirty && !self.settings_state.saving;
+        let save_aeris = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.save_aeris_settings(cx);
+        });
+
+        let save_btn_bg = if save_enabled { primary } else { surface };
+        let save_btn_text = if save_enabled {
+            gpui::white()
+        } else {
+            text_muted
+        };
+
+        let mut aeris_section = div()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::MD))
+            .child(appearance_section)
+            .child(general_section)
+            .child(
+                div()
+                    .id("save-aeris-btn")
+                    .px(px(14.0))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(save_btn_bg)
+                    .text_color(save_btn_text)
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::SMALL))
+                    .on_click(save_aeris)
+                    .child("Save Aeris Settings"),
+            );
+
+        if let Some(ref err) = self.settings_state.aeris_save_error {
+            aeris_section = aeris_section.child(
+                div()
+                    .px(px(styles::spacing::MD))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(danger.opacity(0.15))
+                    .border_1()
+                    .border_color(danger.opacity(0.3))
+                    .text_size(px(styles::font_size::SMALL))
+                    .child(format!("Error: {err}")),
+            );
+        }
+
+        if self.settings_state.aeris_save_success {
+            aeris_section = aeris_section.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(styles::spacing::XXS))
+                    .rounded(px(styles::radius::SM))
+                    .bg(success.opacity(0.2))
+                    .border_1()
+                    .border_color(success.opacity(0.4))
+                    .text_size(px(styles::font_size::SMALL))
+                    .child("Saved"),
+            );
+        }
+
+        // Adapter config section
+        let mut adapter_section = div().flex().flex_col().gap(px(10.0));
+
+        if let Some(ref schema) = self.settings_state.adapter_schema.clone() {
+            let mut capitalized = schema.adapter_id.clone();
+            if let Some(first) = capitalized.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            let mode_label = match mode {
+                PackageMode::User => "User",
+                PackageMode::System => "System",
+            };
+            adapter_section = adapter_section.child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .child(format!("Adapter: {capitalized} ({mode_label})")),
+            );
+
+            let mut current_section_name: Option<Option<String>> = None;
+            let mut current_group: Vec<Div> = Vec::new();
+
+            for field in &schema.fields {
+                let field_section = field.section.clone();
+
+                if current_section_name.is_none()
+                    || current_section_name.as_ref().unwrap() != &field_section
+                {
+                    if !current_group.is_empty() {
+                        adapter_section = adapter_section.child(
+                            div()
+                                .p(px(styles::spacing::LG))
+                                .rounded(px(styles::radius::LG))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.0))
+                                .children(std::mem::take(&mut current_group)),
+                        );
+                    }
+                    if let Some(ref section_name) = field_section {
+                        current_group.push(
+                            div()
+                                .text_size(px(styles::font_size::BODY))
+                                .child(section_name.clone()),
+                        );
+                    }
+                    current_section_name = Some(field_section.clone());
+                }
+
+                let value = if field.aeris_managed {
+                    self.settings_state
+                        .adapter_settings
+                        .get(&field.key)
+                        .map(|s| ConfigValue::String(s.clone()))
+                } else {
+                    self.settings_state
+                        .adapter_config
+                        .values
+                        .get(&field.key)
+                        .cloned()
+                };
+
+                current_group.push(self.render_config_field_row(
+                    &field.label,
+                    &field.field_type,
+                    value.as_ref(),
+                    field.default.as_ref(),
+                    theme,
+                ));
+            }
+
+            if !current_group.is_empty() {
+                adapter_section = adapter_section.child(
+                    div()
+                        .p(px(styles::spacing::LG))
+                        .rounded(px(styles::radius::LG))
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .children(current_group),
+                );
+            }
+
+            // Adapter save button
+            let adapter_save_enabled =
+                self.settings_state.adapter_dirty && !self.settings_state.saving;
+            let adapter_save_bg = if adapter_save_enabled {
+                primary
+            } else {
+                surface
+            };
+            let adapter_save_text = if adapter_save_enabled {
+                gpui::white()
+            } else {
+                text_muted
+            };
+
+            let save_adapter_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.save_adapter_settings(cx);
+            });
+
+            adapter_section = adapter_section.child(
+                div()
+                    .id("save-adapter-btn")
+                    .px(px(14.0))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(adapter_save_bg)
+                    .text_color(adapter_save_text)
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::SMALL))
+                    .on_click(save_adapter_listener)
+                    .child("Save Adapter Settings"),
+            );
+
+            if let Some(ref err) = self.settings_state.adapter_save_error {
+                adapter_section = adapter_section.child(
+                    div()
+                        .px(px(styles::spacing::MD))
+                        .py(px(styles::spacing::XS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(danger.opacity(0.15))
+                        .border_1()
+                        .border_color(danger.opacity(0.3))
+                        .text_size(px(styles::font_size::SMALL))
+                        .child(format!("Error: {err}")),
+                );
+            }
+
+            if self.settings_state.adapter_save_success {
+                adapter_section = adapter_section.child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(styles::spacing::XXS))
+                        .rounded(px(styles::radius::SM))
+                        .bg(success.opacity(0.2))
+                        .border_1()
+                        .border_color(success.opacity(0.4))
+                        .text_size(px(styles::font_size::SMALL))
+                        .child("Saved"),
+                );
+            }
+        }
+
+        // Full content
+        div()
+            .p(px(styles::spacing::XL))
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::LG))
+            .w_full()
+            .child(header)
+            .child(aeris_section)
+            .child(div().w_full().h(px(1.0)).bg(border))
+            .child(adapter_section)
+    }
+
+    fn render_theme_selector(
+        &self,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+        let hover = theme.hover;
+        let text_color = theme.text;
+
+        let current = self.settings_state.selected_theme;
+
+        let system_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+            app.settings_state.selected_theme = AppTheme::System;
+            app.selected_theme = AppTheme::System;
+            app.settings_state.aeris_dirty = true;
+        });
+        let light_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+            app.settings_state.selected_theme = AppTheme::Light;
+            app.selected_theme = AppTheme::Light;
+            app.settings_state.aeris_dirty = true;
+        });
+        let dark_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+            app.settings_state.selected_theme = AppTheme::Dark;
+            app.selected_theme = AppTheme::Dark;
+            app.settings_state.aeris_dirty = true;
+        });
+
+        let make_btn = |id: &str,
+                        label: &str,
+                        is_active: bool,
+                        listener: Box<
+            dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        >| {
+            let bg = if is_active { primary } else { surface };
+            let text = if is_active { gpui::white() } else { text_color };
+
+            div()
+                .id(SharedString::from(id.to_string()))
+                .px(px(styles::spacing::SM))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(bg)
+                .text_color(text)
+                .border_1()
+                .border_color(border)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::SMALL))
+                .hover(move |s| if is_active { s } else { s.bg(hover) })
+                .on_click(listener)
+                .child(label.to_string())
+        };
+
+        div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::XXS))
+            .child(make_btn(
+                "theme-system",
+                "System",
+                current == AppTheme::System,
+                Box::new(system_listener),
+            ))
+            .child(make_btn(
+                "theme-light",
+                "Light",
+                current == AppTheme::Light,
+                Box::new(light_listener),
+            ))
+            .child(make_btn(
+                "theme-dark",
+                "Dark",
+                current == AppTheme::Dark,
+                Box::new(dark_listener),
+            ))
+    }
+
+    fn render_toggle(
+        &self,
+        id: &str,
+        checked: bool,
+        theme: &theme::Theme,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let primary = theme.primary;
+        let surface = theme.surface;
+        let border = theme.border;
+
+        let label = if checked { "[x]" } else { "[ ]" };
+        let bg = if checked { primary } else { surface };
+        let text = if checked { gpui::white() } else { theme.text };
+
+        div()
+            .px(px(styles::spacing::SM))
+            .py(px(styles::spacing::XXS))
+            .rounded(px(styles::radius::SM))
+            .bg(bg)
+            .text_color(text)
+            .border_1()
+            .border_color(border)
+            .text_size(px(styles::font_size::BODY))
+            .child(label)
+    }
+
+    fn render_config_field_row(
+        &self,
+        label: &str,
+        field_type: &ConfigFieldType,
+        value: Option<&ConfigValue>,
+        default: Option<&ConfigValue>,
+        theme: &theme::Theme,
+    ) -> Div {
+        let text_muted = theme.text_muted;
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+
+        let value_display = match field_type {
+            ConfigFieldType::Toggle => {
+                let checked = match value {
                     Some(ConfigValue::Bool(v)) => *v,
-                    _ => false,
-                },
-            };
-            row![
-                text(label).size(font_size::BODY).width(Length::Fill),
-                toggler(checked).on_toggle(move |v| {
-                    Message::Settings(SettingsMessage::AdapterFieldChanged(
-                        key_owned.clone(),
-                        ConfigValue::Bool(v),
-                    ))
-                }),
-            ]
-            .align_y(Alignment::Center)
-            .into()
-        }
-        ConfigFieldType::Text => {
-            let current = match value {
-                Some(ConfigValue::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-            row![
-                text(label).size(font_size::BODY).width(Length::Fill),
-                text_input("default", &current)
-                    .on_input(move |s| {
-                        Message::Settings(SettingsMessage::AdapterFieldChanged(
-                            key_owned.clone(),
-                            ConfigValue::String(s),
-                        ))
-                    })
-                    .width(240),
-            ]
-            .align_y(Alignment::Center)
-            .into()
-        }
-        ConfigFieldType::PathList => {
-            let current = match value {
-                Some(ConfigValue::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-            let original_str = match original {
-                Some(ConfigValue::String(s)) => s.as_str(),
-                _ => "",
-            };
-            let changed = current != original_str;
-            let browse_key = key_owned.clone();
-            let revert_key = key_owned.clone();
-            let mut r = row![
-                text(label).size(font_size::BODY).width(Length::Fill),
-                text_input("default", &current)
-                    .on_input(move |s| {
-                        Message::Settings(SettingsMessage::AdapterFieldChanged(
-                            key_owned.clone(),
-                            ConfigValue::String(s),
-                        ))
-                    })
-                    .width(200),
-                button(text("Browse").size(font_size::SMALL))
-                    .on_press(Message::Settings(SettingsMessage::BrowseAdapterField(
-                        browse_key,
-                    )))
-                    .padding([spacing::XXS, 10.0]),
-            ]
-            .spacing(spacing::XXS)
-            .align_y(Alignment::Center);
-            if changed {
-                r = r.push(
-                    button(text("Revert").size(font_size::SMALL))
-                        .on_press(Message::Settings(SettingsMessage::RevertAdapterField(
-                            revert_key,
-                        )))
-                        .style(button::secondary)
-                        .padding([spacing::XXS, 10.0]),
-                );
+                    _ => match default {
+                        Some(ConfigValue::Bool(v)) => *v,
+                        _ => false,
+                    },
+                };
+                if checked { "[x]" } else { "[ ]" }.to_string()
             }
-            r.into()
-        }
-        ConfigFieldType::ExecutablePath => {
-            let current = match value {
-                Some(ConfigValue::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-            let browse_key = key_owned.clone();
-            let revert_key = key_owned.clone();
-            let mut r = row![
-                text(label).size(font_size::BODY).width(Length::Fill),
-                text_input("auto-detect", &current)
-                    .on_input(move |s| {
-                        Message::Settings(SettingsMessage::AdapterAerisFieldChanged(
-                            key_owned.clone(),
-                            s,
-                        ))
-                    })
-                    .width(200),
-                button(text("Browse").size(font_size::SMALL))
-                    .on_press(Message::Settings(SettingsMessage::BrowseExecutableField(
-                        browse_key,
-                    )))
-                    .padding([spacing::XXS, 10.0]),
-            ]
-            .spacing(spacing::XXS)
-            .align_y(Alignment::Center);
-            if !current.is_empty() {
-                r = r.push(
-                    button(text("Clear").size(font_size::SMALL))
-                        .on_press(Message::Settings(SettingsMessage::RevertAdapterAerisField(
-                            revert_key,
-                        )))
-                        .style(button::secondary)
-                        .padding([spacing::XXS, 10.0]),
-                );
+            ConfigFieldType::Text | ConfigFieldType::PathList | ConfigFieldType::ExecutablePath => {
+                match value {
+                    Some(ConfigValue::String(s)) => s.clone(),
+                    _ => "(not set)".to_string(),
+                }
             }
-            r.into()
-        }
-        ConfigFieldType::Number => {
-            let current = match value {
+            ConfigFieldType::Number => match value {
                 Some(ConfigValue::String(s)) => s.clone(),
                 Some(ConfigValue::Integer(n)) => n.to_string(),
-                _ => String::new(),
-            };
-            let placeholder = match default {
-                Some(ConfigValue::Integer(n)) => n.to_string(),
-                _ => String::new(),
-            };
-            row![
-                text(label).size(font_size::BODY).width(Length::Fill),
-                text_input(&placeholder, &current)
-                    .on_input(move |s| {
-                        Message::Settings(SettingsMessage::AdapterFieldChanged(
-                            key_owned.clone(),
-                            ConfigValue::String(s),
-                        ))
-                    })
-                    .width(80),
-            ]
-            .align_y(Alignment::Center)
-            .into()
-        }
-        ConfigFieldType::Select(options) => {
-            let current = match value {
+                _ => "(not set)".to_string(),
+            },
+            ConfigFieldType::Select(_options) => match value {
                 Some(ConfigValue::String(s)) => s.clone(),
                 _ => match default {
                     Some(ConfigValue::String(s)) => s.clone(),
-                    _ => String::new(),
+                    _ => "(not set)".to_string(),
                 },
-            };
-            if options.is_empty() {
-                row![
-                    text(label).size(font_size::BODY).width(Length::Fill),
-                    text(current).size(font_size::BODY),
-                ]
-                .align_y(Alignment::Center)
-                .into()
-            } else {
-                row![
-                    text(label).size(font_size::BODY).width(Length::Fill),
-                    pick_list(options.clone(), Some(current), move |v| {
-                        Message::Settings(SettingsMessage::AdapterFieldChanged(
-                            key_owned.clone(),
-                            ConfigValue::String(v),
-                        ))
-                    },)
-                    .width(160),
-                ]
-                .align_y(Alignment::Center)
-                .into()
-            }
-        }
-    }
-}
-
-pub fn view<'a>(state: &'a SettingsState, mode: PackageMode) -> Element<'a, Message> {
-    let header = text("Settings").size(font_size::TITLE);
-
-    let appearance_section = container(
-        column![
-            text("Appearance").size(font_size::HEADING),
-            row![
-                text("Theme").size(font_size::BODY).width(Length::Fill),
-                pick_list(&AppTheme::ALL[..], Some(state.selected_theme), |t| {
-                    Message::Settings(SettingsMessage::ThemeChanged(t))
-                },)
-                .width(160),
-            ]
-            .align_y(Alignment::Center),
-        ]
-        .spacing(10)
-        .padding(spacing::LG),
-    )
-    .width(Length::Fill)
-    .style(styles::settings_card);
-
-    let general_section = container(
-        column![
-            text("General").size(font_size::HEADING),
-            row![
-                text("Startup view")
-                    .size(font_size::BODY)
-                    .width(Length::Fill),
-                pick_list(&VIEW_OPTIONS[..], Some(state.startup_view), |v| {
-                    Message::Settings(SettingsMessage::StartupViewChanged(v))
-                })
-                .width(160),
-            ]
-            .align_y(Alignment::Center),
-            row![
-                text("Notifications")
-                    .size(font_size::BODY)
-                    .width(Length::Fill),
-                toggler(state.notifications)
-                    .on_toggle(|v| { Message::Settings(SettingsMessage::NotificationsToggled(v)) }),
-            ]
-            .align_y(Alignment::Center),
-        ]
-        .spacing(10)
-        .padding(spacing::LG),
-    )
-    .width(Length::Fill)
-    .style(styles::settings_card);
-
-    let mut aeris_save_btn = button(text("Save Aeris Settings").size(font_size::SMALL))
-        .padding([spacing::XS, 14.0])
-        .style(button::primary);
-    if state.aeris_dirty && !state.saving {
-        aeris_save_btn = aeris_save_btn.on_press(Message::Settings(SettingsMessage::SaveAeris));
-    }
-
-    let mut aeris_section =
-        column![appearance_section, general_section, aeris_save_btn].spacing(spacing::MD);
-
-    if let Some(ref err) = state.aeris_save_error {
-        aeris_section = aeris_section.push(
-            container(text(format!("Error: {err}")).size(font_size::CAPTION + 1.0))
-                .padding([spacing::XS, spacing::MD])
-                .style(styles::error_banner),
-        );
-    }
-    if state.aeris_save_success {
-        aeris_section = aeris_section.push(
-            container(text("Saved").size(font_size::CAPTION + 1.0))
-                .padding([spacing::XXS, 10.0])
-                .style(styles::badge_success),
-        );
-    }
-
-    let mut adapter_section = column![].spacing(10);
-
-    if let Some(ref schema) = state.adapter_schema {
-        let mut capitalized = schema.adapter_id.clone();
-        if let Some(first) = capitalized.get_mut(0..1) {
-            first.make_ascii_uppercase();
-        }
-        let mode_label = match mode {
-            PackageMode::User => "User",
-            PackageMode::System => "System",
+            },
         };
-        adapter_section = adapter_section
-            .push(text(format!("Adapter: {capitalized} ({mode_label})")).size(font_size::HEADING));
 
-        let mut last_section: Option<Option<&String>> = None;
-        let mut current_group: Vec<Element<'a, Message>> = Vec::new();
-
-        for field in &schema.fields {
-            let current_section = field.section.as_ref();
-
-            if last_section.is_none() || last_section.unwrap() != current_section {
-                if !current_group.is_empty() {
-                    adapter_section = adapter_section.push(
-                        container(
-                            column(std::mem::take(&mut current_group))
-                                .spacing(10)
-                                .padding(spacing::LG),
-                        )
-                        .width(Length::Fill)
-                        .style(styles::settings_card),
-                    );
-                }
-                if let Some(section_name) = current_section {
-                    current_group.push(text(section_name.as_str()).size(font_size::BODY).into());
-                }
-                last_section = Some(current_section);
-            }
-
-            let value = if field.aeris_managed {
-                state
-                    .adapter_settings
-                    .get(&field.key)
-                    .map(|s| ConfigValue::String(s.clone()))
-            } else {
-                state.adapter_config.values.get(&field.key).cloned()
-            };
-            let original = if field.aeris_managed {
-                None
-            } else {
-                state.adapter_config_original.values.get(&field.key)
-            };
-            current_group.push(render_config_field(
-                &field.key,
-                &field.label,
-                &field.field_type,
-                value.as_ref(),
-                field.default.as_ref(),
-                original,
-                field.aeris_managed,
-            ));
-        }
-
-        if !current_group.is_empty() {
-            adapter_section = adapter_section.push(
-                container(column(current_group).spacing(10).padding(spacing::LG))
-                    .width(Length::Fill)
-                    .style(styles::settings_card),
-            );
-        }
-
-        let mut adapter_save_btn = button(text("Save Adapter Settings").size(font_size::SMALL))
-            .padding([spacing::XS, 14.0])
-            .style(button::primary);
-        if state.adapter_dirty && !state.saving {
-            adapter_save_btn =
-                adapter_save_btn.on_press(Message::Settings(SettingsMessage::SaveAdapter));
-        }
-        adapter_section = adapter_section.push(adapter_save_btn);
-
-        if let Some(ref err) = state.adapter_save_error {
-            adapter_section = adapter_section.push(
-                container(text(format!("Error: {err}")).size(font_size::CAPTION + 1.0))
-                    .padding([spacing::XS, spacing::MD])
-                    .style(styles::error_banner),
-            );
-        }
-        if state.adapter_save_success {
-            adapter_section = adapter_section.push(
-                container(text("Saved").size(font_size::CAPTION + 1.0))
-                    .padding([spacing::XXS, 10.0])
-                    .style(styles::badge_success),
-            );
-        }
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .flex_1()
+                    .child(label.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .text_color(text_muted)
+                    .child(value_display),
+            )
     }
-
-    let content = column![header, aeris_section, rule::horizontal(1), adapter_section]
-        .spacing(spacing::LG)
-        .width(Length::Fill);
-
-    container(scrollable(content).height(Length::Fill))
-        .padding(spacing::XL)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
 }

@@ -4,30 +4,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iced::{
-    Alignment, Element, Length, Subscription, Task,
-    widget::{
-        button, center, column, container, mouse_area, opaque, pick_list, progress_bar, row, space,
-        stack, text, tooltip,
-    },
-};
-use soar_events::{InstallStage, RemoveStage, SoarEvent, VerifyStage};
+use gpui::*;
+use soar_events::SoarEvent;
 
 use crate::{
     adapters::soar::SoarAdapter,
     config::AerisConfig,
     core::{
-        adapter::Adapter,
-        adapter_manager::AdapterManager,
-        config::{AdapterConfig, ConfigFieldType, ConfigValue},
-        privilege::{PackageMode, PrivilegeManager},
+        adapter::Adapter, adapter_manager::AdapterManager, privilege::PackageMode,
         registry::PluginEntry,
     },
-    styles::{self, font_size, spacing},
-    views,
+    styles, theme, views,
 };
 
-pub use message::Message;
+pub use message::{ConfirmAction, RepoInfo};
 
 pub const APP_NAME: &str = "Aeris";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -81,7 +71,7 @@ impl std::fmt::Display for View {
             View::Browse => write!(f, "Browse"),
             View::Installed => write!(f, "Installed"),
             View::Updates => write!(f, "Updates"),
-            View::AdapterInfo => write!(f, "Adapter"),
+            View::AdapterInfo => write!(f, "Adapters"),
             View::Settings => write!(f, "Settings"),
         }
     }
@@ -181,7 +171,7 @@ pub struct Toast {
 #[allow(dead_code)]
 pub struct QueuedOperation {
     pub id: u64,
-    pub action: message::ConfirmAction,
+    pub action: ConfirmAction,
     pub queued_at: Instant,
 }
 
@@ -192,28 +182,24 @@ pub struct AdapterViewState {
     pub registry_error: Option<String>,
     pub installing_plugin: Option<String>,
     pub removing_plugin: Option<String>,
-    pub repositories: Vec<message::RepoInfo>,
-    pub repos_loading: bool,
-    pub repos_loaded: bool,
-    pub repos_error: Option<String>,
+    pub repos_by_adapter: HashMap<String, Vec<RepoInfo>>,
+    pub repos_loading: HashMap<String, bool>,
+    pub repos_loaded: HashMap<String, bool>,
+    pub repos_error: HashMap<String, String>,
     pub repos_version: u64,
     pub syncing: Option<String>,
     pub sync_error: Option<String>,
 }
 
 pub struct App {
-    selected_theme: AppTheme,
-    current_view: View,
+    pub(crate) selected_theme: AppTheme,
+    pub(crate) current_view: View,
     sidebar_expanded: bool,
-    browse: views::browse::BrowseState,
-    installed: views::installed::InstalledState,
-    updates: views::updates::UpdatesState,
-    settings: views::settings::SettingsState,
-    aeris_config: AerisConfig,
-    adapter: Arc<SoarAdapter>,
-    adapter_manager: AdapterManager,
-    adapter_view: AdapterViewState,
-    confirm_dialog: Option<message::ConfirmAction>,
+    pub(crate) aeris_config: AerisConfig,
+    pub(crate) adapter: Arc<SoarAdapter>,
+    pub(crate) adapter_manager: AdapterManager,
+    pub(crate) adapter_view: AdapterViewState,
+    confirm_dialog: Option<ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
     package_progress: HashMap<String, OperationStatus>,
@@ -224,12 +210,21 @@ pub struct App {
     operation_queue: Vec<QueuedOperation>,
     progress_sender: crate::core::adapter::ProgressSender,
     progress_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::core::adapter::ProgressEvent>,
-    selected_install_mode: PackageMode,
-    current_mode: PackageMode,
+    pub(crate) selected_install_mode: PackageMode,
+    pub(crate) current_mode: PackageMode,
+
+    // View states
+    pub(crate) browse_state: views::browse::BrowseState,
+    pub(crate) installed_state: views::installed::InstalledState,
+    pub(crate) updates_state: views::updates::UpdatesState,
+    pub(crate) settings_state: views::settings::SettingsState,
+
+    // Text input entities
+    pub(crate) search_input: Entity<crate::components::TextInput>,
 }
 
 impl App {
-    pub fn new() -> (Self, Task<Message>) {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let aeris_config = AerisConfig::load();
         soar_config::config::init().expect("Failed to load soar config");
         let soar_config = soar_config::config::get_config();
@@ -258,2405 +253,1654 @@ impl App {
             aeris_config.disabled_adapters.iter().cloned().collect();
         adapter_manager.set_disabled(disabled);
 
-        let settings = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
-
-        let default_mode = settings
-            .adapter_config
-            .values
-            .get("default_package_mode")
-            .and_then(|v| match v {
-                ConfigValue::String(s) => Some(if s == "system" {
-                    PackageMode::System
-                } else {
-                    PackageMode::User
-                }),
-                _ => Some(PackageMode::User),
-            })
-            .unwrap_or(PackageMode::User);
-
-        let init_task = Task::done(Message::Installed(message::InstalledMessage::Refresh));
-
+        let default_mode = PackageMode::User;
         let (progress_sender, progress_receiver) = tokio::sync::mpsc::unbounded_channel();
 
-        (
-            Self {
-                selected_theme,
-                current_view: startup_view,
-                sidebar_expanded: false,
-                browse: views::browse::BrowseState::default(),
-                installed: views::installed::InstalledState {
-                    loading: true,
-                    updatable_adapters: adapter_manager
-                        .list_adapters()
-                        .iter()
-                        .filter(|info| {
-                            info.capabilities.can_update && !info.capabilities.can_list_updates
+        let settings_state = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
+
+        let search_input = cx.new(|cx| crate::components::TextInput::new(cx, "Search packages..."));
+
+        // Poll for progress events periodically
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(100))
+                        .await;
+                    let should_continue = cx
+                        .update(|cx| {
+                            this.update(cx, |app, cx| {
+                                app.drain_progress(cx);
+                            })
+                            .is_ok()
                         })
-                        .map(|info| info.id.clone())
-                        .collect(),
-                    ..Default::default()
-                },
-                updates: views::updates::UpdatesState::default(),
-                settings,
-                aeris_config,
-                adapter,
-                adapter_manager,
-                adapter_view: AdapterViewState::default(),
-                confirm_dialog: None,
-                event_receiver,
-                active_operation: None,
-                package_progress: HashMap::new(),
-                operations: Vec::new(),
-                next_operation_id: 1,
-                toasts: Vec::new(),
-                next_toast_id: 1,
-                operation_queue: Vec::new(),
-                progress_sender,
-                progress_receiver,
-                selected_install_mode: default_mode,
-                current_mode: default_mode,
+                        .is_ok();
+                    if !should_continue {
+                        break;
+                    }
+                }
             },
-            init_task,
         )
-    }
+        .detach();
 
-    pub fn title(&self) -> String {
-        format!("{APP_NAME} - {}", self.current_view)
-    }
-
-    pub fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
-            Message::NavigateTo(view) => {
-                self.current_view = view;
-                // Clear selections when navigating away
-                self.browse.selected.clear();
-                self.installed.selected.clear();
-                self.updates.selected.clear();
-                return match view {
-                    View::Installed if !self.installed.loaded => self.load_installed(),
-                    View::AdapterInfo if !self.adapter_view.repos_loaded => {
-                        self.load_repositories()
-                    }
-                    _ => Task::none(),
-                };
-            }
-            Message::PackageModeChanged(mode) => {
-                if mode != self.current_mode {
-                    self.current_mode = mode;
-                    self.selected_install_mode = mode;
-                    self.installed.loaded = false;
-                    self.updates.checked = false;
-                    self.adapter_view.repos_loaded = false;
-                    self.browse.search_results.clear();
-                    self.browse.has_searched = false;
-                    self.browse.result_version += 1;
-                    let new_config = self.adapter.build_initial_config_for_mode(mode);
-                    self.settings.adapter_config = new_config.clone();
-                    self.settings.adapter_config_original = new_config;
-                    self.settings.adapter_dirty = false;
-                    self.settings.adapter_save_success = false;
-                    self.settings.adapter_save_error = None;
-                    let mut tasks = vec![self.load_installed()];
-                    if self.current_view == View::AdapterInfo {
-                        tasks.push(self.load_repositories());
-                    }
-                    return Task::batch(tasks);
-                }
-            }
-            Message::ToggleSidebar => {
-                self.sidebar_expanded = !self.sidebar_expanded;
-            }
-            Message::Browse(msg) => return self.update_browse(msg),
-            Message::Installed(msg) => return self.update_installed(msg),
-            Message::Updates(msg) => return self.update_updates(msg),
-            Message::Settings(msg) => return self.update_settings(msg),
-            Message::Repositories(msg) => return self.update_repositories(msg),
-            Message::Adapter(msg) => return self.update_adapter(msg),
-            Message::CancelAction => {
-                self.confirm_dialog = None;
-            }
-            Message::ConfirmAction => {
-                if let Some(action) = self.confirm_dialog.take() {
-                    return self.execute_confirmed(action);
-                }
-            }
-            Message::DismissToast(id) => {
-                self.toasts.retain(|t| t.id != id);
-            }
-            Message::CancelQueuedOperation(id) => {
-                self.operation_queue.retain(|q| q.id != id);
-            }
-            Message::ProcessNextQueued => {
-                if self.active_operation.is_none() && !self.operation_queue.is_empty() {
-                    let queued = self.operation_queue.remove(0);
-                    return self.execute_operation(queued.action);
-                }
-            }
-            Message::ProgressTick => {
-                while let Ok(event) = self.event_receiver.try_recv() {
-                    self.handle_soar_event(event);
-                }
-                while let Ok(event) = self.progress_receiver.try_recv() {
-                    self.handle_progress_event(event);
-                }
-                // Sync per-package progress to active view state
-                if !self.package_progress.is_empty() && self.active_operation.is_some() {
-                    self.browse.package_progress = self.package_progress.clone();
-                    self.browse.result_version += 1;
-                    self.installed.package_progress = self.package_progress.clone();
-                    self.installed.result_version += 1;
-                    self.updates.package_progress = self.package_progress.clone();
-                    self.updates.result_version += 1;
-                }
-                // Expire old toasts
-                let now = Instant::now();
-                self.toasts
-                    .retain(|t| now.duration_since(t.created_at) < t.duration);
-            }
+        Self {
+            selected_theme,
+            current_view: startup_view,
+            sidebar_expanded: false,
+            aeris_config,
+            adapter,
+            adapter_manager,
+            adapter_view: AdapterViewState::default(),
+            confirm_dialog: None,
+            event_receiver,
+            active_operation: None,
+            package_progress: HashMap::new(),
+            operations: Vec::new(),
+            next_operation_id: 1,
+            toasts: Vec::new(),
+            next_toast_id: 1,
+            operation_queue: Vec::new(),
+            progress_sender,
+            progress_receiver,
+            selected_install_mode: default_mode,
+            current_mode: default_mode,
+            browse_state: views::browse::BrowseState::default(),
+            installed_state: views::installed::InstalledState::default(),
+            updates_state: views::updates::UpdatesState::default(),
+            settings_state,
+            search_input,
         }
-        Task::none()
     }
 
-    fn update_browse(&mut self, msg: message::BrowseMessage) -> Task<Message> {
-        match msg {
-            message::BrowseMessage::SearchQueryChanged(query) => {
-                self.browse.search_query = query;
-                self.browse.search_debounce_version += 1;
-                let version = self.browse.search_debounce_version;
-                return Task::perform(
-                    async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                        version
-                    },
-                    |v| Message::Browse(message::BrowseMessage::SearchSubmitDebounced(v)),
-                );
-            }
-            message::BrowseMessage::SearchSubmitDebounced(version) => {
-                if version != self.browse.search_debounce_version {
-                    return Task::none();
-                }
-                if self.browse.search_query.trim().is_empty() {
-                    return Task::none();
-                }
-                if !self.adapter_manager.any_enabled() {
-                    self.browse.has_searched = true;
-                    self.browse.error = Some(
-                        "No adapters enabled. Enable at least one adapter in the Adapter view."
-                            .into(),
-                    );
-                    return Task::none();
-                }
-                self.browse.loading = true;
-                return self.perform_search();
-            }
-            message::BrowseMessage::SearchSubmit => {
-                if self.browse.search_query.trim().is_empty() {
-                    return Task::none();
-                }
-                if !self.adapter_manager.any_enabled() {
-                    self.browse.has_searched = true;
-                    self.browse.error = Some(
-                        "No adapters enabled. Enable at least one adapter in the Adapter view."
-                            .into(),
-                    );
-                    return Task::none();
-                }
-                self.browse.search_debounce_version += 1;
-                self.browse.loading = true;
-                return self.perform_search();
-            }
-            message::BrowseMessage::SearchResults(result) => {
-                self.browse.loading = false;
-                self.browse.has_searched = true;
-                self.browse.result_version += 1;
-                match result {
-                    Ok(packages) => {
-                        self.browse.error = None;
-                        self.browse.search_results = packages;
-                    }
-                    Err(e) => {
-                        log::error!("Search failed: {e}");
-                        self.browse.error = Some(e);
-                        self.browse.search_results.clear();
-                    }
-                }
-            }
-            message::BrowseMessage::SelectPackage(id) => {
-                self.browse.selected_package = self
-                    .browse
-                    .search_results
-                    .iter()
-                    .find(|p| p.id == id)
-                    .cloned();
-            }
-            message::BrowseMessage::CloseDetail => {
-                self.browse.selected_package = None;
-            }
-            message::BrowseMessage::InstallPackage(pkg) => {
-                let mode = self.selected_install_mode;
-                if mode == PackageMode::User {
-                    return self.execute_confirmed(message::ConfirmAction::Install(pkg, mode));
-                } else {
-                    self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
-                }
-            }
-            message::BrowseMessage::InstallPackageWithMode(pkg, mode) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Install(pkg, mode));
-            }
-            message::BrowseMessage::InstallModeChanged(mode) => {
-                self.selected_install_mode = mode;
-                if let Some(message::ConfirmAction::Install(pkg, _)) = &self.confirm_dialog {
-                    self.confirm_dialog = Some(message::ConfirmAction::Install(pkg.clone(), mode));
-                }
-            }
-            message::BrowseMessage::InstallComplete(result) => {
-                self.active_operation = None;
-                self.package_progress.clear();
-                self.browse.package_progress.clear();
-                let pkg_id = self.browse.installing.take();
-                let batch_ids = std::mem::take(&mut self.browse.installing_batch_ids);
-                self.browse.result_version += 1;
-                match result {
-                    Ok(()) => {
-                        log::info!("Package installed successfully");
-                        self.push_toast(ToastLevel::Success, "Package installed successfully");
-                        if !batch_ids.is_empty() {
-                            for id in &batch_ids {
-                                self.set_browse_installed(id, true);
-                            }
-                        } else if let Some(ref id) = pkg_id {
-                            self.set_browse_installed(id, true);
-                        }
-                        let reload = self.load_installed();
-                        let next = Task::done(Message::ProcessNextQueued);
-                        return Task::batch([reload, next]);
-                    }
-                    Err(e) => {
-                        log::error!("Install failed: {e}");
-                        self.push_toast(ToastLevel::Error, format!("Install failed: {e}"));
-                        self.browse.install_error = Some(e);
-                        return Task::done(Message::ProcessNextQueued);
-                    }
-                }
-            }
-            message::BrowseMessage::DismissInstallError => {
-                self.browse.install_error = None;
-                self.browse.result_version += 1;
-            }
-            message::BrowseMessage::ToggleSelect(id) => {
-                if self.browse.selected.contains(&id) {
-                    self.browse.selected.remove(&id);
-                } else {
-                    self.browse.selected.insert(id);
-                }
-                self.browse.result_version += 1;
-            }
-            message::BrowseMessage::SelectAll => {
-                for pkg in &self.browse.search_results {
-                    if !pkg.installed {
-                        self.browse.selected.insert(pkg.id.clone());
-                    }
-                }
-                self.browse.result_version += 1;
-            }
-            message::BrowseMessage::ClearSelection => {
-                self.browse.selected.clear();
-                self.browse.result_version += 1;
-            }
-            message::BrowseMessage::InstallSelected => {
-                let packages: Vec<_> = self
-                    .browse
-                    .search_results
-                    .iter()
-                    .filter(|p| self.browse.selected.contains(&p.id))
-                    .cloned()
-                    .collect();
-                if !packages.is_empty() {
-                    let mode = self.selected_install_mode;
-                    self.confirm_dialog =
-                        Some(message::ConfirmAction::BatchInstall(packages, mode));
-                }
-            }
-            _ => {}
+    fn navigate_to(&mut self, view: View, _cx: &mut Context<Self>) {
+        self.current_view = view;
+    }
+
+    pub fn perform_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.browse_state.search_query.clone();
+        if query.is_empty() {
+            return;
         }
-        Task::none()
-    }
 
-    fn perform_search(&self) -> Task<Message> {
-        let query = self.browse.search_query.clone();
-        let mode = self.current_mode;
-        let soar_enabled = self.adapter_manager.is_enabled("soar");
-        let adapter = self.adapter.clone();
+        self.browse_state.loading = true;
+        self.browse_state.error = None;
+        self.browse_state.search_debounce_version += 1;
+        let version = self.browse_state.search_debounce_version;
 
-        let other_adapters: Vec<Arc<dyn Adapter>> = self
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
             .adapter_manager
             .list_adapters()
             .iter()
-            .filter(|info| {
-                info.id != "soar"
-                    && self.adapter_manager.is_enabled(&info.id)
-                    && info.capabilities.can_search
-            })
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .filter(|a| self.adapter_manager.is_enabled(&a.info().id))
             .collect();
-
-        Task::perform(
-            async move {
-                let mut results = Vec::new();
-
-                if soar_enabled {
-                    match adapter.search_with_mode(&query, None, mode).await {
-                        Ok(pkgs) => results.extend(pkgs),
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-
-                for other in other_adapters {
-                    match other.search(&query, None, mode).await {
-                        Ok(pkgs) => results.extend(pkgs),
-                        Err(e) => log::warn!("Search failed for {}: {e}", other.info().id),
-                    }
-                }
-
-                Ok(results)
-            },
-            |result| Message::Browse(message::BrowseMessage::SearchResults(result)),
-        )
-    }
-
-    fn load_installed(&mut self) -> Task<Message> {
-        if !self.adapter_manager.any_enabled() {
-            self.installed.loading = false;
-            self.installed.loaded = true;
-            self.installed.packages.clear();
-            self.installed.error = Some(
-                "No adapters enabled. Enable at least one adapter in the Adapter view.".into(),
-            );
-            self.installed.result_version += 1;
-            return Task::none();
-        }
-
-        self.installed.loading = true;
-
         let mode = self.current_mode;
-        let soar_enabled = self.adapter_manager.is_enabled("soar");
-        let adapter = self.adapter.clone();
 
-        let other_adapters: Vec<Arc<dyn Adapter>> = self
-            .adapter_manager
-            .list_adapters()
-            .iter()
-            .filter(|info| {
-                info.id != "soar"
-                    && self.adapter_manager.is_enabled(&info.id)
-                    && info.capabilities.can_list
-            })
-            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
-            .collect();
-
-        Task::perform(
-            async move {
-                let mut results = Vec::new();
-
-                if soar_enabled {
-                    match adapter.list_installed(mode).await {
-                        Ok(pkgs) => results.extend(pkgs),
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-
-                for other in other_adapters {
-                    match other.list_installed(mode).await {
-                        Ok(pkgs) => results.extend(pkgs),
-                        Err(e) => log::warn!("List installed failed for {}: {e}", other.info().id),
-                    }
-                }
-
-                Ok(results)
-            },
-            |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
-        )
-    }
-
-    /// Reload installed packages without showing the loading spinner.
-    /// Used after remove/update to avoid the jarring "Loading..." flash.
-    fn reload_installed_quiet(&mut self) -> Task<Message> {
-        if !self.adapter_manager.any_enabled() {
-            return Task::none();
-        }
-
-        // Intentionally do NOT set self.installed.loading = true
-
-        let mode = self.current_mode;
-        let soar_enabled = self.adapter_manager.is_enabled("soar");
-        let adapter = self.adapter.clone();
-
-        let other_adapters: Vec<Arc<dyn Adapter>> = self
-            .adapter_manager
-            .list_adapters()
-            .iter()
-            .filter(|info| {
-                info.id != "soar"
-                    && self.adapter_manager.is_enabled(&info.id)
-                    && info.capabilities.can_list
-            })
-            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
-            .collect();
-
-        Task::perform(
-            async move {
-                let mut results = Vec::new();
-
-                if soar_enabled {
-                    match adapter.list_installed(mode).await {
-                        Ok(pkgs) => results.extend(pkgs),
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-
-                for other in other_adapters {
-                    match other.list_installed(mode).await {
-                        Ok(pkgs) => results.extend(pkgs),
-                        Err(e) => log::warn!("List installed failed for {}: {e}", other.info().id),
-                    }
-                }
-
-                Ok(results)
-            },
-            |result| Message::Installed(message::InstalledMessage::PackagesLoaded(result)),
-        )
-    }
-
-    fn set_browse_installed(&mut self, pkg_id: &str, installed: bool) {
-        if let Some(pkg) = self
-            .browse
-            .search_results
-            .iter_mut()
-            .find(|p| p.id == pkg_id)
-        {
-            pkg.installed = installed;
-            self.browse.result_version += 1;
-        }
-    }
-
-    fn set_browse_update_available(&mut self, pkg_id: &str, available: bool) {
-        if let Some(pkg) = self
-            .browse
-            .search_results
-            .iter_mut()
-            .find(|p| p.id == pkg_id)
-        {
-            pkg.update_available = available;
-            self.browse.result_version += 1;
-        }
-    }
-
-    fn set_browse_update_available_all(&mut self, available: bool) {
-        let mut changed = false;
-        for pkg in &mut self.browse.search_results {
-            if pkg.update_available != available {
-                pkg.update_available = available;
-                changed = true;
-            }
-        }
-        if changed {
-            self.browse.result_version += 1;
-        }
-    }
-
-    fn update_installed(&mut self, msg: message::InstalledMessage) -> Task<Message> {
-        match msg {
-            message::InstalledMessage::Refresh => {
-                return self.load_installed();
-            }
-            message::InstalledMessage::PackagesLoaded(result) => {
-                self.installed.loading = false;
-                self.installed.loaded = true;
-                self.installed.result_version += 1;
-                match result {
-                    Ok(packages) => {
-                        self.installed.error = None;
-                        self.installed.packages = packages;
-                    }
-                    Err(e) => {
-                        log::error!("Failed to load installed packages: {e}");
-                        self.installed.error = Some(e);
-                        self.installed.packages.clear();
-                    }
-                }
-            }
-            message::InstalledMessage::RemovePackage(pkg) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Remove(pkg, self.current_mode));
-            }
-            message::InstalledMessage::RemoveComplete(result) => {
-                self.active_operation = None;
-                self.package_progress.clear();
-                self.installed.package_progress.clear();
-                let pkg_id = self.installed.removing.take();
-                match result {
-                    Ok(()) => {
-                        log::info!("Package removed successfully");
-                        self.push_toast(ToastLevel::Success, "Package removed successfully");
-                        if let Some(ref id) = pkg_id {
-                            self.set_browse_installed(id, false);
-                            // Optimistically remove from local list for instant UI feedback
-                            self.installed.packages.retain(|p| p.package.id != *id);
-                            self.installed.result_version += 1;
-                        }
-                        let reload = self.reload_installed_quiet();
-                        let next = Task::done(Message::ProcessNextQueued);
-                        return Task::batch([reload, next]);
-                    }
-                    Err(e) => {
-                        log::error!("Remove failed: {e}");
-                        self.push_toast(ToastLevel::Error, format!("Remove failed: {e}"));
-                        self.installed.error = Some(e);
-                        self.installed.result_version += 1;
-                        return Task::done(Message::ProcessNextQueued);
-                    }
-                }
-            }
-            message::InstalledMessage::UpdatePackage(pkg) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Update(pkg, self.current_mode));
-            }
-            message::InstalledMessage::ToggleSelect(id) => {
-                if self.installed.selected.contains(&id) {
-                    self.installed.selected.remove(&id);
-                } else {
-                    self.installed.selected.insert(id);
-                }
-                self.installed.result_version += 1;
-            }
-            message::InstalledMessage::SelectAll => {
-                for pkg in &self.installed.packages {
-                    self.installed.selected.insert(pkg.package.id.clone());
-                }
-                self.installed.result_version += 1;
-            }
-            message::InstalledMessage::ClearSelection => {
-                self.installed.selected.clear();
-                self.installed.result_version += 1;
-            }
-            message::InstalledMessage::RemoveSelected => {
-                let packages: Vec<_> = self
-                    .installed
-                    .packages
-                    .iter()
-                    .filter(|p| self.installed.selected.contains(&p.package.id))
-                    .map(|p| p.package.clone())
-                    .collect();
-                if !packages.is_empty() {
-                    let mode = self.current_mode;
-                    self.confirm_dialog = Some(message::ConfirmAction::BatchRemove(packages, mode));
-                }
-            }
-            _ => {}
-        }
-        Task::none()
-    }
-
-    fn update_updates(&mut self, msg: message::UpdatesMessage) -> Task<Message> {
-        match msg {
-            message::UpdatesMessage::CheckUpdates => {
-                if !self.adapter_manager.any_enabled() {
-                    self.updates.loading = false;
-                    self.updates.checked = true;
-                    self.updates.updates.clear();
-                    self.updates.error = Some(
-                        "No adapters enabled. Enable at least one adapter in the Adapter view."
-                            .into(),
-                    );
-                    self.updates.result_version += 1;
-                    return Task::none();
-                }
-
-                self.updates.loading = true;
-
-                let mode = self.current_mode;
-                let soar_enabled = self.adapter_manager.is_enabled("soar");
-                let adapter = self.adapter.clone();
-
-                let other_adapters: Vec<Arc<dyn Adapter>> = self
-                    .adapter_manager
-                    .list_adapters()
-                    .iter()
-                    .filter(|info| {
-                        info.id != "soar"
-                            && self.adapter_manager.is_enabled(&info.id)
-                            && info.capabilities.can_update
-                    })
-                    .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
-                    .collect();
-
-                // Collect names of enabled adapters that can update but
-                // don't support listing available updates (always return empty).
-                let no_update_listing: Vec<(String, String)> = self
-                    .adapter_manager
-                    .list_adapters()
-                    .iter()
-                    .filter(|info| {
-                        self.adapter_manager.is_enabled(&info.id)
-                            && info.capabilities.can_update
-                            && !info.capabilities.can_list_updates
-                    })
-                    .map(|info| (info.id.clone(), info.name.clone()))
-                    .collect();
-
-                return Task::perform(
-                    async move {
-                        let mut results = Vec::new();
-
-                        if soar_enabled {
-                            match adapter.list_updates(mode).await {
-                                Ok(updates) => results.extend(updates),
-                                Err(e) => return Err(e.to_string()),
-                            }
-                        }
-
-                        for other in other_adapters {
-                            match other.list_updates(mode).await {
-                                Ok(updates) => results.extend(updates),
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let results = crate::tokio_spawn(async move {
+                    let mut results = Vec::new();
+                    for adapter in &manager_adapters {
+                        if adapter.capabilities().can_search {
+                            match adapter.search(&query, None, mode).await {
+                                Ok(pkgs) => results.extend(pkgs),
                                 Err(e) => {
-                                    log::warn!("Update check failed for {}: {e}", other.info().id)
+                                    log::warn!("Search failed for {}: {e}", adapter.info().id)
                                 }
                             }
                         }
+                    }
+                    results
+                })
+                .await
+                .unwrap_or_default();
 
-                        Ok(results)
-                    },
-                    move |result| {
-                        Message::Updates(message::UpdatesMessage::UpdatesLoaded {
-                            result,
-                            no_update_listing,
-                        })
-                    },
-                );
-            }
-            message::UpdatesMessage::UpdatesLoaded {
-                result,
-                no_update_listing,
-            } => {
-                self.updates.loading = false;
-                self.updates.checked = true;
-                self.updates.result_version += 1;
-                self.updates.no_update_listing = no_update_listing;
-                match result {
-                    Ok(updates) => {
-                        self.updates.error = None;
-                        self.updates.updates = updates;
-                    }
-                    Err(e) => {
-                        log::error!("Failed to check updates: {e}");
-                        self.updates.error = Some(e);
-                        self.updates.updates.clear();
-                    }
-                }
-            }
-            message::UpdatesMessage::UpdatePackage(pkg) => {
-                self.confirm_dialog = Some(message::ConfirmAction::Update(pkg, self.current_mode));
-            }
-            message::UpdatesMessage::UpdateComplete(result) => {
-                self.active_operation = None;
-                self.package_progress.clear();
-                self.updates.package_progress.clear();
-                self.installed.package_progress.clear();
-                let pkg_id = self.updates.updating.take();
-                self.installed.updating.take();
-                match result {
-                    Ok(()) => {
-                        log::info!("Package updated successfully");
-                        self.push_toast(ToastLevel::Success, "Package updated successfully");
-                        match pkg_id.as_deref() {
-                            Some("__all__") => self.set_browse_update_available_all(false),
-                            Some(id) => self.set_browse_update_available(id, false),
-                            None => {}
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        if app.browse_state.search_debounce_version == version {
+                            app.browse_state.search_results = results;
+                            app.browse_state.loading = false;
+                            app.browse_state.has_searched = true;
+                            app.browse_state.result_version += 1;
+                            cx.notify();
                         }
-                        let check = self.update_updates(message::UpdatesMessage::CheckUpdates);
-                        let reload = self.load_installed();
-                        let next = Task::done(Message::ProcessNextQueued);
-                        return Task::batch([check, reload, next]);
-                    }
-                    Err(e) => {
-                        log::error!("Update failed: {e}");
-                        self.push_toast(ToastLevel::Error, format!("Update failed: {e}"));
-                        self.updates.error = Some(e);
-                        self.updates.result_version += 1;
-                        return Task::done(Message::ProcessNextQueued);
-                    }
-                }
-            }
-            message::UpdatesMessage::UpdateAll => {
-                if self.updates.updates.is_empty() || self.updates.updating.is_some() {
-                    return Task::none();
-                }
-                self.confirm_dialog = Some(message::ConfirmAction::UpdateAll(self.current_mode));
-            }
-            message::UpdatesMessage::ToggleSelect(id) => {
-                if self.updates.selected.contains(&id) {
-                    self.updates.selected.remove(&id);
-                } else {
-                    self.updates.selected.insert(id);
-                }
-                self.updates.result_version += 1;
-            }
-            message::UpdatesMessage::SelectAll => {
-                for update in &self.updates.updates {
-                    self.updates.selected.insert(update.package.id.clone());
-                }
-                self.updates.result_version += 1;
-            }
-            message::UpdatesMessage::ClearSelection => {
-                self.updates.selected.clear();
-                self.updates.result_version += 1;
-            }
-            message::UpdatesMessage::UpdateSelected => {
-                let packages: Vec<_> = self
-                    .updates
-                    .updates
-                    .iter()
-                    .filter(|u| self.updates.selected.contains(&u.package.id))
-                    .map(|u| u.package.clone())
-                    .collect();
-                if !packages.is_empty() {
-                    let mode = self.current_mode;
-                    self.confirm_dialog = Some(message::ConfirmAction::BatchUpdate(packages, mode));
-                }
-            }
-            message::UpdatesMessage::UpdateAdapterAll(adapter_id) => {
-                if self.updates.updating.is_some() {
-                    return Task::none();
-                }
-                if let Some(adapter) = self.adapter_manager.get_adapter(&adapter_id) {
-                    let adapter_name = adapter.info().name.clone();
-                    self.active_operation = Some(ActiveOperation {
-                        operation_type: OperationType::Update,
-                        package_name: format!("all {adapter_name} packages"),
-                        status: OperationStatus::Starting,
-                    });
-                    self.updates.updating = Some(format!("__adapter__{adapter_id}"));
-                    self.updates.result_version += 1;
-
-                    let mode = self.current_mode;
-                    return Task::perform(
-                        async move {
-                            let installed = adapter
-                                .list_installed(mode)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            let packages: Vec<crate::core::package::Package> =
-                                installed.into_iter().map(|ip| ip.package).collect();
-                            if packages.is_empty() {
-                                return Ok(());
-                            }
-                            adapter
-                                .update(&packages, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())
-                                .map(|_| ())
-                        },
-                        |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
-                    );
-                }
-            }
-        }
-        Task::none()
-    }
-
-    fn update_settings(&mut self, msg: message::SettingsMessage) -> Task<Message> {
-        match msg {
-            message::SettingsMessage::ThemeChanged(theme) => {
-                self.settings.selected_theme = theme;
-                self.selected_theme = theme;
-                self.settings.aeris_dirty = true;
-                self.settings.aeris_save_success = false;
-            }
-            message::SettingsMessage::StartupViewChanged(view) => {
-                self.settings.startup_view = view;
-                self.settings.aeris_dirty = true;
-                self.settings.aeris_save_success = false;
-            }
-            message::SettingsMessage::NotificationsToggled(v) => {
-                self.settings.notifications = v;
-                self.settings.aeris_dirty = true;
-                self.settings.aeris_save_success = false;
-            }
-            message::SettingsMessage::SaveAeris => {
-                self.settings.saving = true;
-                self.settings.aeris_save_error = None;
-                self.settings.aeris_save_success = false;
-
-                let theme_str = match self.settings.selected_theme {
-                    AppTheme::System => "system",
-                    AppTheme::Light => "light",
-                    AppTheme::Dark => "dark",
-                }
-                .to_string();
-
-                let view_str = match self.settings.startup_view {
-                    View::Dashboard => "dashboard",
-                    View::Browse => "browse",
-                    View::Installed => "installed",
-                    View::Updates => "updates",
-                    _ => "dashboard",
-                }
-                .to_string();
-
-                let notifications = self.settings.notifications;
-
-                self.aeris_config.theme = Some(theme_str);
-                self.aeris_config.startup_view = Some(view_str);
-                self.aeris_config.notifications = Some(notifications);
-
-                let config = self.aeris_config.clone();
-                return Task::perform(async move { config.save() }, |result| {
-                    Message::Settings(message::SettingsMessage::SaveAerisResult(result))
+                    })
                 });
-            }
-            message::SettingsMessage::SaveAerisResult(result) => {
-                self.settings.saving = false;
-                match result {
-                    Ok(()) => {
-                        self.settings.aeris_dirty = false;
-                        self.settings.aeris_save_success = true;
-                    }
-                    Err(e) => {
-                        self.settings.aeris_save_error = Some(e);
-                    }
-                }
-            }
-            message::SettingsMessage::AdapterFieldChanged(key, value) => {
-                self.settings.adapter_config.values.insert(key, value);
-                self.settings.adapter_dirty = true;
-                self.settings.adapter_save_success = false;
-            }
-            message::SettingsMessage::AdapterAerisFieldChanged(key, value) => {
-                self.settings.adapter_settings.insert(key, value);
-                self.settings.adapter_dirty = true;
-                self.settings.adapter_save_success = false;
-            }
-            message::SettingsMessage::BrowseAdapterField(key) => {
-                return Task::perform(
-                    async move {
-                        let handle = rfd::AsyncFileDialog::new().pick_folder().await;
-                        handle.map(|h| (key, h.path().to_string_lossy().to_string()))
-                    },
-                    |result| match result {
-                        Some((key, path)) => Message::Settings(
-                            message::SettingsMessage::BrowseAdapterFieldResult(key, path),
-                        ),
-                        None => {
-                            Message::Settings(message::SettingsMessage::BrowseAdapterFieldResult(
-                                String::new(),
-                                String::new(),
-                            ))
-                        }
-                    },
-                );
-            }
-            message::SettingsMessage::BrowseAdapterFieldResult(key, path) => {
-                if !key.is_empty() && !path.is_empty() {
-                    self.settings
-                        .adapter_config
-                        .values
-                        .insert(key, ConfigValue::String(path));
-                    self.settings.adapter_dirty = true;
-                    self.settings.adapter_save_success = false;
-                }
-            }
-            message::SettingsMessage::BrowseExecutableField(key) => {
-                return Task::perform(
-                    async move {
-                        let handle = rfd::AsyncFileDialog::new()
-                            .add_filter("Executable", &["sh", "bash", ""])
-                            .pick_file()
-                            .await;
-                        handle.map(|h| (key, h.path().to_string_lossy().to_string()))
-                    },
-                    |result| match result {
-                        Some((key, path)) => Message::Settings(
-                            message::SettingsMessage::BrowseExecutableFieldResult(key, path),
-                        ),
-                        None => Message::Settings(
-                            message::SettingsMessage::BrowseExecutableFieldResult(
-                                String::new(),
-                                String::new(),
-                            ),
-                        ),
-                    },
-                );
-            }
-            message::SettingsMessage::BrowseExecutableFieldResult(key, path) => {
-                if !key.is_empty() && !path.is_empty() {
-                    self.settings.adapter_settings.insert(key, path);
-                    self.settings.adapter_dirty = true;
-                    self.settings.adapter_save_success = false;
-                }
-            }
-            message::SettingsMessage::RevertAdapterField(key) => {
-                if let Some(original) = self.settings.adapter_config_original.values.get(&key) {
-                    self.settings
-                        .adapter_config
-                        .values
-                        .insert(key, original.clone());
-                } else {
-                    self.settings.adapter_config.values.remove(&key);
-                }
-                let has_changes =
-                    self.settings.adapter_config.values.iter().any(|(k, v)| {
-                        self.settings.adapter_config_original.values.get(k) != Some(v)
-                    });
-                self.settings.adapter_dirty = has_changes;
-            }
-            message::SettingsMessage::RevertAdapterAerisField(key) => {
-                self.settings.adapter_settings.remove(&key);
-                self.settings.adapter_dirty = true;
-            }
-            message::SettingsMessage::SaveAdapter => {
-                self.settings.saving = true;
-                self.settings.adapter_save_error = None;
-                self.settings.adapter_save_success = false;
-
-                let mut aeris_config = self.aeris_config.clone();
-                let mut save_adapter_config = false;
-                let mut adapter_config_to_save = self.prepare_adapter_config_for_save();
-
-                if let Some(ref schema) = self.settings.adapter_schema {
-                    for field in &schema.fields {
-                        if field.aeris_managed {
-                            if let Some(value) = self.settings.adapter_settings.get(&field.key) {
-                                aeris_config.set_adapter_setting(
-                                    &schema.adapter_id,
-                                    &field.key,
-                                    value,
-                                );
-                            }
-                            adapter_config_to_save.values.remove(&field.key);
-                        }
-                    }
-                    save_adapter_config = adapter_config_to_save.values.iter().any(|(k, v)| {
-                        self.settings.adapter_config_original.values.get(k) != Some(v)
-                    });
-                }
-
-                if let Err(e) = aeris_config.save() {
-                    self.settings.adapter_save_error = Some(e);
-                    self.settings.saving = false;
-                    return Task::none();
-                }
-                self.aeris_config = aeris_config;
-
-                if save_adapter_config {
-                    let adapter = self.adapter.clone();
-                    let mode = self.current_mode;
-                    return Task::perform(
-                        async move {
-                            adapter
-                                .set_config_for_mode(&adapter_config_to_save, mode)
-                                .await
-                                .map_err(|e| e.to_string())
-                        },
-                        |result| {
-                            Message::Settings(message::SettingsMessage::SaveAdapterResult(result))
-                        },
-                    );
-                } else {
-                    self.settings.saving = false;
-                    self.settings.adapter_dirty = false;
-                    self.settings.adapter_save_success = true;
-                }
-            }
-            message::SettingsMessage::SaveAdapterResult(result) => {
-                self.settings.saving = false;
-                match result {
-                    Ok(()) => {
-                        self.settings.adapter_dirty = false;
-                        self.settings.adapter_save_success = true;
-                    }
-                    Err(e) => {
-                        self.settings.adapter_save_error = Some(e);
-                    }
-                }
-            }
-        }
-        Task::none()
+            },
+        )
+        .detach();
     }
 
-    fn prepare_adapter_config_for_save(&self) -> AdapterConfig {
-        let schema = self.settings.adapter_schema.as_ref();
-        let mut save = self.settings.adapter_config.clone();
+    // ---- Business logic stubs ----
 
-        if let Some(schema) = schema {
-            for field in &schema.fields {
-                if matches!(field.field_type, ConfigFieldType::Number) {
-                    if let Some(ConfigValue::String(s)) = save.values.get(&field.key) {
-                        if let Ok(n) = s.trim().parse::<i64>() {
-                            save.values
-                                .insert(field.key.clone(), ConfigValue::Integer(n));
-                        }
-                    }
-                }
-            }
-        }
+    pub fn load_installed(&mut self, cx: &mut Context<Self>) {
+        self.installed_state.loading = true;
+        self.installed_state.error = None;
 
-        save
-    }
-
-    fn load_repositories(&mut self) -> Task<Message> {
-        self.adapter_view.repos_loading = true;
-        let config = self.adapter.config_for_mode(self.current_mode);
-        let repos: Vec<message::RepoInfo> = config
-            .repositories
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
             .iter()
-            .map(|r| message::RepoInfo {
-                name: r.name.clone(),
-                url: r.url.clone(),
-                enabled: r.enabled.unwrap_or(true),
-                desktop_integration: r.desktop_integration.unwrap_or(false),
-                has_pubkey: r.pubkey.is_some(),
-                signature_verification: r.signature_verification.unwrap_or(false),
-                sync_interval: r.sync_interval.clone(),
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+        let mode = self.current_mode;
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (all_packages, updatable_adapters) = crate::tokio_spawn(async move {
+                    let mut all_packages = Vec::new();
+                    let mut updatable_adapters = std::collections::HashSet::new();
+
+                    for adapter in &manager_adapters {
+                        match adapter.list_installed(mode).await {
+                            Ok(pkgs) => all_packages.extend(pkgs),
+                            Err(e) => log::warn!("List installed failed: {e}"),
+                        }
+                        let caps = adapter.capabilities();
+                        if caps.can_update && !caps.can_list_updates {
+                            updatable_adapters.insert(adapter.info().id.clone());
+                        }
+                    }
+                    (all_packages, updatable_adapters)
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.installed_state.packages = all_packages;
+                        app.installed_state.loading = false;
+                        app.installed_state.loaded = true;
+                        app.installed_state.result_version += 1;
+                        app.installed_state.updatable_adapters = updatable_adapters;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn check_updates(&mut self, cx: &mut Context<Self>) {
+        self.updates_state.loading = true;
+        self.updates_state.error = None;
+
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+        let mode = self.current_mode;
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let (all_updates, no_update_listing) = crate::tokio_spawn(async move {
+                    let mut all_updates = Vec::new();
+                    let mut no_update_listing = Vec::new();
+
+                    for adapter in &manager_adapters {
+                        let caps = adapter.capabilities();
+                        if caps.can_list_updates {
+                            match adapter.list_updates(mode).await {
+                                Ok(updates) => all_updates.extend(updates),
+                                Err(e) => log::warn!("Check updates failed: {e}"),
+                            }
+                        } else if caps.can_update {
+                            no_update_listing
+                                .push((adapter.info().id.clone(), adapter.info().name.clone()));
+                        }
+                    }
+                    (all_updates, no_update_listing)
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.updates_state.updates = all_updates;
+                        app.updates_state.loading = false;
+                        app.updates_state.checked = true;
+                        app.updates_state.no_update_listing = no_update_listing;
+                        app.updates_state.result_version += 1;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn update_all(&mut self, cx: &mut Context<Self>) {
+        if self.updates_state.updates.is_empty() {
+            return;
+        }
+        self.updates_state.updating = Some("__all__".to_string());
+        let packages: Vec<_> = self
+            .updates_state
+            .updates
+            .iter()
+            .map(|u| u.package.clone())
+            .collect();
+        let mode = self.current_mode;
+        let progress_sender = self.progress_sender.clone();
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    // Group by adapter
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in &packages {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg.clone());
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .update(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Updated packages for {adapter_id}"),
+                                Err(e) => log::error!("Update failed for {adapter_id}: {e}"),
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.updates_state.updating = None;
+                        app.updates_state.updates.clear();
+                        app.updates_state.result_version += 1;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn update_selected(&mut self, cx: &mut Context<Self>) {
+        if self.updates_state.selected.is_empty() {
+            return;
+        }
+        self.updates_state.updating = Some("__batch__".to_string());
+        let selected = self.updates_state.selected.clone();
+        let packages: Vec<_> = self
+            .updates_state
+            .updates
+            .iter()
+            .filter(|u| selected.contains(&u.package.id))
+            .map(|u| u.package.clone())
+            .collect();
+        let mode = self.current_mode;
+        let progress_sender = self.progress_sender.clone();
+
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in &packages {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg.clone());
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .update(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Updated selected packages for {adapter_id}"),
+                                Err(e) => {
+                                    log::error!("Update selected failed for {adapter_id}: {e}")
+                                }
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.updates_state.updating = None;
+                        app.updates_state.selected.clear();
+                        app.updates_state.result_version += 1;
+                        // Refresh updates list
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn install_selected_browse(&mut self, cx: &mut Context<Self>) {
+        if self.browse_state.selected.is_empty() {
+            return;
+        }
+        self.browse_state.installing = Some("__batch__".to_string());
+        let selected = self.browse_state.selected.clone();
+        let packages: Vec<_> = self
+            .browse_state
+            .search_results
+            .iter()
+            .filter(|p| selected.contains(&p.id) && !p.installed)
+            .cloned()
+            .collect();
+        let pkg_ids: Vec<String> = packages.iter().map(|p| p.id.clone()).collect();
+        let progress_keys: Vec<String> = packages
+            .iter()
+            .map(|p| crate::core::adapter::progress_key(&p.adapter_id, &p.id))
+            .collect();
+        for key in &progress_keys {
+            self.browse_state
+                .package_progress
+                .insert(key.clone(), OperationStatus::Starting);
+        }
+        let mode = self.current_mode;
+        let progress_sender = self.progress_sender.clone();
+
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in &packages {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg.clone());
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .install(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Installed selected packages for {adapter_id}"),
+                                Err(e) => {
+                                    log::error!("Install selected failed for {adapter_id}: {e}")
+                                }
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.browse_state.installing = None;
+                        app.browse_state.selected.clear();
+                        // Mark installed in search results
+                        for p in &mut app.browse_state.search_results {
+                            if pkg_ids.contains(&p.id) {
+                                p.installed = true;
+                            }
+                        }
+                        for key in &progress_keys {
+                            app.browse_state.package_progress.remove(key);
+                        }
+                        app.browse_state.result_version += 1;
+                        app.installed_state.loaded = false;
+                        app.add_toast(
+                            ToastLevel::Success,
+                            format!("Installed {} packages", pkg_ids.len()),
+                        );
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn remove_selected_installed(&mut self, cx: &mut Context<Self>) {
+        if self.installed_state.selected.is_empty() {
+            return;
+        }
+        self.installed_state.removing = Some("__batch__".to_string());
+        let selected = self.installed_state.selected.clone();
+        let packages: Vec<_> = self
+            .installed_state
+            .packages
+            .iter()
+            .filter(|p| selected.contains(&p.package.id))
+            .map(|p| p.package.clone())
+            .collect();
+        let progress_keys: Vec<String> = packages
+            .iter()
+            .map(|p| crate::core::adapter::progress_key(&p.adapter_id, &p.id))
+            .collect();
+        for key in &progress_keys {
+            self.installed_state
+                .package_progress
+                .insert(key.clone(), OperationStatus::Starting);
+        }
+        let count = packages.len();
+        let mode = self.current_mode;
+        let progress_sender = self.progress_sender.clone();
+
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in &packages {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg.clone());
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .remove(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Removed selected packages for {adapter_id}"),
+                                Err(e) => {
+                                    log::error!("Remove selected failed for {adapter_id}: {e}")
+                                }
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.installed_state.removing = None;
+                        app.installed_state.selected.clear();
+                        for key in &progress_keys {
+                            app.installed_state.package_progress.remove(key);
+                        }
+                        app.installed_state.result_version += 1;
+                        app.add_toast(ToastLevel::Success, format!("Removed {count} packages"));
+                        app.load_installed(cx);
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn sync_all_repos(&mut self, cx: &mut Context<Self>) {
+        if self.adapter_view.syncing.is_some() {
+            return;
+        }
+        self.adapter_view.syncing = Some("__all__".to_string());
+        self.adapter_view.sync_error = None;
+
+        let progress_sender = self.progress_sender.clone();
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    for adapter in &manager_adapters {
+                        if adapter.capabilities().can_sync {
+                            match adapter.sync(Some(progress_sender.clone())).await {
+                                Ok(_) => log::info!("Synced {}", adapter.info().id),
+                                Err(e) => log::warn!("Sync failed for {}: {e}", adapter.info().id),
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.adapter_view.syncing = None;
+                        app.adapter_view.repos_version += 1;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn load_repos(&mut self, cx: &mut Context<Self>) {
+        let adapters: Vec<(String, Arc<dyn Adapter>)> = self
+            .adapter_manager
+            .list_adapters_with_status()
+            .iter()
+            .filter(|(info, enabled)| *enabled && info.capabilities.can_list_repos)
+            .filter_map(|(info, _)| {
+                self.adapter_manager
+                    .get_adapter(&info.id)
+                    .map(|a| (info.id.clone(), a))
             })
             .collect();
-        Task::perform(async move { Ok::<_, String>(repos) }, |result| {
-            Message::Repositories(message::RepositoriesMessage::Loaded(result))
-        })
-    }
 
-    fn update_repositories(&mut self, msg: message::RepositoriesMessage) -> Task<Message> {
-        match msg {
-            message::RepositoriesMessage::Refresh => {
-                return self.load_repositories();
-            }
-            message::RepositoriesMessage::Loaded(result) => {
-                self.adapter_view.repos_loading = false;
-                self.adapter_view.repos_loaded = true;
-                self.adapter_view.repos_version += 1;
-                match result {
-                    Ok(repos) => {
-                        self.adapter_view.repos_error = None;
-                        self.adapter_view.repositories = repos;
-                    }
-                    Err(e) => {
-                        log::error!("Failed to load repositories: {e}");
-                        self.adapter_view.repos_error = Some(e);
-                    }
-                }
-            }
-            message::RepositoriesMessage::SyncRepo(_name) => {
-                self.adapter_view.syncing = Some("__all__".into());
-                self.adapter_view.sync_error = None;
-                self.adapter_view.repos_version += 1;
-                let adapter = self.adapter.clone();
-                return Task::perform(
-                    async move { adapter.sync(None).await.map_err(|e| e.to_string()) },
-                    |result| {
-                        Message::Repositories(message::RepositoriesMessage::SyncComplete(result))
-                    },
-                );
-            }
-            message::RepositoriesMessage::SyncAll => {
-                self.adapter_view.syncing = Some("__all__".into());
-                self.adapter_view.sync_error = None;
-                self.adapter_view.repos_version += 1;
-                let adapter = self.adapter.clone();
-                return Task::perform(
-                    async move { adapter.sync(None).await.map_err(|e| e.to_string()) },
-                    |result| {
-                        Message::Repositories(message::RepositoriesMessage::SyncComplete(result))
-                    },
-                );
-            }
-            message::RepositoriesMessage::SyncComplete(result) => {
-                self.adapter_view.syncing = None;
-                self.adapter_view.repos_version += 1;
-                match result {
-                    Ok(()) => {
-                        log::info!("Repository sync completed");
-                    }
-                    Err(e) => {
-                        log::error!("Sync failed: {e}");
-                        self.adapter_view.sync_error = Some(e);
-                    }
-                }
-            }
-            message::RepositoriesMessage::ToggleEnabled(name, enabled) => {
-                let adapter = self.adapter.clone();
-                let mode = self.current_mode;
-                return Task::perform(
-                    async move {
-                        adapter
-                            .set_repo_enabled(&name, enabled, mode)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
-                    |result| {
-                        Message::Repositories(message::RepositoriesMessage::ToggleResult(result))
-                    },
-                );
-            }
-            message::RepositoriesMessage::ToggleResult(result) => match result {
-                Ok(()) => return self.load_repositories(),
-                Err(e) => self.adapter_view.repos_error = Some(e),
-            },
+        for (id, _) in &adapters {
+            self.adapter_view.repos_loading.insert(id.clone(), true);
+            self.adapter_view.repos_error.remove(id);
         }
-        Task::none()
+
+        for (adapter_id, adapter) in adapters {
+            cx.spawn(
+                async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    let repos = crate::tokio_spawn(async move {
+                        match adapter.list_repositories().await {
+                            Ok(repos) => Ok(repos
+                                .into_iter()
+                                .map(|r| RepoInfo {
+                                    name: r.name,
+                                    url: r.url,
+                                    enabled: r.enabled,
+                                    desktop_integration: false,
+                                    has_pubkey: false,
+                                    signature_verification: false,
+                                    sync_interval: None,
+                                })
+                                .collect::<Vec<_>>()),
+                            Err(e) => Err(format!("{e}")),
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{e}")));
+
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            match repos {
+                                Ok(repos) => {
+                                    app.adapter_view
+                                        .repos_by_adapter
+                                        .insert(adapter_id.clone(), repos);
+                                }
+                                Err(e) => {
+                                    app.adapter_view.repos_error.insert(adapter_id.clone(), e);
+                                }
+                            }
+                            app.adapter_view
+                                .repos_loading
+                                .insert(adapter_id.clone(), false);
+                            app.adapter_view
+                                .repos_loaded
+                                .insert(adapter_id.clone(), true);
+                            app.adapter_view.repos_version += 1;
+                            cx.notify();
+                        })
+                    });
+                },
+            )
+            .detach();
+        }
     }
 
-    fn update_adapter(&mut self, msg: message::AdapterMessage) -> Task<Message> {
-        match msg {
-            message::AdapterMessage::ToggleAdapter(id, enabled) => {
-                self.adapter_manager.set_adapter_enabled(&id, enabled);
-                self.aeris_config.set_adapter_disabled(&id, !enabled);
+    pub fn fetch_registry(&mut self, cx: &mut Context<Self>) {
+        self.adapter_view.registry_loading = true;
+        self.adapter_view.registry_error = None;
 
-                // Invalidate cached view data so they reload with new adapter set
-                self.installed.loaded = false;
-                self.updates.checked = false;
-                self.browse.search_results.clear();
-                self.browse.has_searched = false;
-                self.browse.result_version += 1;
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result = crate::core::registry::fetch_registry(None);
 
-                let config = self.aeris_config.clone();
-                let save_task = Task::perform(async move { config.save() }, |result| {
-                    Message::Adapter(message::AdapterMessage::ToggleSaved(result))
-                });
-                let reload_task = self.load_installed();
-                return Task::batch([save_task, reload_task]);
-            }
-            message::AdapterMessage::ToggleSaved(result) => {
-                if let Err(e) = result {
-                    log::error!("Failed to save adapter toggle: {e}");
-                }
-            }
-            message::AdapterMessage::FetchRegistry => {
-                self.adapter_view.registry_loading = true;
-                self.adapter_view.registry_error = None;
-                return Task::perform(
-                    async move { crate::core::registry::fetch_registry(None).map(|r| r.plugins) },
-                    |result| Message::Adapter(message::AdapterMessage::RegistryFetched(result)),
-                );
-            }
-            message::AdapterMessage::RegistryFetched(result) => {
-                self.adapter_view.registry_loading = false;
-                match result {
-                    Ok(plugins) => {
-                        self.adapter_view.registry_plugins = plugins;
-                    }
-                    Err(e) => {
-                        log::error!("Failed to fetch registry: {e}");
-                        self.adapter_view.registry_error = Some(e);
-                    }
-                }
-            }
-            message::AdapterMessage::InstallPlugin(entry) => {
-                self.adapter_view.installing_plugin = Some(entry.id.clone());
-                return Task::perform(
-                    async move {
-                        let plugin_dir = crate::core::registry::download_plugin(&entry)?;
-                        Ok(plugin_dir.to_string_lossy().to_string())
-                    },
-                    |result: Result<String, String>| {
-                        Message::Adapter(message::AdapterMessage::PluginInstalled(result))
-                    },
-                );
-            }
-            message::AdapterMessage::PluginInstalled(result) => {
-                self.adapter_view.installing_plugin = None;
-                match result {
-                    Ok(path) => {
-                        let plugin_dir = std::path::PathBuf::from(&path);
-                        match crate::adapters::wasm::WasmAdapter::load(plugin_dir) {
-                            Ok(wasm_adapter) => {
-                                let id = wasm_adapter.info().id.clone();
-                                log::info!("Installed and loaded plugin: {id}");
-                                self.adapter_manager.register(Arc::new(wasm_adapter));
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        match result {
+                            Ok(registry) => {
+                                app.adapter_view.registry_plugins = registry.plugins;
                             }
                             Err(e) => {
-                                log::error!("Failed to load installed plugin: {e}");
+                                app.adapter_view.registry_error = Some(e);
                             }
                         }
-                    }
-                    Err(e) => {
-                        log::error!("Failed to install plugin: {e}");
-                    }
-                }
-            }
-            message::AdapterMessage::RemovePlugin(id) => {
-                let plugin_path = self
-                    .adapter_manager
-                    .get_adapter(&id)
-                    .and_then(|a| a.info().plugin_path.clone());
-                self.adapter_manager.unregister(&id);
-                self.adapter_view.removing_plugin = Some(id.clone());
-                if let Some(path) = plugin_path {
-                    return Task::perform(
-                        async move {
-                            std::fs::remove_dir_all(&path)
-                                .map_err(|e| format!("Failed to remove plugin files: {e}"))?;
-                            Ok(id)
-                        },
-                        |result| Message::Adapter(message::AdapterMessage::PluginRemoved(result)),
-                    );
-                }
-                self.adapter_view.removing_plugin = None;
-            }
-            message::AdapterMessage::PluginRemoved(result) => {
-                self.adapter_view.removing_plugin = None;
-                match result {
-                    Ok(id) => log::info!("Plugin {id} removed successfully"),
-                    Err(e) => log::error!("Failed to remove plugin: {e}"),
-                }
-            }
-        }
-        Task::none()
+                        app.adapter_view.registry_loading = false;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
     }
 
-    fn execute_confirmed(&mut self, action: message::ConfirmAction) -> Task<Message> {
-        // If an operation is already active, queue the new one
-        if self.active_operation.is_some() {
-            let id = self.next_operation_id;
-            self.next_operation_id += 1;
-            self.operation_queue.push(QueuedOperation {
-                id,
-                action,
-                queued_at: Instant::now(),
-            });
-            return Task::none();
+    pub fn save_aeris_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_state.saving = true;
+        self.settings_state.aeris_save_error = None;
+        self.settings_state.aeris_save_success = false;
+
+        // Apply settings
+        self.aeris_config.theme = Some(match self.settings_state.selected_theme {
+            AppTheme::System => "system".to_string(),
+            AppTheme::Light => "light".to_string(),
+            AppTheme::Dark => "dark".to_string(),
+        });
+        self.aeris_config.startup_view = Some(match self.settings_state.startup_view {
+            View::Dashboard => "dashboard".to_string(),
+            View::Browse => "browse".to_string(),
+            View::Installed => "installed".to_string(),
+            View::Updates => "updates".to_string(),
+            _ => "dashboard".to_string(),
+        });
+        self.aeris_config.notifications = Some(self.settings_state.notifications);
+
+        self.selected_theme = self.settings_state.selected_theme;
+
+        match self.aeris_config.save() {
+            Ok(_) => {
+                self.settings_state.aeris_save_success = true;
+                self.settings_state.aeris_dirty = false;
+            }
+            Err(e) => {
+                self.settings_state.aeris_save_error = Some(e);
+            }
         }
-        self.execute_operation(action)
+        self.settings_state.saving = false;
+        cx.notify();
     }
 
-    fn execute_operation(&mut self, action: message::ConfirmAction) -> Task<Message> {
-        match action {
-            message::ConfirmAction::Install(ref pkg, mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::Install,
-                    package_name: pkg.name.clone(),
-                    status: OperationStatus::Starting,
-                });
-                self.browse.installing = Some(pkg.id.clone());
-                self.browse.result_version += 1;
+    pub fn save_adapter_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_state.saving = true;
+        self.settings_state.adapter_save_error = None;
+        self.settings_state.adapter_save_success = false;
 
-                if pkg.adapter_id == "soar" {
-                    if let Some(query) = pkg.soar_query() {
-                        if mode == PackageMode::System {
-                            let _ = PrivilegeManager::detect_elevator();
-                        }
+        let config = self.settings_state.adapter_config.clone();
+        let adapter = self.adapter.clone();
+        let mode = self.current_mode;
 
-                        let adapter = self.adapter.clone();
-                        let settings = self.settings.adapter_settings.clone();
-                        return Task::perform(
-                            async move {
-                                adapter
-                                    .install_package(&query, mode, &settings)
-                                    .await
-                                    .map_err(|e| e.to_string())
-                            },
-                            |result| {
-                                Message::Browse(message::BrowseMessage::InstallComplete(result))
-                            },
-                        );
-                    }
-                } else if let Some(adapter) = self.adapter_manager.get_adapter(&pkg.adapter_id) {
-                    let packages = vec![pkg.clone()];
-                    return Task::perform(
-                        async move {
-                            adapter
-                                .install(&packages, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())
-                                .map(|_| ())
-                        },
-                        |result| Message::Browse(message::BrowseMessage::InstallComplete(result)),
-                    );
-                }
-            }
-            message::ConfirmAction::Remove(ref pkg, mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::Remove,
-                    package_name: pkg.name.clone(),
-                    status: OperationStatus::Starting,
-                });
-                self.installed.removing = Some(pkg.id.clone());
-                self.installed.result_version += 1;
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result =
+                    crate::tokio_spawn(
+                        async move { adapter.set_config_for_mode(&config, mode).await },
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
+                    });
 
-                if pkg.adapter_id == "soar" {
-                    if let Some(query) = pkg.soar_query() {
-                        if mode == PackageMode::System {
-                            let _ = PrivilegeManager::detect_elevator();
-                            let adapter = self.adapter.clone();
-                            let settings = self.settings.adapter_settings.clone();
-                            let pkg_name = pkg.name.clone();
-                            return Task::perform(
-                                async move {
-                                    adapter
-                                        .run_system_remove(&pkg_name, &settings)
-                                        .await
-                                        .map_err(|e| e.to_string())
-                                },
-                                |result| {
-                                    Message::Installed(message::InstalledMessage::RemoveComplete(
-                                        result,
-                                    ))
-                                },
-                            );
-                        }
-
-                        let adapter = self.adapter.clone();
-                        return Task::perform(
-                            async move {
-                                adapter
-                                    .remove_package(&query)
-                                    .await
-                                    .map_err(|e| e.to_string())
-                            },
-                            |result| {
-                                Message::Installed(message::InstalledMessage::RemoveComplete(
-                                    result,
-                                ))
-                            },
-                        );
-                    }
-                } else if let Some(adapter) = self.adapter_manager.get_adapter(&pkg.adapter_id) {
-                    let packages = vec![pkg.clone()];
-                    return Task::perform(
-                        async move {
-                            adapter
-                                .remove(&packages, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())
-                        },
-                        |result| {
-                            Message::Installed(message::InstalledMessage::RemoveComplete(result))
-                        },
-                    );
-                }
-            }
-            message::ConfirmAction::Update(ref pkg, mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::Update,
-                    package_name: pkg.name.clone(),
-                    status: OperationStatus::Starting,
-                });
-                self.updates.updating = Some(pkg.id.clone());
-                self.updates.result_version += 1;
-
-                if self.installed.updatable_adapters.contains(&pkg.adapter_id) {
-                    self.installed.updating = Some(pkg.id.clone());
-                    self.installed.result_version += 1;
-                }
-
-                if pkg.adapter_id == "soar" {
-                    if let Some(query) = pkg.soar_query() {
-                        if mode == PackageMode::System {
-                            let _ = PrivilegeManager::detect_elevator();
-                            let adapter = self.adapter.clone();
-                            let settings = self.settings.adapter_settings.clone();
-                            return Task::perform(
-                                async move {
-                                    adapter
-                                        .update_system_package(&query, &settings)
-                                        .await
-                                        .map_err(|e| e.to_string())
-                                },
-                                |result| {
-                                    Message::Updates(message::UpdatesMessage::UpdateComplete(
-                                        result,
-                                    ))
-                                },
-                            );
-                        }
-
-                        let adapter = self.adapter.clone();
-                        return Task::perform(
-                            async move {
-                                adapter
-                                    .update_package(&query)
-                                    .await
-                                    .map_err(|e| e.to_string())
-                            },
-                            |result| {
-                                Message::Updates(message::UpdatesMessage::UpdateComplete(result))
-                            },
-                        );
-                    }
-                } else if let Some(adapter) = self.adapter_manager.get_adapter(&pkg.adapter_id) {
-                    let packages = vec![pkg.clone()];
-                    return Task::perform(
-                        async move {
-                            adapter
-                                .update(&packages, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())
-                                .map(|_| ())
-                        },
-                        |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
-                    );
-                }
-            }
-            message::ConfirmAction::UpdateAll(mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::UpdateAll,
-                    package_name: "all packages".into(),
-                    status: OperationStatus::Starting,
-                });
-                self.updates.updating = Some("__all__".into());
-                self.updates.result_version += 1;
-
-                // Partition updates by adapter_id
-                let mut soar_updates = Vec::new();
-                let mut other_updates: std::collections::HashMap<String, Vec<_>> =
-                    std::collections::HashMap::new();
-                for update in &self.updates.updates {
-                    if update.package.adapter_id == "soar" {
-                        soar_updates.push(update.clone());
-                    } else {
-                        other_updates
-                            .entry(update.package.adapter_id.clone())
-                            .or_default()
-                            .push(update.package.clone());
-                    }
-                }
-
-                // Collect non-Soar adapters for the updates
-                let other_adapter_map: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
-                    other_updates
-                        .into_iter()
-                        .filter_map(|(id, pkgs)| {
-                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
-                        })
-                        .collect();
-
-                let has_soar_updates = !soar_updates.is_empty();
-
-                if has_soar_updates {
-                    if mode == PackageMode::System {
-                        let _ = PrivilegeManager::detect_elevator();
-                        let adapter = self.adapter.clone();
-                        let settings = self.settings.adapter_settings.clone();
-                        return Task::perform(
-                            async move {
-                                adapter
-                                    .update_all_system(&settings)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-
-                                for (other_adapter, pkgs) in other_adapter_map {
-                                    if let Err(e) = other_adapter.update(&pkgs, None, mode).await {
-                                        log::warn!(
-                                            "Update failed for {}: {e}",
-                                            other_adapter.info().id
-                                        );
-                                    }
-                                }
-
-                                Ok(())
-                            },
-                            |result| {
-                                Message::Updates(message::UpdatesMessage::UpdateComplete(result))
-                            },
-                        );
-                    }
-
-                    let adapter = self.adapter.clone();
-                    return Task::perform(
-                        async move {
-                            adapter.update_all().await.map_err(|e| e.to_string())?;
-
-                            for (other_adapter, pkgs) in other_adapter_map {
-                                if let Err(e) = other_adapter.update(&pkgs, None, mode).await {
-                                    log::warn!(
-                                        "Update failed for {}: {e}",
-                                        other_adapter.info().id
-                                    );
-                                }
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        match result {
+                            Ok(_) => {
+                                app.settings_state.adapter_save_success = true;
+                                app.settings_state.adapter_dirty = false;
                             }
-
-                            Ok(())
-                        },
-                        |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
-                    );
-                }
-
-                // Only non-Soar updates
-                return Task::perform(
-                    async move {
-                        for (other_adapter, pkgs) in other_adapter_map {
-                            if let Err(e) = other_adapter.update(&pkgs, None, mode).await {
-                                log::warn!("Update failed for {}: {e}", other_adapter.info().id);
+                            Err(e) => {
+                                app.settings_state.adapter_save_error = Some(format!("{e}"));
                             }
                         }
-                        Ok(())
-                    },
-                    |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
-                );
-            }
-            message::ConfirmAction::BatchInstall(ref packages, mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::Install,
-                    package_name: format!("{} packages", packages.len()),
-                    status: OperationStatus::Starting,
+                        app.settings_state.saving = false;
+                        cx.notify();
+                    })
                 });
-                self.browse.installing = Some("__batch__".into());
-                self.browse.installing_batch_ids = packages.iter().map(|p| p.id.clone()).collect();
-                self.browse.selected.clear();
-                self.browse.result_version += 1;
-
-                if mode == PackageMode::System {
-                    let _ = PrivilegeManager::detect_elevator();
-                }
-
-                // Group by adapter
-                let mut groups: std::collections::HashMap<
-                    String,
-                    Vec<crate::core::package::Package>,
-                > = std::collections::HashMap::new();
-                for pkg in packages {
-                    groups
-                        .entry(pkg.adapter_id.clone())
-                        .or_default()
-                        .push(pkg.clone());
-                }
-
-                let adapter_batches: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
-                    groups
-                        .into_iter()
-                        .filter_map(|(id, pkgs)| {
-                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
-                        })
-                        .collect();
-
-                return Task::perform(
-                    async move {
-                        for (adapter, pkgs) in adapter_batches {
-                            adapter
-                                .install(&pkgs, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                        }
-                        Ok(())
-                    },
-                    |result| Message::Browse(message::BrowseMessage::InstallComplete(result)),
-                );
-            }
-            message::ConfirmAction::BatchRemove(ref packages, mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::Remove,
-                    package_name: format!("{} packages", packages.len()),
-                    status: OperationStatus::Starting,
-                });
-                self.installed.removing = Some("__batch__".into());
-                self.installed.selected.clear();
-                self.installed.result_version += 1;
-
-                let mut groups: std::collections::HashMap<
-                    String,
-                    Vec<crate::core::package::Package>,
-                > = std::collections::HashMap::new();
-                for pkg in packages {
-                    groups
-                        .entry(pkg.adapter_id.clone())
-                        .or_default()
-                        .push(pkg.clone());
-                }
-
-                let adapter_batches: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
-                    groups
-                        .into_iter()
-                        .filter_map(|(id, pkgs)| {
-                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
-                        })
-                        .collect();
-
-                return Task::perform(
-                    async move {
-                        for (adapter, pkgs) in adapter_batches {
-                            adapter
-                                .remove(&pkgs, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                        }
-                        Ok(())
-                    },
-                    |result| Message::Installed(message::InstalledMessage::RemoveComplete(result)),
-                );
-            }
-            message::ConfirmAction::BatchUpdate(ref packages, mode) => {
-                self.active_operation = Some(ActiveOperation {
-                    operation_type: OperationType::Update,
-                    package_name: format!("{} packages", packages.len()),
-                    status: OperationStatus::Starting,
-                });
-                self.updates.updating = Some("__batch__".into());
-                self.updates.selected.clear();
-                self.updates.result_version += 1;
-
-                if mode == PackageMode::System {
-                    let _ = PrivilegeManager::detect_elevator();
-                }
-
-                // Group by adapter
-                let mut groups: std::collections::HashMap<
-                    String,
-                    Vec<crate::core::package::Package>,
-                > = std::collections::HashMap::new();
-                for pkg in packages {
-                    groups
-                        .entry(pkg.adapter_id.clone())
-                        .or_default()
-                        .push(pkg.clone());
-                }
-
-                let adapter_batches: Vec<(Arc<dyn Adapter>, Vec<crate::core::package::Package>)> =
-                    groups
-                        .into_iter()
-                        .filter_map(|(id, pkgs)| {
-                            self.adapter_manager.get_adapter(&id).map(|a| (a, pkgs))
-                        })
-                        .collect();
-
-                return Task::perform(
-                    async move {
-                        for (adapter, pkgs) in adapter_batches {
-                            adapter
-                                .update(&pkgs, None, mode)
-                                .await
-                                .map_err(|e| e.to_string())
-                                .map(|_| ())?;
-                        }
-                        Ok(())
-                    },
-                    |result| Message::Updates(message::UpdatesMessage::UpdateComplete(result)),
-                );
-            }
-        }
-        Task::none()
-    }
-
-    pub fn view(&self) -> Element<'_, Message> {
-        let header = self.header_view();
-        let sidebar = self.sidebar_view();
-
-        let content = match self.current_view {
-            View::Dashboard => {
-                let stats = views::dashboard::DashboardStats {
-                    installed_count: self.installed.packages.len(),
-                    update_count: self.updates.updates.len(),
-                    updates_checked: self.updates.checked,
-                    repo_count: self.adapter.repo_count_for_mode(self.current_mode),
-                    current_mode: self.current_mode,
-                    unhealthy_count: self
-                        .installed
-                        .packages
-                        .iter()
-                        .filter(|p| !p.is_healthy)
-                        .count(),
-                };
-                views::dashboard::view(&stats)
-            }
-            View::Browse => views::browse::view(&self.browse),
-            View::Installed => views::installed::view(&self.installed, self.current_mode),
-            View::Updates => views::updates::view(&self.updates, self.current_mode),
-            View::Settings => views::settings::view(&self.settings, self.current_mode),
-            View::AdapterInfo => {
-                let adapters = self.adapter_manager.list_adapters_with_status();
-                views::adapter_info::view(&self.adapter_view, adapters, self.current_mode)
-            }
-        };
-
-        let has_active_ops = self.active_operation.is_some()
-            || !self.operations.is_empty()
-            || !self.operation_queue.is_empty();
-
-        let main: Element<'_, Message> = if has_active_ops {
-            let mut main_col = column![content].width(Length::Fill).height(Length::Fill);
-            // Show legacy progress bar if present
-            if let Some(ref op) = self.active_operation {
-                main_col = main_col.push(self.progress_bar_view(op));
-            }
-            // Show new tracked operations + queue
-            if !self.operations.is_empty() || !self.operation_queue.is_empty() {
-                main_col = main_col.push(self.progress_panel_view());
-            }
-            main_col.into()
-        } else {
-            content
-        };
-
-        let body = row![sidebar, main].height(Length::Fill);
-
-        let base = column![header, body]
-            .width(Length::Fill)
-            .height(Length::Fill);
-
-        // Layer: confirm dialog, then toasts on top
-        let with_dialog: Element<'_, Message> = if let Some(ref action) = self.confirm_dialog {
-            modal(
-                base,
-                self.confirm_dialog_view(action),
-                Message::CancelAction,
-            )
-        } else {
-            base.into()
-        };
-
-        if !self.toasts.is_empty() {
-            stack![with_dialog, self.toast_overlay_view()].into()
-        } else {
-            with_dialog
-        }
-    }
-
-    fn header_view(&self) -> Element<'_, Message> {
-        let left = row![
-            text(APP_NAME).size(font_size::BODY),
-            text("\u{00b7}").size(font_size::BODY),
-            text(format!("{}", self.current_view)).size(font_size::BODY),
-        ]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center);
-
-        let has_system = self.adapter.info().capabilities.supports_system_packages;
-        static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
-
-        let mut right = row![].spacing(spacing::SM).align_y(Alignment::Center);
-        if has_system {
-            right = right.push(
-                pick_list(
-                    &MODES[..],
-                    Some(self.current_mode),
-                    Message::PackageModeChanged,
-                )
-                .width(100),
-            );
-        }
-        right = right.push(
-            button(text("\u{2699}").size(18).center())
-                .on_press(Message::NavigateTo(View::Settings))
-                .style(styles::header_icon_button)
-                .padding([6, 10]),
-        );
-
-        container(
-            row![left, space().width(Length::Fill), right]
-                .padding([0.0, spacing::LG])
-                .align_y(Alignment::Center),
+            },
         )
-        .height(40)
-        .width(Length::Fill)
-        .center_y(40)
-        .style(styles::header_container)
-        .into()
+        .detach();
     }
 
-    fn confirm_dialog_view(&self, action: &message::ConfirmAction) -> Element<'_, Message> {
-        let is_destructive = matches!(
-            action,
-            message::ConfirmAction::Remove(..) | message::ConfirmAction::BatchRemove(..)
-        );
-
-        let has_system = self.adapter.info().capabilities.supports_system_packages;
-        static MODES: [PackageMode; 2] = [PackageMode::User, PackageMode::System];
-
-        let action_mode = match action {
-            message::ConfirmAction::Install(_, mode)
-            | message::ConfirmAction::Remove(_, mode)
-            | message::ConfirmAction::Update(_, mode)
-            | message::ConfirmAction::UpdateAll(mode)
-            | message::ConfirmAction::BatchInstall(_, mode)
-            | message::ConfirmAction::BatchRemove(_, mode)
-            | message::ConfirmAction::BatchUpdate(_, mode) => *mode,
-        };
-        let is_system = action_mode == PackageMode::System;
-
-        let (title, description, mode_section): (_, _, Element<'_, Message>) = match action {
-            message::ConfirmAction::Install(pkg, mode) => {
-                let current_mode = *mode;
-                let has_multiple_modes = has_system;
-
-                let mode_selector: Element<'_, Message> = if has_multiple_modes {
-                    column![
-                        row![
-                            text("Install mode:").size(font_size::SMALL),
-                            iced::widget::pick_list(&MODES[..], Some(current_mode), |m| {
-                                Message::Browse(message::BrowseMessage::InstallModeChanged(m))
-                            },)
-                            .width(120),
-                        ]
-                        .spacing(spacing::SM)
-                        .align_y(Alignment::Center),
-                        if is_system {
-                            text("Requires administrator privileges").size(font_size::CAPTION)
-                        } else {
-                            text("").size(font_size::CAPTION)
-                        }
-                    ]
-                    .spacing(spacing::XXS)
-                    .into()
-                } else {
-                    column![].into()
-                };
-
-                (
-                    "Install Package",
-                    format!("{} {}", pkg.name, pkg.version),
-                    mode_selector,
-                )
-            }
-            message::ConfirmAction::Remove(pkg, _) => {
-                let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges")
-                        .size(font_size::CAPTION)
-                        .into()
-                } else {
-                    column![].into()
-                };
-                (
-                    "Remove Package",
-                    format!("{} {}", pkg.name, pkg.version),
-                    hint,
-                )
-            }
-            message::ConfirmAction::Update(pkg, _) => {
-                let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges")
-                        .size(font_size::CAPTION)
-                        .into()
-                } else {
-                    column![].into()
-                };
-                (
-                    "Update Package",
-                    format!("{} {}", pkg.name, pkg.version),
-                    hint,
-                )
-            }
-            message::ConfirmAction::UpdateAll(_) => {
-                let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges")
-                        .size(font_size::CAPTION)
-                        .into()
-                } else {
-                    column![].into()
-                };
-                (
-                    "Update All",
-                    "All packages with available updates will be updated.".to_string(),
-                    hint,
-                )
-            }
-            message::ConfirmAction::BatchInstall(pkgs, _) => {
-                let list = pkgs
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let hint: Element<'_, Message> = column![].into();
-                (
-                    "Install Packages",
-                    format!("Install {} packages: {list}", pkgs.len()),
-                    hint,
-                )
-            }
-            message::ConfirmAction::BatchRemove(pkgs, _) => {
-                let list = pkgs
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges")
-                        .size(font_size::CAPTION)
-                        .into()
-                } else {
-                    column![].into()
-                };
-                (
-                    "Remove Packages",
-                    format!("Remove {} packages: {list}", pkgs.len()),
-                    hint,
-                )
-            }
-            message::ConfirmAction::BatchUpdate(pkgs, _) => {
-                let list = pkgs
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let hint: Element<'_, Message> = if is_system {
-                    text("Requires administrator privileges")
-                        .size(font_size::CAPTION)
-                        .into()
-                } else {
-                    column![].into()
-                };
-                (
-                    "Update Packages",
-                    format!("Update {} packages: {list}", pkgs.len()),
-                    hint,
-                )
-            }
-        };
-
-        let cancel_btn = button(text("Cancel").size(font_size::BODY))
-            .on_press(Message::CancelAction)
-            .style(button::secondary)
-            .padding([spacing::SM, spacing::XL]);
-
-        let confirm_btn = button(text("Confirm").size(font_size::BODY))
-            .on_press(Message::ConfirmAction)
-            .padding([spacing::SM, spacing::XL]);
-
-        let confirm_btn = if is_destructive {
-            confirm_btn.style(button::danger)
-        } else {
-            confirm_btn.style(button::primary)
-        };
-
-        let mut content = column![
-            text(title).size(font_size::TITLE),
-            text(description).size(font_size::BODY),
-        ]
-        .spacing(spacing::MD);
-
-        content = content.push(mode_section);
-
-        content = content.push(
-            row![space().width(Length::Fill), cancel_btn, confirm_btn,]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center),
-        );
-
-        container(content.spacing(spacing::LG).padding(spacing::XXL))
-            .style(styles::modal_card)
-            .width(380)
-            .into()
-    }
-
-    fn sidebar_view(&self) -> Element<'_, Message> {
-        let nav_items: [(View, &str, &str); 5] = [
-            (View::Dashboard, "Dashboard", "\u{2302}"),
-            (View::Browse, "Browse", "\u{26b2}"),
-            (View::Installed, "Installed", "\u{22a1}"),
-            (View::Updates, "Updates", "\u{21bb}"),
-            (View::AdapterInfo, "Adapter", "\u{26a1}"),
-        ];
-
-        let mut nav = column![].spacing(spacing::XXS).padding(spacing::XS);
-
-        for (view, label, icon) in nav_items {
-            let is_active = self.current_view == view;
-
-            let icon_style: fn(&iced::Theme) -> container::Style = if is_active {
-                styles::nav_icon_active
-            } else {
-                styles::nav_icon_inactive
-            };
-
-            let content: Element<'_, Message> = if self.sidebar_expanded {
-                let icon = container(text(icon).size(font_size::BODY))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .style(icon_style);
-
-                row![
-                    container(icon)
-                        .width(Length::Fixed(28.0))
-                        .height(Length::Fill),
-                    text(label).size(font_size::BODY)
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center)
-                .into()
-            } else {
-                let icon = container(text(icon).size(font_size::BODY))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .style(icon_style);
-
-                container(icon)
-                    .width(Length::Fixed(28.0))
-                    .height(Length::Fixed(28.0))
-                    .center_x(Length::Fill)
-                    .into()
-            };
-
-            let btn = button(content)
-                .on_press(Message::NavigateTo(view))
-                .width(Length::Fill)
-                .height(36)
-                .padding(if self.sidebar_expanded {
-                    [spacing::XS, spacing::SM]
-                } else {
-                    [spacing::XS, spacing::XS]
-                });
-
-            let btn = if is_active {
-                btn.style(|theme, _status| styles::sidebar_active_button(theme))
-            } else {
-                btn.style(styles::sidebar_button)
-            };
-
-            let nav_item: Element<'_, Message> = if !self.sidebar_expanded {
-                tooltip(btn, label, tooltip::Position::Right).gap(4).into()
-            } else {
-                btn.into()
-            };
-
-            nav = nav.push(nav_item);
-        }
-
-        let toggle_label = if self.sidebar_expanded {
-            "\u{00ab}"
-        } else {
-            "\u{00bb}"
-        };
-        let toggle_btn = button(
-            text(toggle_label)
-                .size(font_size::SMALL)
-                .center()
-                .width(Length::Fill),
-        )
-        .on_press(Message::ToggleSidebar)
-        .width(Length::Fill)
-        .height(32)
-        .padding(spacing::XXS)
-        .style(styles::sidebar_button);
-
-        let sidebar_width = if self.sidebar_expanded { 180 } else { 52 };
-
-        container(
-            column![
-                nav,
-                space().height(Length::Fill),
-                container(toggle_btn).padding(spacing::XS),
-            ]
-            .height(Length::Fill),
-        )
-        .style(styles::sidebar_container)
-        .width(sidebar_width)
-        .height(Length::Fill)
-        .into()
-    }
-
-    fn push_toast(&mut self, level: ToastLevel, message: impl Into<String>) {
+    fn add_toast(&mut self, level: ToastLevel, message: String) {
         let id = self.next_toast_id;
         self.next_toast_id += 1;
         self.toasts.push(Toast {
             id,
             level,
-            message: message.into(),
+            message,
             created_at: Instant::now(),
             duration: Duration::from_secs(5),
         });
     }
 
-    pub fn subscription(&self) -> Subscription<Message> {
-        if self.active_operation.is_some() || !self.operations.is_empty() || !self.toasts.is_empty()
-        {
-            iced::time::every(std::time::Duration::from_millis(50)).map(|_| Message::ProgressTick)
-        } else {
-            Subscription::none()
-        }
+    fn cleanup_toasts(&mut self) {
+        self.toasts.retain(|t| t.created_at.elapsed() < t.duration);
     }
 
-    fn handle_soar_event(&mut self, event: SoarEvent) {
-        match event {
-            SoarEvent::DownloadStarting {
-                pkg_name, total, ..
-            } => {
-                self.apply_soar_status(
-                    &pkg_name,
-                    OperationStatus::Downloading { current: 0, total },
-                );
-            }
-            SoarEvent::DownloadResuming {
-                pkg_name,
-                current,
-                total,
-                ..
-            }
-            | SoarEvent::DownloadProgress {
-                pkg_name,
-                current,
-                total,
-                ..
-            } => {
-                self.apply_soar_status(&pkg_name, OperationStatus::Downloading { current, total });
-            }
-            SoarEvent::DownloadComplete { pkg_name, .. } => {
-                self.apply_soar_status(
-                    &pkg_name,
-                    OperationStatus::Downloading {
-                        current: 1,
-                        total: 1,
-                    },
-                );
-            }
-            SoarEvent::Verifying {
-                pkg_name, stage, ..
-            } => {
-                let status = match stage {
-                    VerifyStage::Checksum => OperationStatus::Verifying("checksum".into()),
-                    VerifyStage::Signature => OperationStatus::Verifying("signature".into()),
-                    VerifyStage::Passed => OperationStatus::Verifying("passed".into()),
-                    VerifyStage::Failed(e) => {
-                        OperationStatus::Failed(format!("Verification failed: {e}"))
-                    }
-                };
-                self.apply_soar_status(&pkg_name, status);
-            }
-            SoarEvent::Installing {
-                pkg_name, stage, ..
-            } => {
-                let status = match stage {
-                    InstallStage::Extracting => OperationStatus::Installing("extracting".into()),
-                    InstallStage::ExtractingNested => {
-                        OperationStatus::Installing("extracting nested".into())
-                    }
-                    InstallStage::LinkingBinaries => {
-                        OperationStatus::Installing("linking binaries".into())
-                    }
-                    InstallStage::DesktopIntegration => {
-                        OperationStatus::Installing("desktop integration".into())
-                    }
-                    InstallStage::SetupPortable => {
-                        OperationStatus::Installing("setting up portable".into())
-                    }
-                    InstallStage::RecordingDatabase => {
-                        OperationStatus::Installing("recording to database".into())
-                    }
-                    InstallStage::RunningHook(h) => {
-                        OperationStatus::Installing(format!("hook: {h}"))
-                    }
-                    InstallStage::Complete => OperationStatus::Installing("complete".into()),
-                };
-                self.apply_soar_status(&pkg_name, status);
-            }
-            SoarEvent::Removing {
-                pkg_name, stage, ..
-            } => {
-                let status = match stage {
-                    RemoveStage::RunningHook(h) => OperationStatus::Removing(format!("hook: {h}")),
-                    RemoveStage::UnlinkingBinaries => {
-                        OperationStatus::Removing("unlinking binaries".into())
-                    }
-                    RemoveStage::UnlinkingDesktop => {
-                        OperationStatus::Removing("unlinking desktop".into())
-                    }
-                    RemoveStage::UnlinkingIcons => {
-                        OperationStatus::Removing("unlinking icons".into())
-                    }
-                    RemoveStage::RemovingDirectory => {
-                        OperationStatus::Removing("removing directory".into())
-                    }
-                    RemoveStage::CleaningDatabase => {
-                        OperationStatus::Removing("cleaning database".into())
-                    }
-                    RemoveStage::Complete { .. } => OperationStatus::Removing("complete".into()),
-                };
-                self.apply_soar_status(&pkg_name, status);
-            }
-            SoarEvent::OperationComplete { pkg_name, .. } => {
-                self.apply_soar_status(&pkg_name, OperationStatus::Completed);
-            }
-            SoarEvent::OperationFailed {
-                pkg_name, error, ..
-            } => {
-                self.apply_soar_status(&pkg_name, OperationStatus::Failed(error));
-            }
-            _ => {}
-        }
-    }
+    fn drain_progress(&mut self, cx: &mut Context<Self>) {
+        use crate::core::adapter::{ProgressEvent, progress_key};
+        use soar_events::{InstallStage, RemoveStage, SoarEvent, VerifyStage};
 
-    fn apply_soar_status(&mut self, pkg_name: &str, status: OperationStatus) {
-        // Update per-package progress
-        self.package_progress
-            .insert(pkg_name.to_string(), status.clone());
+        let mut had_events = false;
 
-        // Update global active_operation with current package context
-        if let Some(op) = self.active_operation.as_mut() {
-            op.package_name = pkg_name.to_string();
-            op.status = status;
-        }
-    }
-
-    fn handle_progress_event(&mut self, event: crate::core::adapter::ProgressEvent) {
-        use crate::core::adapter::ProgressEvent;
-        match event {
-            ProgressEvent::Download {
-                current_bytes,
-                total_bytes,
-                ..
-            } => {
-                if let Some(op) = self.operations.last_mut() {
-                    op.status = OperationStatus::Downloading {
+        // Drain ProgressEvent channel (from WASM adapters)
+        while let Ok(event) = self.progress_receiver.try_recv() {
+            had_events = true;
+            match event {
+                ProgressEvent::Download {
+                    adapter_id,
+                    package_id,
+                    current_bytes,
+                    total_bytes,
+                } => {
+                    let key = progress_key(&adapter_id, &package_id);
+                    let status = OperationStatus::Downloading {
                         current: current_bytes,
                         total: total_bytes,
                     };
+                    self.browse_state
+                        .package_progress
+                        .insert(key.clone(), status.clone());
+                    self.installed_state.package_progress.insert(key, status);
                 }
-            }
-            ProgressEvent::Phase { phase, .. } => {
-                if let Some(op) = self.operations.last_mut() {
-                    op.status = OperationStatus::Installing(phase);
+                ProgressEvent::Phase {
+                    adapter_id,
+                    package_id,
+                    phase,
+                    ..
+                } => {
+                    let key = progress_key(&adapter_id, &package_id);
+                    let status = OperationStatus::Installing(phase);
+                    self.browse_state
+                        .package_progress
+                        .insert(key.clone(), status.clone());
+                    self.installed_state.package_progress.insert(key, status);
                 }
-            }
-            ProgressEvent::Status { message, .. } => {
-                if let Some(op) = self.operations.last_mut() {
-                    op.status = OperationStatus::Installing(message);
+                ProgressEvent::Completed {
+                    adapter_id,
+                    package_id,
+                } => {
+                    let key = progress_key(&adapter_id, &package_id);
+                    self.browse_state
+                        .package_progress
+                        .insert(key.clone(), OperationStatus::Completed);
+                    self.installed_state
+                        .package_progress
+                        .insert(key, OperationStatus::Completed);
+                    for pkg in &mut self.browse_state.search_results {
+                        if pkg.id == package_id && pkg.adapter_id == adapter_id {
+                            pkg.installed = true;
+                        }
+                    }
                 }
-            }
-            ProgressEvent::Completed { .. } => {
-                if let Some(op) = self.operations.last_mut() {
-                    op.status = OperationStatus::Completed;
+                ProgressEvent::Failed {
+                    adapter_id,
+                    package_id,
+                    error,
+                } => {
+                    let key = progress_key(&adapter_id, &package_id);
+                    let status = OperationStatus::Failed(error);
+                    self.browse_state
+                        .package_progress
+                        .insert(key.clone(), status.clone());
+                    self.installed_state.package_progress.insert(key, status);
                 }
-            }
-            ProgressEvent::Failed { error, .. } => {
-                if let Some(op) = self.operations.last_mut() {
-                    op.status = OperationStatus::Failed(error);
+                ProgressEvent::Status { message, .. } => {
+                    log::info!("Progress status: {message}");
                 }
+                ProgressEvent::BatchProgress { .. } => {}
             }
-            ProgressEvent::BatchProgress { .. } => {}
+        }
+
+        // Drain SoarEvent channel (from soar adapter)
+        while let Ok(event) = self.event_receiver.try_recv() {
+            had_events = true;
+            match event {
+                SoarEvent::DownloadStarting { pkg_id, total, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let status = OperationStatus::Downloading { current: 0, total };
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::DownloadProgress {
+                    pkg_id,
+                    current,
+                    total,
+                    ..
+                }
+                | SoarEvent::DownloadResuming {
+                    pkg_id,
+                    current,
+                    total,
+                    ..
+                } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let status = OperationStatus::Downloading { current, total };
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::DownloadComplete { pkg_id, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let status = OperationStatus::Installing("Download complete".into());
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::Verifying { pkg_id, stage, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let label = match stage {
+                            VerifyStage::Checksum => "Verifying checksum",
+                            VerifyStage::Signature => "Verifying signature",
+                            VerifyStage::Passed => "Verification passed",
+                            VerifyStage::Failed(_) => "Verification failed",
+                        };
+                        let status = OperationStatus::Verifying(label.into());
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::Installing { pkg_id, stage, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let label = match &stage {
+                            InstallStage::Extracting => "Extracting".to_string(),
+                            InstallStage::ExtractingNested => "Extracting nested".to_string(),
+                            InstallStage::LinkingBinaries => "Linking binaries".to_string(),
+                            InstallStage::DesktopIntegration => "Desktop integration".to_string(),
+                            InstallStage::SetupPortable => "Setting up portable".to_string(),
+                            InstallStage::RecordingDatabase => "Recording to database".to_string(),
+                            InstallStage::RunningHook(h) => format!("Running hook: {h}"),
+                            InstallStage::Complete => "Complete".to_string(),
+                        };
+                        let status = OperationStatus::Installing(label);
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::Removing { pkg_id, stage, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let label = match &stage {
+                            RemoveStage::RunningHook(h) => format!("Running hook: {h}"),
+                            RemoveStage::UnlinkingBinaries => "Unlinking binaries".to_string(),
+                            RemoveStage::UnlinkingDesktop => "Unlinking desktop files".to_string(),
+                            RemoveStage::UnlinkingIcons => "Unlinking icons".to_string(),
+                            RemoveStage::RemovingDirectory => "Removing directory".to_string(),
+                            RemoveStage::CleaningDatabase => "Cleaning database".to_string(),
+                            RemoveStage::Complete { .. } => "Complete".to_string(),
+                        };
+                        let status = OperationStatus::Removing(label);
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::OperationComplete { pkg_id, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), OperationStatus::Completed);
+                        self.installed_state
+                            .package_progress
+                            .insert(key, OperationStatus::Completed);
+                    }
+                }
+                SoarEvent::OperationFailed { pkg_id, error, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let status = OperationStatus::Failed(error);
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                SoarEvent::DownloadRetry { pkg_id, .. }
+                | SoarEvent::DownloadAborted { pkg_id, .. } => {
+                    if let Some(key) = self.soar_progress_key(&pkg_id) {
+                        let status = OperationStatus::Failed("Download failed".into());
+                        self.browse_state
+                            .package_progress
+                            .insert(key.clone(), status.clone());
+                        self.installed_state.package_progress.insert(key, status);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if had_events {
+            cx.notify();
         }
     }
 
-    fn progress_bar_view(&self, op: &ActiveOperation) -> Element<'_, Message> {
-        let label =
-            text(format!("{} {}", op.operation_type, op.package_name)).size(font_size::SMALL);
-        let status = text(op.status.label()).size(font_size::CAPTION + 1.0);
-
-        let mut content = column![label, status]
-            .spacing(spacing::XXS)
-            .padding([10.0, spacing::LG]);
-
-        if let Some(progress) = op.status.progress() {
-            content = content.push(progress_bar(0.0..=1.0, progress));
-        }
-
-        container(content)
-            .width(Length::Fill)
-            .style(styles::progress_container)
-            .into()
-    }
-
-    fn progress_panel_view(&self) -> Element<'_, Message> {
-        let mut col = column![].spacing(spacing::XXS);
-
-        for op in &self.operations {
-            let label =
-                text(format!("{} {}", op.operation_type, op.package_name)).size(font_size::SMALL);
-            let status = text(op.status.label()).size(font_size::CAPTION + 1.0);
-
-            let mut op_content = column![label, status]
-                .spacing(spacing::XXS)
-                .padding([10.0, spacing::LG]);
-
-            if let Some(progress) = op.status.progress() {
-                op_content = op_content.push(progress_bar(0.0..=1.0, progress));
+    /// Find the progress key for a soar package by matching its pkg_id suffix
+    /// against browse/installed search results.
+    fn soar_progress_key(&self, soar_pkg_id: &str) -> Option<String> {
+        use crate::core::adapter::progress_key;
+        // Browse results: aeris id = "{repo_name}.{pkg_id}", try matching by suffix
+        for pkg in &self.browse_state.search_results {
+            if pkg.adapter_id == "soar" && pkg.id.ends_with(soar_pkg_id) {
+                return Some(progress_key("soar", &pkg.id));
             }
-
-            col = col.push(op_content);
         }
-
-        for queued in &self.operation_queue {
-            let action_label = match &queued.action {
-                message::ConfirmAction::Install(pkg, _) => format!("Install {}", pkg.name),
-                message::ConfirmAction::Remove(pkg, _) => format!("Remove {}", pkg.name),
-                message::ConfirmAction::Update(pkg, _) => format!("Update {}", pkg.name),
-                message::ConfirmAction::UpdateAll(_) => "Update All".into(),
-                message::ConfirmAction::BatchInstall(pkgs, _) => {
-                    format!("Install {} packages", pkgs.len())
-                }
-                message::ConfirmAction::BatchRemove(pkgs, _) => {
-                    format!("Remove {} packages", pkgs.len())
-                }
-                message::ConfirmAction::BatchUpdate(pkgs, _) => {
-                    format!("Update {} packages", pkgs.len())
-                }
-            };
-
-            let queued_id = queued.id;
-            let queued_row = row![
-                text(action_label).size(font_size::SMALL),
-                container(text("Queued").size(font_size::BADGE))
-                    .padding([spacing::XXXS, spacing::XS])
-                    .style(styles::badge_neutral),
-                space().width(Length::Fill),
-                button(text("\u{00d7}").size(font_size::BODY))
-                    .on_press(Message::CancelQueuedOperation(queued_id))
-                    .style(styles::header_icon_button)
-                    .padding([spacing::XXXS, spacing::XS]),
-            ]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center)
-            .padding([spacing::XS, spacing::LG]);
-
-            col = col.push(queued_row);
+        // Installed packages
+        for pkg in &self.installed_state.packages {
+            if pkg.package.adapter_id == "soar" && pkg.package.id.ends_with(soar_pkg_id) {
+                return Some(progress_key("soar", &pkg.package.id));
+            }
         }
-
-        container(col)
-            .width(Length::Fill)
-            .style(styles::progress_container)
-            .into()
-    }
-
-    fn toast_overlay_view(&self) -> Element<'_, Message> {
-        let mut toast_col = column![].spacing(spacing::XS);
-
-        for toast in &self.toasts {
-            let toast_id = toast.id;
-            let style = match toast.level {
-                ToastLevel::Success => {
-                    styles::badge_success as fn(&iced::Theme) -> container::Style
-                }
-                ToastLevel::Error => styles::error_banner,
-                ToastLevel::Info => styles::badge_neutral,
-            };
-
-            let dismiss_btn = button(text("\u{00d7}").size(font_size::BODY))
-                .on_press(Message::DismissToast(toast_id))
-                .style(styles::header_icon_button)
-                .padding([spacing::XXXS, spacing::XS]);
-
-            let toast_row = container(
-                row![
-                    text(toast.message.clone()).size(font_size::SMALL),
-                    space().width(Length::Fill),
-                    dismiss_btn,
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center)
-                .padding([spacing::SM, spacing::MD]),
-            )
-            .style(styles::toast_container)
-            .width(320);
-
-            toast_col = toast_col.push(toast_row);
-        }
-
-        container(toast_col)
-            .width(Length::Fill)
-            .align_x(Alignment::End)
-            .padding(spacing::MD)
-            .into()
-    }
-
-    pub fn theme(&self) -> Option<iced::Theme> {
-        crate::theme::resolve_theme(self.selected_theme)
+        // Fallback: use soar_pkg_id directly
+        Some(progress_key("soar", soar_pkg_id))
     }
 }
 
-fn modal<'a>(
-    base: impl Into<Element<'a, Message>>,
-    content: impl Into<Element<'a, Message>>,
-    on_blur: Message,
-) -> Element<'a, Message> {
-    stack![
-        base.into(),
-        opaque(mouse_area(center(opaque(content)).style(styles::modal_backdrop)).on_press(on_blur))
-    ]
-    .into()
+impl Render for App {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::current_theme(self.selected_theme);
+
+        // Cleanup expired toasts
+        self.cleanup_toasts();
+
+        let mut root = div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .bg(theme.bg)
+            .text_color(theme.text)
+            .font_family("system-ui")
+            .child(self.render_sidebar(&theme, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(self.render_header(&theme, cx))
+                    .child(self.render_content(&theme, cx)),
+            );
+
+        // Toast overlay
+        if !self.toasts.is_empty() {
+            let toast_elements: Vec<Div> = self
+                .toasts
+                .iter()
+                .map(|toast| {
+                    let (bg, border_color) = match toast.level {
+                        ToastLevel::Success => {
+                            (theme.success.opacity(0.15), theme.success.opacity(0.3))
+                        }
+                        ToastLevel::Error => {
+                            (theme.danger.opacity(0.15), theme.danger.opacity(0.3))
+                        }
+                        ToastLevel::Info => {
+                            (theme.primary.opacity(0.15), theme.primary.opacity(0.3))
+                        }
+                    };
+                    div()
+                        .px(px(styles::spacing::LG))
+                        .py(px(styles::spacing::SM))
+                        .rounded(px(styles::radius::MD))
+                        .bg(bg)
+                        .border_1()
+                        .border_color(border_color)
+                        .text_size(px(styles::font_size::SMALL))
+                        .child(toast.message.clone())
+                })
+                .collect();
+
+            root = root.child(
+                div()
+                    .absolute()
+                    .bottom(px(styles::spacing::XL))
+                    .right(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .gap(px(styles::spacing::SM))
+                    .children(toast_elements),
+            );
+        }
+
+        // Confirm dialog overlay
+        if let Some(ref action) = self.confirm_dialog.clone() {
+            let message = match action {
+                ConfirmAction::Install(pkg, _) => format!("Install {}?", pkg.name),
+                ConfirmAction::Remove(pkg, _) => format!("Remove {}?", pkg.name),
+                ConfirmAction::Update(pkg, _) => format!("Update {}?", pkg.name),
+                ConfirmAction::UpdateAll(_) => "Update all packages?".to_string(),
+                ConfirmAction::BatchInstall(pkgs, _) => {
+                    format!("Install {} packages?", pkgs.len())
+                }
+                ConfirmAction::BatchRemove(pkgs, _) => {
+                    format!("Remove {} packages?", pkgs.len())
+                }
+                ConfirmAction::BatchUpdate(pkgs, _) => {
+                    format!("Update {} packages?", pkgs.len())
+                }
+            };
+
+            let confirm_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                if let Some(action) = app.confirm_dialog.take() {
+                    app.execute_confirmed_action(action, cx);
+                }
+            });
+            let cancel_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
+                app.confirm_dialog = None;
+            });
+
+            let surface = theme.surface;
+            let border = theme.border;
+            let primary = theme.primary;
+            let hover = theme.hover;
+
+            root = root.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.5,
+                    })
+                    .child(
+                        div()
+                            .p(px(styles::spacing::XXL))
+                            .rounded(px(styles::radius::LG))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .flex()
+                            .flex_col()
+                            .gap(px(styles::spacing::LG))
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::HEADING))
+                                    .child(message),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(styles::spacing::SM))
+                                    .justify_end()
+                                    .child(
+                                        div()
+                                            .id("confirm-cancel")
+                                            .px(px(styles::spacing::LG))
+                                            .py(px(styles::spacing::XS))
+                                            .rounded(px(styles::radius::MD))
+                                            .bg(surface)
+                                            .border_1()
+                                            .border_color(border)
+                                            .cursor_pointer()
+                                            .hover(move |s| s.bg(hover))
+                                            .on_click(cancel_listener)
+                                            .child("Cancel"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("confirm-ok")
+                                            .px(px(styles::spacing::LG))
+                                            .py(px(styles::spacing::XS))
+                                            .rounded(px(styles::radius::MD))
+                                            .bg(primary)
+                                            .text_color(gpui::white())
+                                            .cursor_pointer()
+                                            .on_click(confirm_listener)
+                                            .child("Confirm"),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        root
+    }
+}
+
+impl App {
+    fn render_sidebar(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.current_view;
+        let nav_items: [(View, &str); 6] = [
+            (View::Dashboard, "Dashboard"),
+            (View::Browse, "Browse"),
+            (View::Installed, "Installed"),
+            (View::Updates, "Updates"),
+            (View::AdapterInfo, "Adapters"),
+            (View::Settings, "Settings"),
+        ];
+
+        let nav_listeners: Vec<_> = nav_items
+            .iter()
+            .map(|(view, _)| {
+                let view = *view;
+                cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                    app.current_view = view;
+                    if view == View::AdapterInfo {
+                        let any_loaded = app.adapter_view.repos_loaded.values().any(|v| *v);
+                        if !any_loaded {
+                            app.load_repos(cx);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let hover_color = theme.hover;
+        let primary = theme.primary;
+        let text_color = theme.text;
+
+        div()
+            .w(px(200.0))
+            .flex()
+            .flex_col()
+            .bg(theme.surface)
+            .border_r_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .px(px(styles::spacing::LG))
+                    .py(px(styles::spacing::XL))
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::TITLE))
+                            .font_weight(FontWeight::BOLD)
+                            .child(APP_NAME),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(styles::spacing::XXS))
+                    .px(px(styles::spacing::SM))
+                    .children(nav_items.into_iter().zip(nav_listeners).map(
+                        move |((view, label), listener)| {
+                            let is_active = current == view;
+                            let bg = if is_active {
+                                primary
+                            } else {
+                                transparent_black()
+                            };
+                            let text = if is_active { gpui::white() } else { text_color };
+
+                            div()
+                                .id(SharedString::from(format!("nav-{label}")))
+                                .px(px(styles::spacing::MD))
+                                .py(px(styles::spacing::SM))
+                                .rounded(px(styles::radius::MD))
+                                .bg(bg)
+                                .text_color(text)
+                                .cursor_pointer()
+                                .hover(move |s| if is_active { s } else { s.bg(hover_color) })
+                                .on_click(listener)
+                                .child(label)
+                        },
+                    )),
+            )
+    }
+
+    fn render_header(&mut self, theme: &theme::Theme, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mode_label = match self.current_mode {
+            PackageMode::User => "User",
+            PackageMode::System => "System",
+        };
+
+        // Active operation indicator
+        let op_indicator = if let Some(ref op) = self.active_operation {
+            Some(
+                div()
+                    .px(px(styles::spacing::MD))
+                    .py(px(styles::spacing::XXS))
+                    .rounded(px(styles::radius::FULL))
+                    .bg(theme.warning.opacity(0.2))
+                    .text_size(px(styles::font_size::CAPTION))
+                    .child(format!("{}: {}", op.operation_type, op.status.label())),
+            )
+        } else {
+            None
+        };
+
+        let mut header = div()
+            .w_full()
+            .px(px(styles::spacing::XXL))
+            .py(px(styles::spacing::MD))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .bg(theme.surface)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("{}", self.current_view)),
+            );
+
+        if let Some(indicator) = op_indicator {
+            header = header.child(indicator);
+        }
+
+        header.child(
+            div()
+                .px(px(styles::spacing::MD))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::FULL))
+                .bg(theme.primary)
+                .text_color(gpui::white())
+                .text_size(px(styles::font_size::CAPTION))
+                .child(mode_label),
+        )
+    }
+
+    fn render_content(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> Div {
+        let wrapper = div().flex_1();
+
+        match self.current_view {
+            View::Dashboard => wrapper.child(self.render_dashboard(theme, cx)),
+            View::Browse => wrapper.child(self.render_browse(theme, cx)),
+            View::Installed => wrapper.child(self.render_installed(theme, cx)),
+            View::Updates => wrapper.child(self.render_updates(theme, cx)),
+            View::AdapterInfo => wrapper.child(self.render_adapter_info(theme, cx)),
+            View::Settings => wrapper.child(self.render_settings(theme, cx)),
+        }
+    }
+
+    fn execute_confirmed_action(&mut self, action: ConfirmAction, cx: &mut Context<Self>) {
+        match action {
+            ConfirmAction::Install(pkg, mode) => {
+                self.install_package(pkg, mode, cx);
+            }
+            ConfirmAction::Remove(pkg, mode) => {
+                self.remove_package(pkg, mode, cx);
+            }
+            ConfirmAction::Update(pkg, mode) => {
+                self.update_package(pkg, mode, cx);
+            }
+            ConfirmAction::UpdateAll(mode) => {
+                self.update_all(cx);
+            }
+            ConfirmAction::BatchInstall(pkgs, mode) => {
+                self.batch_install(pkgs, mode, cx);
+            }
+            ConfirmAction::BatchRemove(pkgs, mode) => {
+                self.batch_remove(pkgs, mode, cx);
+            }
+            ConfirmAction::BatchUpdate(pkgs, mode) => {
+                self.batch_update(pkgs, mode, cx);
+            }
+        }
+    }
+
+    pub(crate) fn install_package(
+        &mut self,
+        pkg: crate::core::package::Package,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
+        let pkg_id = pkg.id.clone();
+        let pkg_name = pkg.name.clone();
+        let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+        self.browse_state.installing = Some(pkg_id.clone());
+        self.browse_state
+            .package_progress
+            .insert(progress_key.clone(), OperationStatus::Starting);
+        let progress_sender = self.progress_sender.clone();
+        let adapter = self.adapter_manager.get_adapter(&pkg.adapter_id);
+
+        if let Some(adapter) = adapter {
+            cx.spawn(
+                async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    let result = crate::tokio_spawn(async move {
+                        adapter.install(&[pkg], Some(progress_sender), mode).await
+                    })
+                    .await;
+
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            app.browse_state.installing = None;
+                            match result {
+                                Ok(Ok(_)) => {
+                                    // Mark as installed in search results
+                                    for p in &mut app.browse_state.search_results {
+                                        if p.id == pkg_id {
+                                            p.installed = true;
+                                        }
+                                    }
+                                    app.browse_state.package_progress.remove(&progress_key);
+                                    app.add_toast(
+                                        ToastLevel::Success,
+                                        format!("Installed {pkg_name}"),
+                                    );
+                                    // Refresh installed list
+                                    app.installed_state.loaded = false;
+                                }
+                                Ok(Err(e)) => {
+                                    app.browse_state.package_progress.insert(
+                                        progress_key.clone(),
+                                        OperationStatus::Failed(format!("{e}")),
+                                    );
+                                    app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to install {pkg_name}: {e}"),
+                                    );
+                                }
+                                Err(e) => {
+                                    app.browse_state.package_progress.insert(
+                                        progress_key.clone(),
+                                        OperationStatus::Failed(format!("{e}")),
+                                    );
+                                }
+                            }
+                            app.browse_state.result_version += 1;
+                            cx.notify();
+                        })
+                    });
+                },
+            )
+            .detach();
+        }
+    }
+
+    pub(crate) fn remove_package(
+        &mut self,
+        pkg: crate::core::package::Package,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
+        let pkg_name = pkg.name.clone();
+        let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+        self.installed_state.removing = Some(pkg.id.clone());
+        self.installed_state
+            .package_progress
+            .insert(progress_key.clone(), OperationStatus::Starting);
+        let progress_sender = self.progress_sender.clone();
+        let adapter = self.adapter_manager.get_adapter(&pkg.adapter_id);
+
+        if let Some(adapter) = adapter {
+            cx.spawn(
+                async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    let result = crate::tokio_spawn(async move {
+                        adapter.remove(&[pkg], Some(progress_sender), mode).await
+                    })
+                    .await;
+
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            app.installed_state.removing = None;
+                            app.installed_state.package_progress.remove(&progress_key);
+                            match result {
+                                Ok(Ok(_)) => {
+                                    app.add_toast(
+                                        ToastLevel::Success,
+                                        format!("Removed {pkg_name}"),
+                                    );
+                                }
+                                Ok(Err(e)) => {
+                                    app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to remove {pkg_name}: {e}"),
+                                    );
+                                }
+                                Err(e) => {
+                                    app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to remove {pkg_name}: {e}"),
+                                    );
+                                }
+                            }
+                            app.installed_state.result_version += 1;
+                            app.load_installed(cx);
+                        })
+                    });
+                },
+            )
+            .detach();
+        }
+    }
+
+    fn update_package(
+        &mut self,
+        pkg: crate::core::package::Package,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.updates_state.updating = Some(pkg.id.clone());
+        let progress_sender = self.progress_sender.clone();
+        let adapter = self.adapter_manager.get_adapter(&pkg.adapter_id);
+
+        if let Some(adapter) = adapter {
+            cx.spawn(
+                async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    crate::tokio_spawn(async move {
+                        match adapter.update(&[pkg], Some(progress_sender), mode).await {
+                            Ok(_) => log::info!("Update completed"),
+                            Err(e) => log::error!("Update failed: {e}"),
+                        }
+                    })
+                    .await
+                    .unwrap_or_default();
+
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |app, cx| {
+                            app.updates_state.updating = None;
+                            app.updates_state.result_version += 1;
+                            cx.notify();
+                        })
+                    });
+                },
+            )
+            .detach();
+        }
+    }
+
+    fn batch_install(
+        &mut self,
+        pkgs: Vec<crate::core::package::Package>,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.browse_state.installing = Some("__batch__".to_string());
+        let progress_sender = self.progress_sender.clone();
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in pkgs {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg);
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .install(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Batch install completed for {adapter_id}"),
+                                Err(e) => log::error!("Batch install failed for {adapter_id}: {e}"),
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.browse_state.installing = None;
+                        app.browse_state.result_version += 1;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    fn batch_remove(
+        &mut self,
+        pkgs: Vec<crate::core::package::Package>,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.installed_state.removing = Some("__batch__".to_string());
+        let progress_sender = self.progress_sender.clone();
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in pkgs {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg);
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .remove(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Batch remove completed for {adapter_id}"),
+                                Err(e) => log::error!("Batch remove failed for {adapter_id}: {e}"),
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.installed_state.removing = None;
+                        app.installed_state.result_version += 1;
+                        app.load_installed(cx);
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    fn batch_update(
+        &mut self,
+        pkgs: Vec<crate::core::package::Package>,
+        mode: PackageMode,
+        cx: &mut Context<Self>,
+    ) {
+        self.updates_state.updating = Some("__batch__".to_string());
+        let progress_sender = self.progress_sender.clone();
+        let manager_adapters: Vec<Arc<dyn Adapter>> = self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
+            .collect();
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                crate::tokio_spawn(async move {
+                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
+                        HashMap::new();
+                    for pkg in pkgs {
+                        by_adapter
+                            .entry(pkg.adapter_id.clone())
+                            .or_default()
+                            .push(pkg);
+                    }
+
+                    for (adapter_id, pkgs) in by_adapter {
+                        if let Some(adapter) =
+                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
+                        {
+                            match adapter
+                                .update(&pkgs, Some(progress_sender.clone()), mode)
+                                .await
+                            {
+                                Ok(_) => log::info!("Batch update completed for {adapter_id}"),
+                                Err(e) => log::error!("Batch update failed for {adapter_id}: {e}"),
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_default();
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.updates_state.updating = None;
+                        app.updates_state.result_version += 1;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
 }
