@@ -2144,7 +2144,7 @@ impl Render for App {
                 .flex()
                 .flex_col()
                 .gap(px(styles::spacing::SM))
-                .min_w(px(380.0))
+                .w(px(640.0))
                 .child(
                     div()
                         .text_size(px(styles::font_size::HEADING))
@@ -2188,9 +2188,12 @@ impl Render for App {
                         .flex_row()
                         .gap(px(styles::spacing::SM))
                         .items_center()
+                        .w_full()
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
                                 .px(px(styles::spacing::MD))
                                 .py(px(10.0))
                                 .rounded(px(styles::radius::MD))
