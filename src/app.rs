@@ -1492,7 +1492,7 @@ impl App {
             )
     }
 
-    fn render_header(&mut self, theme: &theme::Theme, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mode_label = match self.current_mode {
             PackageMode::User => "User",
             PackageMode::System => "System",
@@ -1535,16 +1535,37 @@ impl App {
             header = header.child(indicator);
         }
 
+        let toggle_mode = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.toggle_mode(cx);
+        });
+
         header.child(
             div()
+                .id("mode-toggle")
                 .px(px(styles::spacing::MD))
                 .py(px(styles::spacing::XXS))
                 .rounded(px(styles::radius::FULL))
                 .bg(theme.primary)
                 .text_color(gpui::white())
                 .text_size(px(styles::font_size::CAPTION))
+                .cursor_pointer()
+                .on_click(toggle_mode)
                 .child(mode_label),
         )
+    }
+
+    pub(crate) fn toggle_mode(&mut self, cx: &mut Context<Self>) {
+        self.current_mode = match self.current_mode {
+            PackageMode::User => PackageMode::System,
+            PackageMode::System => PackageMode::User,
+        };
+        // Invalidate per-view caches so they reload for the new mode
+        self.installed_state.loaded = false;
+        self.installed_state.packages.clear();
+        self.updates_state.checked = false;
+        self.updates_state.updates.clear();
+        self.updates_state.no_update_listing.clear();
+        cx.notify();
     }
 
     fn render_content(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> Div {
