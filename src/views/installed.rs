@@ -336,10 +336,10 @@ impl App {
             .unwrap_or(false);
 
         if can_run {
-            let run_pkg = pkg.package.clone();
+            let run_installed = pkg.clone();
             let run_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
                 cx.stop_propagation();
-                app.run_package(run_pkg.clone(), cx);
+                app.run_installed(run_installed.clone(), cx);
             });
             buttons = buttons.child(
                 div()

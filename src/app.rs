@@ -159,6 +159,39 @@ pub struct Toast {
     pub duration: Duration,
 }
 
+#[derive(Debug, Clone)]
+pub struct RunPicker {
+    pub package_name: String,
+    /// Absolute paths of executable candidates inside the install dir.
+    pub binaries: Vec<std::path::PathBuf>,
+}
+
+/// List regular files inside `dir` that are executable (Unix +x).
+pub(crate) fn list_executables(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut out = Vec::new();
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        out.push(path);
+    }
+    out.sort();
+    out
+}
+
 #[derive(Default)]
 pub struct AdapterViewState {
     pub registry_plugins: Vec<PluginEntry>,
@@ -184,6 +217,7 @@ pub struct App {
     pub(crate) adapter_manager: AdapterManager,
     pub(crate) adapter_view: AdapterViewState,
     pub(crate) confirm_dialog: Option<ConfirmAction>,
+    pub(crate) run_picker: Option<RunPicker>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
     package_progress: HashMap<String, OperationStatus>,
@@ -276,6 +310,7 @@ impl App {
             adapter_manager,
             adapter_view: AdapterViewState::default(),
             confirm_dialog: None,
+            run_picker: None,
             event_receiver,
             active_operation: None,
             package_progress: HashMap::new(),
@@ -1066,37 +1101,75 @@ impl App {
         cx.notify();
     }
 
-    pub fn run_package(&mut self, pkg: crate::core::package::Package, cx: &mut Context<Self>) {
-        let adapter = match self.adapter_manager.get_adapter(&pkg.adapter_id) {
+    /// Run an installed package by enumerating executables in its install_path.
+    /// 0 → error toast; 1 → spawn directly; many → open a RunPicker overlay.
+    pub fn run_installed(
+        &mut self,
+        installed: crate::core::package::InstalledPackage,
+        cx: &mut Context<Self>,
+    ) {
+        let install_path = match installed.install_path.as_deref() {
+            Some(p) => std::path::PathBuf::from(p),
+            None => {
+                self.add_toast(
+                    ToastLevel::Error,
+                    format!("No install path for {}", installed.package.name),
+                );
+                return;
+            }
+        };
+
+        let adapter = match self
+            .adapter_manager
+            .get_adapter(&installed.package.adapter_id)
+        {
             Some(a) => a,
             None => return,
         };
         if !adapter.capabilities().can_run {
             self.add_toast(
                 ToastLevel::Error,
-                format!("{} does not support running packages", pkg.adapter_id),
+                format!(
+                    "{} does not support running packages",
+                    installed.package.adapter_id
+                ),
             );
             return;
         }
-        let pkg_name = pkg.name.clone();
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let result =
-                    crate::tokio_spawn(async move { adapter.run_package(&pkg, &[]).await })
-                        .await
-                        .unwrap_or_else(|e| {
-                            Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
-                        });
-                let _ = cx.update(|cx| {
-                    this.update(cx, |app, _| match result {
-                        Ok(_) => app.add_toast(ToastLevel::Info, format!("Launched {pkg_name}")),
-                        Err(e) => app
-                            .add_toast(ToastLevel::Error, format!("Failed to run {pkg_name}: {e}")),
-                    })
+
+        let binaries = list_executables(&install_path);
+        match binaries.len() {
+            0 => self.add_toast(
+                ToastLevel::Error,
+                format!("No executable found in {}", install_path.display()),
+            ),
+            1 => {
+                let path = binaries.into_iter().next().unwrap();
+                self.spawn_binary(&path);
+            }
+            _ => {
+                self.run_picker = Some(RunPicker {
+                    package_name: installed.package.name.clone(),
+                    binaries,
                 });
-            },
-        )
-        .detach();
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn spawn_binary(&mut self, path: &std::path::Path) {
+        let label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("binary")
+            .to_string();
+        match std::process::Command::new(path).spawn() {
+            Ok(_) => self.add_toast(ToastLevel::Info, format!("Launched {label}")),
+            Err(e) => self.add_toast(
+                ToastLevel::Error,
+                format!("Failed to run {}: {e}", path.display()),
+            ),
+        }
     }
 
     pub fn load_package_detail(
@@ -1590,6 +1663,109 @@ impl Render for App {
                             ),
                     ),
             );
+        }
+
+        // Run picker overlay (multi-binary packages)
+        if let Some(picker) = self.run_picker.clone() {
+            let surface = theme.surface;
+            let border = theme.border;
+            let primary = theme.primary;
+            let hover = theme.hover;
+            let text_muted = theme.text_muted;
+
+            let cancel_picker = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.run_picker = None;
+                cx.notify();
+            });
+
+            let mut binary_buttons = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::XS))
+                .w_full();
+
+            for (idx, path) in picker.binaries.iter().enumerate() {
+                let path_clone = path.clone();
+                let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                    app.spawn_binary(&path_clone);
+                    app.run_picker = None;
+                    cx.notify();
+                });
+                let label = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                binary_buttons = binary_buttons.child(
+                    div()
+                        .id(SharedString::from(format!("run-pick-{idx}")))
+                        .px(px(styles::spacing::MD))
+                        .py(px(styles::spacing::SM))
+                        .rounded(px(styles::radius::MD))
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(listener)
+                        .child(label),
+                );
+            }
+
+            root =
+                root.child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(Hsla {
+                            h: 0.0,
+                            s: 0.0,
+                            l: 0.0,
+                            a: 0.5,
+                        })
+                        .child(
+                            div()
+                                .p(px(styles::spacing::XXL))
+                                .rounded(px(styles::radius::LG))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .flex()
+                                .flex_col()
+                                .gap(px(styles::spacing::LG))
+                                .min_w(px(360.0))
+                                .child(div().text_size(px(styles::font_size::HEADING)).child(
+                                    format!("Run {} — choose a binary", picker.package_name),
+                                ))
+                                .child(
+                                    div()
+                                        .text_size(px(styles::font_size::CAPTION))
+                                        .text_color(text_muted)
+                                        .child(format!(
+                                            "{} executables found",
+                                            picker.binaries.len()
+                                        )),
+                                )
+                                .child(binary_buttons)
+                                .child(
+                                    div().flex().flex_row().justify_end().child(
+                                        div()
+                                            .id("run-picker-cancel")
+                                            .px(px(styles::spacing::LG))
+                                            .py(px(styles::spacing::XS))
+                                            .rounded(px(styles::radius::MD))
+                                            .bg(primary)
+                                            .text_color(gpui::white())
+                                            .cursor_pointer()
+                                            .on_click(cancel_picker)
+                                            .child("Cancel"),
+                                    ),
+                                ),
+                        ),
+                );
         }
 
         root
