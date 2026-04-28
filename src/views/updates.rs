@@ -99,6 +99,28 @@ impl App {
             );
         }
 
+        // Sync button
+        let sync_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.sync_all_repos(cx);
+        });
+        let syncing = self.adapter_view.syncing.is_some();
+        let sync_label = if syncing { "Syncing..." } else { "Sync" };
+        header_buttons = header_buttons.child(
+            div()
+                .id("updates-sync-btn")
+                .px(px(14.0))
+                .py(px(styles::spacing::XS))
+                .rounded(px(styles::radius::MD))
+                .bg(surface)
+                .border_1()
+                .border_color(border)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::SMALL))
+                .hover(move |s| s.bg(hover))
+                .on_click(sync_listener)
+                .child(sync_label),
+        );
+
         header_row = header_row.child(header_buttons);
 
         // Content

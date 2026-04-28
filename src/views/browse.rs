@@ -74,10 +74,39 @@ impl App {
             String::new()
         };
 
+        let sync_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.sync_all_repos(cx);
+        });
+        let syncing = self.adapter_view.syncing.is_some();
+        let sync_label = if syncing { "Syncing..." } else { "Sync" };
+
         let result_count = div()
-            .text_size(px(styles::font_size::SMALL))
-            .text_color(text_muted)
-            .child(result_count_text);
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(text_muted)
+                    .child(result_count_text),
+            )
+            .child(
+                div()
+                    .id("browse-sync")
+                    .px(px(14.0))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::SMALL))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(sync_listener)
+                    .child(sync_label),
+            );
 
         // Results content
         let results_content = if self.browse_state.loading {

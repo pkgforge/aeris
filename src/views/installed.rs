@@ -51,6 +51,11 @@ impl App {
         let refresh_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.load_installed(cx);
         });
+        let sync_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.sync_all_repos(cx);
+        });
+        let syncing = self.adapter_view.syncing.is_some();
+        let sync_label = if syncing { "Syncing..." } else { "Sync" };
 
         let header = div()
             .flex()
@@ -61,18 +66,39 @@ impl App {
             .child(div().text_size(px(styles::font_size::TITLE)).child(title))
             .child(
                 div()
-                    .id("installed-refresh")
-                    .px(px(14.0))
-                    .py(px(styles::spacing::XS))
-                    .rounded(px(styles::radius::MD))
-                    .bg(surface)
-                    .border_1()
-                    .border_color(border)
-                    .cursor_pointer()
-                    .text_size(px(styles::font_size::SMALL))
-                    .hover(move |s| s.bg(hover))
-                    .on_click(refresh_listener)
-                    .child("Refresh"),
+                    .flex()
+                    .flex_row()
+                    .gap(px(styles::spacing::SM))
+                    .child(
+                        div()
+                            .id("installed-sync")
+                            .px(px(14.0))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .hover(move |s| s.bg(hover))
+                            .on_click(sync_listener)
+                            .child(sync_label),
+                    )
+                    .child(
+                        div()
+                            .id("installed-refresh")
+                            .px(px(14.0))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .hover(move |s| s.bg(hover))
+                            .on_click(refresh_listener)
+                            .child("Refresh"),
+                    ),
             );
 
         let has_packages = !self.installed_state.packages.is_empty();
