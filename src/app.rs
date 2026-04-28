@@ -1310,23 +1310,40 @@ impl Render for App {
 
         // Confirm dialog overlay
         if let Some(ref action) = self.confirm_dialog.clone() {
+            let mode_suffix = |mode: &PackageMode| match mode {
+                PackageMode::User => " (User)",
+                PackageMode::System => " (System)",
+            };
             let message = match action {
-                ConfirmAction::Install(pkg, _) => format!("Install {}?", pkg.name),
-                ConfirmAction::Remove(pkg, _) => format!("Remove {}?", pkg.name),
-                ConfirmAction::Update(pkg, _) => format!("Update {}?", pkg.name),
-                ConfirmAction::UpdateAll(_) => "Update all packages?".to_string(),
-                ConfirmAction::BatchInstall(pkgs, _) => {
-                    format!("Install {} packages?", pkgs.len())
+                ConfirmAction::Install(pkg, mode) => {
+                    format!("Install {}?{}", pkg.name, mode_suffix(mode))
                 }
-                ConfirmAction::BatchRemove(pkgs, _) => {
-                    format!("Remove {} packages?", pkgs.len())
+                ConfirmAction::Remove(pkg, mode) => {
+                    format!("Remove {}?{}", pkg.name, mode_suffix(mode))
                 }
-                ConfirmAction::BatchUpdate(pkgs, _) => {
-                    format!("Update {} packages?", pkgs.len())
+                ConfirmAction::Update(pkg, mode) => {
+                    format!("Update {}?{}", pkg.name, mode_suffix(mode))
                 }
-                ConfirmAction::RemoveInstalled { pkg, .. } => format!("Remove {}?", pkg.name),
+                ConfirmAction::UpdateAll(mode) => {
+                    format!("Update all packages?{}", mode_suffix(mode))
+                }
+                ConfirmAction::BatchInstall(pkgs, mode) => {
+                    format!("Install {} packages?{}", pkgs.len(), mode_suffix(mode))
+                }
+                ConfirmAction::BatchRemove(pkgs, mode) => {
+                    format!("Remove {} packages?{}", pkgs.len(), mode_suffix(mode))
+                }
+                ConfirmAction::BatchUpdate(pkgs, mode) => {
+                    format!("Update {} packages?{}", pkgs.len(), mode_suffix(mode))
+                }
+                ConfirmAction::RemoveInstalled { pkg, mode, .. } => {
+                    format!("Remove {}?{}", pkg.name, mode_suffix(mode))
+                }
                 ConfirmAction::BatchRemoveInstalled { count } => {
-                    format!("Remove {count} packages?")
+                    format!(
+                        "Remove {count} packages?{}",
+                        mode_suffix(&self.current_mode)
+                    )
                 }
             };
 
