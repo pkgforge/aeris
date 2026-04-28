@@ -329,6 +329,33 @@ impl App {
             .gap(px(styles::spacing::XS))
             .items_center();
 
+        let can_run = self
+            .adapter_manager
+            .get_adapter(&pkg.package.adapter_id)
+            .map(|a| a.capabilities().can_run)
+            .unwrap_or(false);
+
+        if can_run {
+            let run_pkg = pkg.package.clone();
+            let run_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                app.run_package(run_pkg.clone(), cx);
+            });
+            buttons = buttons.child(
+                div()
+                    .id(SharedString::from(format!("run-pkg-{idx}")))
+                    .px(px(14.0))
+                    .py(px(styles::spacing::XXS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::SMALL))
+                    .on_click(run_listener)
+                    .child("Run"),
+            );
+        }
+
         let show_update = self
             .installed_state
             .updatable_adapters

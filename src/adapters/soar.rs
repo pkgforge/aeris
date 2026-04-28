@@ -7,8 +7,8 @@ use std::{
 use soar_config::config::Config;
 use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
 use soar_operations::{
-    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove,
-    repo::RepoUpdate, update,
+    InstallOptions, PrepareRunResult, RemoveResolveResult, ResolveResult, SoarContext, install,
+    remove, repo::RepoUpdate, run as soar_run, update,
 };
 
 use crate::core::{
@@ -1093,6 +1093,33 @@ impl Adapter for SoarAdapter {
 
     async fn package_detail(&self, _package_id: &str) -> Result<PackageDetail> {
         Err(AdapterError::NotSupported)
+    }
+
+    async fn run_package(&self, package: &Package, args: &[String]) -> Result<()> {
+        let ctx = self.user_ctx();
+        let query = package.soar_query().unwrap_or_else(|| package.name.clone());
+        let prep = soar_run::prepare_run(&ctx, &query, None, None)
+            .await
+            .map_err(|e| AdapterError::Other(e.to_string()))?;
+
+        let path = match prep {
+            PrepareRunResult::Ready(path) => path,
+            PrepareRunResult::Ambiguous(amb) => {
+                return Err(AdapterError::Other(format!(
+                    "Ambiguous package '{}' ({} candidates)",
+                    amb.query,
+                    amb.candidates.len()
+                )));
+            }
+        };
+
+        // Spawn detached so the GUI stays responsive; user-launched binary
+        // owns its own lifecycle.
+        std::process::Command::new(&path)
+            .args(args)
+            .spawn()
+            .map_err(|e| AdapterError::Other(format!("failed to spawn {}: {e}", path.display())))?;
+        Ok(())
     }
 
     async fn list_profiles(&self) -> Result<Vec<Profile>> {

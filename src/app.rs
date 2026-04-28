@@ -1066,6 +1066,39 @@ impl App {
         cx.notify();
     }
 
+    pub fn run_package(&mut self, pkg: crate::core::package::Package, cx: &mut Context<Self>) {
+        let adapter = match self.adapter_manager.get_adapter(&pkg.adapter_id) {
+            Some(a) => a,
+            None => return,
+        };
+        if !adapter.capabilities().can_run {
+            self.add_toast(
+                ToastLevel::Error,
+                format!("{} does not support running packages", pkg.adapter_id),
+            );
+            return;
+        }
+        let pkg_name = pkg.name.clone();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result =
+                    crate::tokio_spawn(async move { adapter.run_package(&pkg, &[]).await })
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
+                        });
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, _| match result {
+                        Ok(_) => app.add_toast(ToastLevel::Info, format!("Launched {pkg_name}")),
+                        Err(e) => app
+                            .add_toast(ToastLevel::Error, format!("Failed to run {pkg_name}: {e}")),
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
     pub fn load_package_detail(
         &mut self,
         pkg: crate::core::package::Package,
