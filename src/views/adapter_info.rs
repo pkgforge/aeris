@@ -297,7 +297,16 @@ impl App {
             let remove_id = info.id.clone();
             let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
                 app.adapter_manager.unregister(&remove_id);
-                // TODO: also remove plugin files
+                match crate::core::registry::remove_plugin(&remove_id) {
+                    Ok(_) => app.add_toast(
+                        crate::app::ToastLevel::Success,
+                        format!("Removed plugin {remove_id}"),
+                    ),
+                    Err(e) => app.add_toast(
+                        crate::app::ToastLevel::Error,
+                        format!("Failed to remove plugin files: {e}"),
+                    ),
+                }
                 cx.notify();
             });
 

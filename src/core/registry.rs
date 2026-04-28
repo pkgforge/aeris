@@ -94,6 +94,15 @@ pub fn download_plugin(entry: &PluginEntry) -> Result<PathBuf, String> {
     Ok(plugin_dir)
 }
 
+pub fn remove_plugin(id: &str) -> Result<(), String> {
+    let plugin_dir = plugins_dir().join(id);
+    if !plugin_dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&plugin_dir)
+        .map_err(|e| format!("Failed to remove plugin dir {plugin_dir:?}: {e}"))
+}
+
 pub fn installed_plugin_version(id: &str) -> Option<String> {
     let manifest_path = plugins_dir().join(id).join("manifest.toml");
     let content = std::fs::read_to_string(&manifest_path).ok()?;

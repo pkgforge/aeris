@@ -1066,7 +1066,7 @@ impl App {
         cx.notify();
     }
 
-    fn add_toast(&mut self, level: ToastLevel, message: String) {
+    pub(crate) fn add_toast(&mut self, level: ToastLevel, message: String) {
         let id = self.next_toast_id;
         self.next_toast_id += 1;
         self.toasts.push(Toast {
