@@ -162,8 +162,18 @@ pub struct Toast {
 #[derive(Debug, Clone)]
 pub struct RunPicker {
     pub package_name: String,
+    /// Unique key (id@version) used to track running processes per package.
+    pub package_key: String,
     /// Absolute paths of executable candidates inside the install dir.
     pub binaries: Vec<std::path::PathBuf>,
+}
+
+/// A binary the user launched via Run. Tracked so we can offer a Stop button
+/// and reap exited processes periodically.
+pub struct RunningProcess {
+    pub id: u64,
+    pub label: String,
+    pub child: std::process::Child,
 }
 
 /// Find user-runnable binaries for a package: symlinks in `bin_path` whose
@@ -238,6 +248,9 @@ pub struct App {
     pub(crate) adapter_view: AdapterViewState,
     pub(crate) confirm_dialog: Option<ConfirmAction>,
     pub(crate) run_picker: Option<RunPicker>,
+    /// Running processes launched via Run, keyed by package unique_key.
+    pub(crate) running_processes: HashMap<String, Vec<RunningProcess>>,
+    next_run_id: u64,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
     package_progress: HashMap<String, OperationStatus>,
@@ -331,6 +344,8 @@ impl App {
             adapter_view: AdapterViewState::default(),
             confirm_dialog: None,
             run_picker: None,
+            running_processes: HashMap::new(),
+            next_run_id: 1,
             event_receiver,
             active_operation: None,
             package_progress: HashMap::new(),
@@ -1168,6 +1183,7 @@ impl App {
             }
         };
         let binaries = list_package_binaries(&install_path, &bin_path);
+        let package_key = installed.unique_key();
         match binaries.len() {
             0 => self.add_toast(
                 ToastLevel::Error,
@@ -1179,30 +1195,78 @@ impl App {
             ),
             1 => {
                 let path = binaries.into_iter().next().unwrap();
-                self.spawn_binary(&path);
+                self.spawn_binary(&path, &package_key);
             }
             _ => {
                 self.run_picker = Some(RunPicker {
                     package_name: installed.package.name.clone(),
                     binaries,
+                    package_key,
                 });
                 cx.notify();
             }
         }
     }
 
-    pub(crate) fn spawn_binary(&mut self, path: &std::path::Path) {
+    pub(crate) fn spawn_binary(&mut self, path: &std::path::Path, package_key: &str) {
         let label = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("binary")
             .to_string();
         match std::process::Command::new(path).spawn() {
-            Ok(_) => self.add_toast(ToastLevel::Info, format!("Launched {label}")),
+            Ok(child) => {
+                let id = self.next_run_id;
+                self.next_run_id = self.next_run_id.wrapping_add(1);
+                self.running_processes
+                    .entry(package_key.to_string())
+                    .or_default()
+                    .push(RunningProcess {
+                        id,
+                        label: label.clone(),
+                        child,
+                    });
+                self.add_toast(ToastLevel::Info, format!("Launched {label}"));
+            }
             Err(e) => self.add_toast(
                 ToastLevel::Error,
                 format!("Failed to run {}: {e}", path.display()),
             ),
+        }
+    }
+
+    /// Stop all running processes belonging to the given package.
+    pub fn stop_running(&mut self, package_key: &str, cx: &mut Context<Self>) {
+        let mut killed = 0;
+        if let Some(procs) = self.running_processes.get_mut(package_key) {
+            for proc in procs.iter_mut() {
+                if proc.child.kill().is_ok() {
+                    killed += 1;
+                }
+            }
+        }
+        self.running_processes.remove(package_key);
+        if killed > 0 {
+            self.add_toast(ToastLevel::Info, format!("Stopped {killed} process(es)"));
+        }
+        cx.notify();
+    }
+
+    /// Reap exited child processes so the running_processes map stays accurate.
+    fn reap_running(&mut self) {
+        let mut empty_keys = Vec::new();
+        for (key, procs) in self.running_processes.iter_mut() {
+            procs.retain_mut(|p| match p.child.try_wait() {
+                Ok(Some(_)) => false, // exited
+                Ok(None) => true,     // still running
+                Err(_) => false,      // unknown — drop
+            });
+            if procs.is_empty() {
+                empty_keys.push(key.clone());
+            }
+        }
+        for k in empty_keys {
+            self.running_processes.remove(&k);
         }
     }
 
@@ -1522,6 +1586,7 @@ impl Render for App {
 
         // Cleanup expired toasts
         self.cleanup_toasts();
+        self.reap_running();
 
         let mut root = div()
             .size_full()
@@ -1721,8 +1786,9 @@ impl Render for App {
 
             for (idx, path) in picker.binaries.iter().enumerate() {
                 let path_clone = path.clone();
+                let key_clone = picker.package_key.clone();
                 let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
-                    app.spawn_binary(&path_clone);
+                    app.spawn_binary(&path_clone, &key_clone);
                     app.run_picker = None;
                     cx.notify();
                 });

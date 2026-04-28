@@ -355,6 +355,37 @@ impl App {
                     .on_click(run_listener)
                     .child("Run"),
             );
+
+            let running_count = self
+                .running_processes
+                .get(&unique_key)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if running_count > 0 {
+                let stop_key = unique_key.clone();
+                let stop_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    app.stop_running(&stop_key, cx);
+                });
+                let label = if running_count > 1 {
+                    format!("Stop ({running_count})")
+                } else {
+                    "Stop".to_string()
+                };
+                buttons = buttons.child(
+                    div()
+                        .id(SharedString::from(format!("stop-pkg-{idx}")))
+                        .px(px(14.0))
+                        .py(px(styles::spacing::XXS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(warning)
+                        .text_color(gpui::white())
+                        .cursor_pointer()
+                        .text_size(px(styles::font_size::SMALL))
+                        .on_click(stop_listener)
+                        .child(label),
+                );
+            }
         }
 
         let show_update = self
