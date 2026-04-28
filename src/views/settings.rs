@@ -320,11 +320,14 @@ impl App {
                 };
 
                 current_group.push(self.render_config_field_row(
+                    &field.key,
                     &field.label,
                     &field.field_type,
                     value.as_ref(),
                     field.default.as_ref(),
+                    field.aeris_managed,
                     theme,
+                    cx,
                 ));
             }
 
@@ -362,18 +365,49 @@ impl App {
                 app.save_adapter_settings(cx);
             });
 
+            let revert_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.revert_adapter_settings(cx);
+            });
+            let revert_enabled = self.settings_state.adapter_dirty;
+            let revert_text = if revert_enabled {
+                theme.text
+            } else {
+                text_muted
+            };
+
             adapter_section = adapter_section.child(
                 div()
-                    .id("save-adapter-btn")
-                    .px(px(14.0))
-                    .py(px(styles::spacing::XS))
-                    .rounded(px(styles::radius::MD))
-                    .bg(adapter_save_bg)
-                    .text_color(adapter_save_text)
-                    .cursor_pointer()
-                    .text_size(px(styles::font_size::SMALL))
-                    .on_click(save_adapter_listener)
-                    .child("Save Adapter Settings"),
+                    .flex()
+                    .flex_row()
+                    .gap(px(styles::spacing::SM))
+                    .child(
+                        div()
+                            .id("save-adapter-btn")
+                            .px(px(14.0))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(adapter_save_bg)
+                            .text_color(adapter_save_text)
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .on_click(save_adapter_listener)
+                            .child("Save Adapter Settings"),
+                    )
+                    .child(
+                        div()
+                            .id("revert-adapter-btn")
+                            .px(px(14.0))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .text_color(revert_text)
+                            .cursor_pointer()
+                            .text_size(px(styles::font_size::SMALL))
+                            .on_click(revert_listener)
+                            .child("Revert"),
+                    ),
             );
 
             if let Some(ref err) = self.settings_state.adapter_save_error {
@@ -526,18 +560,18 @@ impl App {
 
     fn render_config_field_row(
         &self,
+        key: &str,
         label: &str,
         field_type: &ConfigFieldType,
         value: Option<&ConfigValue>,
         default: Option<&ConfigValue>,
+        aeris_managed: bool,
         theme: &theme::Theme,
+        cx: &mut Context<App>,
     ) -> Div {
         let text_muted = theme.text_muted;
-        let surface = theme.surface;
-        let border = theme.border;
-        let primary = theme.primary;
 
-        let value_display = match field_type {
+        let value_display: gpui::AnyElement = match field_type {
             ConfigFieldType::Toggle => {
                 let checked = match value {
                     Some(ConfigValue::Bool(v)) => *v,
@@ -546,26 +580,62 @@ impl App {
                         _ => false,
                     },
                 };
-                if checked { "[x]" } else { "[ ]" }.to_string()
+                let key_owned = key.to_string();
+                let toggle_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                    app.toggle_adapter_config(&key_owned, cx);
+                });
+                div()
+                    .id(SharedString::from(format!("cfg-toggle-{key}")))
+                    .text_size(px(styles::font_size::BODY))
+                    .text_color(text_muted)
+                    .cursor_pointer()
+                    .on_click(toggle_listener)
+                    .child(if checked { "[x]" } else { "[ ]" }.to_string())
+                    .into_any_element()
             }
             ConfigFieldType::Text | ConfigFieldType::PathList | ConfigFieldType::ExecutablePath => {
-                match value {
+                let display = match value {
                     Some(ConfigValue::String(s)) => s.clone(),
                     _ => "(not set)".to_string(),
-                }
+                };
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .text_color(text_muted)
+                    .child(display)
+                    .into_any_element()
             }
-            ConfigFieldType::Number => match value {
-                Some(ConfigValue::String(s)) => s.clone(),
-                Some(ConfigValue::Integer(n)) => n.to_string(),
-                _ => "(not set)".to_string(),
-            },
-            ConfigFieldType::Select(_options) => match value {
-                Some(ConfigValue::String(s)) => s.clone(),
-                _ => match default {
+            ConfigFieldType::Number => {
+                let display = match value {
                     Some(ConfigValue::String(s)) => s.clone(),
+                    Some(ConfigValue::Integer(n)) => n.to_string(),
                     _ => "(not set)".to_string(),
-                },
-            },
+                };
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .text_color(text_muted)
+                    .child(display)
+                    .into_any_element()
+            }
+            ConfigFieldType::Select(_options) => {
+                let display = match value {
+                    Some(ConfigValue::String(s)) => s.clone(),
+                    _ => match default {
+                        Some(ConfigValue::String(s)) => s.clone(),
+                        _ => "(not set)".to_string(),
+                    },
+                };
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .text_color(text_muted)
+                    .child(display)
+                    .into_any_element()
+            }
+        };
+
+        let label_text = if aeris_managed {
+            format!("{label} (aeris)")
+        } else {
+            label.to_string()
         };
 
         div()
@@ -576,13 +646,8 @@ impl App {
                 div()
                     .text_size(px(styles::font_size::BODY))
                     .flex_1()
-                    .child(label.to_string()),
+                    .child(label_text),
             )
-            .child(
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .text_color(text_muted)
-                    .child(value_display),
-            )
+            .child(value_display)
     }
 }

@@ -42,7 +42,7 @@ pub struct ConfigSchema {
     pub fields: Vec<ConfigField>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AdapterConfig {
     pub values: HashMap<String, ConfigValue>,
 }

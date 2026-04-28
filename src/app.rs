@@ -1038,6 +1038,8 @@ impl App {
                             Ok(_) => {
                                 app.settings_state.adapter_save_success = true;
                                 app.settings_state.adapter_dirty = false;
+                                app.settings_state.adapter_config_original =
+                                    app.settings_state.adapter_config.clone();
                             }
                             Err(e) => {
                                 app.settings_state.adapter_save_error = Some(format!("{e}"));
@@ -1050,6 +1052,35 @@ impl App {
             },
         )
         .detach();
+    }
+
+    pub fn toggle_adapter_config(&mut self, key: &str, cx: &mut Context<Self>) {
+        use crate::core::config::ConfigValue;
+        let current = self
+            .settings_state
+            .adapter_config
+            .values
+            .get(key)
+            .and_then(|v| match v {
+                ConfigValue::Bool(b) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false);
+        self.settings_state
+            .adapter_config
+            .values
+            .insert(key.to_string(), ConfigValue::Bool(!current));
+        self.settings_state.adapter_dirty =
+            self.settings_state.adapter_config != self.settings_state.adapter_config_original;
+        cx.notify();
+    }
+
+    pub fn revert_adapter_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_state.adapter_config = self.settings_state.adapter_config_original.clone();
+        self.settings_state.adapter_dirty = false;
+        self.settings_state.adapter_save_error = None;
+        self.settings_state.adapter_save_success = false;
+        cx.notify();
     }
 
     fn add_toast(&mut self, level: ToastLevel, message: String) {
