@@ -285,6 +285,13 @@ pub struct App {
 
     // Text input entities
     pub(crate) search_input: Entity<crate::components::TextInput>,
+
+    /// Focus handle so the root div can receive app-level key actions
+    /// (Escape, Enter) when no other element is focused.
+    focus_handle: FocusHandle,
+    /// Set when an overlay opens whose TextInput should be focused on the
+    /// next render. Cleared after applying focus.
+    pending_settings_edit_focus: bool,
 }
 
 impl App {
@@ -375,6 +382,8 @@ impl App {
             updates_state: views::updates::UpdatesState::default(),
             settings_state,
             search_input,
+            focus_handle: cx.focus_handle(),
+            pending_settings_edit_focus: false,
         }
     }
 
@@ -1276,6 +1285,7 @@ impl App {
             field_type,
             input,
         });
+        self.pending_settings_edit_focus = true;
         cx.notify();
     }
 
@@ -1795,17 +1805,41 @@ impl App {
     }
 }
 
+impl Focusable for App {
+    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for App {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current_theme(self.selected_theme);
 
         // Cleanup expired toasts
         self.cleanup_toasts();
         self.reap_running();
 
+        // Ensure the root receives app-level key actions when nothing else
+        // is focused (e.g. on first render after window open).
+        if !self.focus_handle.contains_focused(window, cx)
+            && !window.focused(cx).is_some_and(|f| f.is_focused(window))
+        {
+            window.focus(&self.focus_handle);
+        }
+
+        // Focus settings edit input on first render after open.
+        if self.pending_settings_edit_focus {
+            if let Some(ref edit) = self.settings_state.edit {
+                let handle = edit.input.focus_handle(cx);
+                window.focus(&handle);
+                self.pending_settings_edit_focus = false;
+            }
+        }
+
         let mut root = div()
             .id("app-root")
             .key_context("App")
+            .track_focus(&self.focus_handle)
             .on_action(cx.listener(|app, _: &Escape, _window, cx| {
                 app.handle_escape(cx);
             }))
@@ -2149,16 +2183,66 @@ impl Render for App {
                     body = body.child(list);
                 }
                 _ => {
-                    body = body.child(
-                        div()
-                            .px(px(styles::spacing::MD))
-                            .py(px(10.0))
-                            .rounded(px(styles::radius::MD))
-                            .bg(surface)
-                            .border_1()
-                            .border_color(border)
-                            .child(edit.input.clone()),
+                    let mut input_row = div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(styles::spacing::SM))
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .px(px(styles::spacing::MD))
+                                .py(px(10.0))
+                                .rounded(px(styles::radius::MD))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .child(edit.input.clone()),
+                        );
+
+                    // Add a Browse… button for file/dir-like fields.
+                    let needs_browse = matches!(
+                        edit.field_type,
+                        ConfigFieldType::ExecutablePath | ConfigFieldType::PathList
                     );
+                    if needs_browse {
+                        let pick_dir = matches!(edit.field_type, ConfigFieldType::PathList);
+                        let input_handle = edit.input.clone();
+                        let browse = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                            let dialog = rfd::FileDialog::new();
+                            let chosen = if pick_dir {
+                                dialog.pick_folder()
+                            } else {
+                                dialog.pick_file()
+                            };
+                            if let Some(path) = chosen {
+                                let s = path.to_string_lossy().to_string();
+                                input_handle.update(cx, |ti, cx| {
+                                    ti.set_content(s, cx);
+                                });
+                            }
+                            cx.notify();
+                        });
+                        input_row = input_row.child(
+                            div()
+                                .id("settings-edit-browse")
+                                .px(px(styles::spacing::MD))
+                                .py(px(styles::spacing::XS))
+                                .rounded(px(styles::radius::MD))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .cursor_pointer()
+                                .text_size(px(styles::font_size::SMALL))
+                                .on_click(browse)
+                                .child(if pick_dir {
+                                    "Pick folder…"
+                                } else {
+                                    "Pick file…"
+                                }),
+                        );
+                    }
+                    body = body.child(input_row);
                     let input_handle = edit.input.clone();
                     let save = cx.listener(move |app, _: &ClickEvent, _window, cx| {
                         let value = input_handle.read(cx).content().to_string();
