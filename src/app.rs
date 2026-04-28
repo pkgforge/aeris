@@ -236,6 +236,10 @@ pub struct AdapterViewState {
     pub repos_version: u64,
     pub syncing: Option<String>,
     pub sync_error: Option<String>,
+    pub profiles_by_adapter: HashMap<String, Vec<crate::core::profile::Profile>>,
+    pub profiles_loading: HashMap<String, bool>,
+    pub profiles_error: HashMap<String, String>,
+    pub switching_profile: Option<String>,
 }
 
 pub struct App {
@@ -1126,6 +1130,101 @@ impl App {
         self.settings_state.adapter_dirty =
             self.settings_state.adapter_config != self.settings_state.adapter_config_original;
         cx.notify();
+    }
+
+    pub fn load_profiles(&mut self, adapter_id: &str, cx: &mut Context<Self>) {
+        let adapter = match self.adapter_manager.get_adapter(adapter_id) {
+            Some(a) => a,
+            None => return,
+        };
+        if !adapter.capabilities().has_profiles {
+            return;
+        }
+        let aid = adapter_id.to_string();
+        self.adapter_view.profiles_loading.insert(aid.clone(), true);
+        self.adapter_view.profiles_error.remove(&aid);
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result = crate::tokio_spawn(async move { adapter.list_profiles().await })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
+                    });
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.adapter_view.profiles_loading.insert(aid.clone(), false);
+                        match result {
+                            Ok(profiles) => {
+                                app.adapter_view
+                                    .profiles_by_adapter
+                                    .insert(aid.clone(), profiles);
+                            }
+                            Err(e) => {
+                                app.adapter_view
+                                    .profiles_error
+                                    .insert(aid.clone(), format!("{e}"));
+                            }
+                        }
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn switch_to_profile(
+        &mut self,
+        adapter_id: &str,
+        profile_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let adapter = match self.adapter_manager.get_adapter(adapter_id) {
+            Some(a) => a,
+            None => return,
+        };
+        if !adapter.capabilities().has_profiles {
+            return;
+        }
+        self.adapter_view.switching_profile = Some(profile_id.to_string());
+        let aid = adapter_id.to_string();
+        let pid = profile_id.to_string();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result =
+                    crate::tokio_spawn(
+                        async move { adapter.switch_profile(&pid).await.map(|_| pid) },
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
+                    });
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.adapter_view.switching_profile = None;
+                        match result {
+                            Ok(switched_to) => {
+                                app.add_toast(
+                                    ToastLevel::Success,
+                                    format!("Switched to profile {switched_to}"),
+                                );
+                                app.load_profiles(&aid, cx);
+                                // Profile change affects installed packages location
+                                app.installed_state.loaded = false;
+                            }
+                            Err(e) => {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to switch profile: {e}"),
+                                );
+                            }
+                        }
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn revert_adapter_settings(&mut self, cx: &mut Context<Self>) {

@@ -58,7 +58,12 @@ impl App {
 
         for (info, enabled) in &adapters {
             let has_repos = info.capabilities.can_list_repos && *enabled;
+            let has_profiles = info.capabilities.has_profiles && *enabled;
             content = content.child(self.render_adapter_card(info, *enabled, theme, cx));
+
+            if has_profiles {
+                content = content.child(self.render_profiles_section(&info.id, theme, cx));
+            }
 
             if has_repos {
                 content = content.child(self.render_repos_section(&info.id, theme, cx));
@@ -339,6 +344,146 @@ impl App {
             .child(desc)
             .child(caps_view)
             .child(actions)
+    }
+
+    fn render_profiles_section(
+        &self,
+        adapter_id: &str,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+        let hover = theme.hover;
+        let text_muted = theme.text_muted;
+        let success = theme.success;
+
+        let profiles = self.adapter_view.profiles_by_adapter.get(adapter_id);
+        let is_loading = self
+            .adapter_view
+            .profiles_loading
+            .get(adapter_id)
+            .copied()
+            .unwrap_or(false);
+        let load_error = self.adapter_view.profiles_error.get(adapter_id);
+        let switching = &self.adapter_view.switching_profile;
+
+        // Trigger load on first render
+        if profiles.is_none() && !is_loading && load_error.is_none() {
+            let aid = adapter_id.to_string();
+            cx.spawn(
+                async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                    let _ = cx.update(|cx| {
+                        let _ = this.update(cx, |app, cx| {
+                            app.load_profiles(&aid, cx);
+                        });
+                    });
+                },
+            )
+            .detach();
+        }
+
+        let title = div()
+            .text_size(px(styles::font_size::HEADING))
+            .child("Profiles");
+
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::XS))
+            .w_full();
+
+        if is_loading {
+            list = list.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child("Loading profiles..."),
+            );
+        } else if let Some(err) = load_error {
+            list = list.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(format!("Failed to load: {err}")),
+            );
+        } else if let Some(profiles) = profiles {
+            if profiles.is_empty() {
+                list = list.child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .text_color(text_muted)
+                        .child("No profiles configured"),
+                );
+            } else {
+                for (idx, profile) in profiles.iter().enumerate() {
+                    let pid = profile.id.clone();
+                    let aid = adapter_id.to_string();
+                    let is_active = profile.is_active;
+                    let is_switching = switching.as_deref() == Some(profile.id.as_str());
+                    let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                        app.switch_to_profile(&aid, &pid, cx);
+                    });
+                    let bg = if is_active {
+                        primary.opacity(0.15)
+                    } else {
+                        surface
+                    };
+                    let border_color = if is_active {
+                        primary.opacity(0.4)
+                    } else {
+                        border
+                    };
+                    let label = if is_switching {
+                        format!("{} (switching...)", profile.name)
+                    } else if is_active {
+                        format!("{} (active)", profile.name)
+                    } else {
+                        profile.name.clone()
+                    };
+                    let mut row = div()
+                        .id(SharedString::from(format!("profile-{adapter_id}-{idx}")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .px(px(styles::spacing::MD))
+                        .py(px(styles::spacing::XS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(bg)
+                        .border_1()
+                        .border_color(border_color)
+                        .text_size(px(styles::font_size::SMALL))
+                        .child(label);
+                    if !is_active && !is_switching {
+                        row = row
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(listener);
+                    }
+                    if is_active {
+                        row = row.child(
+                            div()
+                                .text_size(px(styles::font_size::CAPTION))
+                                .text_color(success)
+                                .child("\u{2713}"),
+                        );
+                    }
+                    list = list.child(row);
+                }
+            }
+        }
+
+        div()
+            .px(px(styles::spacing::LG))
+            .py(px(styles::spacing::MD))
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::SM))
+            .child(title)
+            .child(list)
     }
 
     fn render_repos_section(
