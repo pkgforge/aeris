@@ -208,6 +208,8 @@ pub struct App {
     toasts: Vec<Toast>,
     next_toast_id: u64,
     operation_queue: Vec<QueuedOperation>,
+    /// Latest BatchProgress event from any adapter: (adapter_id, completed, total, failed).
+    batch_progress: Option<(String, u32, u32, u32)>,
     progress_sender: crate::core::adapter::ProgressSender,
     progress_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::core::adapter::ProgressEvent>,
     pub(crate) selected_install_mode: PackageMode,
@@ -300,6 +302,7 @@ impl App {
             toasts: Vec::new(),
             next_toast_id: 1,
             operation_queue: Vec::new(),
+            batch_progress: None,
             progress_sender,
             progress_receiver,
             selected_install_mode: default_mode,
@@ -1170,7 +1173,18 @@ impl App {
                 ProgressEvent::Status { message, .. } => {
                     log::info!("Progress status: {message}");
                 }
-                ProgressEvent::BatchProgress { .. } => {}
+                ProgressEvent::BatchProgress {
+                    adapter_id,
+                    completed,
+                    total,
+                    failed,
+                } => {
+                    if completed >= total && total > 0 {
+                        self.batch_progress = None;
+                    } else {
+                        self.batch_progress = Some((adapter_id, completed, total, failed));
+                    }
+                }
             }
         }
 
@@ -1638,6 +1652,23 @@ impl App {
 
         if let Some(indicator) = op_indicator {
             header = header.child(indicator);
+        }
+
+        if let Some((adapter_id, completed, total, failed)) = self.batch_progress.clone() {
+            let label = if failed > 0 {
+                format!("{adapter_id} batch: {completed}/{total} ({failed} failed)")
+            } else {
+                format!("{adapter_id} batch: {completed}/{total}")
+            };
+            header = header.child(
+                div()
+                    .px(px(styles::spacing::MD))
+                    .py(px(styles::spacing::XXS))
+                    .rounded(px(styles::radius::FULL))
+                    .bg(theme.primary.opacity(0.2))
+                    .text_size(px(styles::font_size::CAPTION))
+                    .child(label),
+            );
         }
 
         let toggle_mode = cx.listener(|app, _: &ClickEvent, _window, cx| {
