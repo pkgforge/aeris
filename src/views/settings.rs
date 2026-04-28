@@ -4,6 +4,7 @@ use gpui::*;
 
 use crate::{
     app::{App, AppTheme, View},
+    components::TextInput,
     config::AerisConfig,
     core::{
         adapter::Adapter,
@@ -13,7 +14,13 @@ use crate::{
     styles, theme,
 };
 
-#[derive(Debug)]
+pub struct SettingsEdit {
+    pub key: String,
+    pub label: String,
+    pub field_type: ConfigFieldType,
+    pub input: Entity<TextInput>,
+}
+
 pub struct SettingsState {
     pub selected_theme: AppTheme,
     pub startup_view: View,
@@ -30,6 +37,7 @@ pub struct SettingsState {
     pub adapter_save_error: Option<String>,
     pub adapter_save_success: bool,
     pub saving: bool,
+    pub edit: Option<SettingsEdit>,
 }
 
 impl Default for SettingsState {
@@ -49,6 +57,7 @@ impl Default for SettingsState {
             adapter_save_error: None,
             adapter_save_success: false,
             saving: false,
+            edit: None,
         }
     }
 }
@@ -86,6 +95,7 @@ impl SettingsState {
             adapter_save_error: None,
             adapter_save_success: false,
             saving: false,
+            edit: None,
         }
     }
 }
@@ -558,6 +568,34 @@ impl App {
             .child(label)
     }
 
+    fn editable_field_display(
+        &self,
+        key: &str,
+        label: &str,
+        field_type: &ConfigFieldType,
+        display: String,
+        theme: &theme::Theme,
+        cx: &mut Context<App>,
+    ) -> gpui::AnyElement {
+        let text_muted = theme.text_muted;
+        let primary = theme.primary;
+        let key_owned = key.to_string();
+        let label_owned = label.to_string();
+        let field_type_owned = field_type.clone();
+        let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.open_settings_edit(&key_owned, &label_owned, field_type_owned.clone(), cx);
+        });
+        div()
+            .id(SharedString::from(format!("cfg-edit-{key}")))
+            .text_size(px(styles::font_size::BODY))
+            .text_color(text_muted)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(primary))
+            .on_click(listener)
+            .child(display)
+            .into_any_element()
+    }
+
     fn render_config_field_row(
         &self,
         key: &str,
@@ -598,11 +636,7 @@ impl App {
                     Some(ConfigValue::String(s)) => s.clone(),
                     _ => "(not set)".to_string(),
                 };
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .text_color(text_muted)
-                    .child(display)
-                    .into_any_element()
+                self.editable_field_display(key, label, field_type, display, theme, cx)
             }
             ConfigFieldType::Number => {
                 let display = match value {
@@ -610,11 +644,7 @@ impl App {
                     Some(ConfigValue::Integer(n)) => n.to_string(),
                     _ => "(not set)".to_string(),
                 };
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .text_color(text_muted)
-                    .child(display)
-                    .into_any_element()
+                self.editable_field_display(key, label, field_type, display, theme, cx)
             }
             ConfigFieldType::Select(_options) => {
                 let display = match value {
@@ -624,11 +654,7 @@ impl App {
                         _ => "(not set)".to_string(),
                     },
                 };
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .text_color(text_muted)
-                    .child(display)
-                    .into_any_element()
+                self.editable_field_display(key, label, field_type, display, theme, cx)
             }
         };
 

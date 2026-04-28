@@ -1235,6 +1235,73 @@ impl App {
         cx.notify();
     }
 
+    pub fn open_settings_edit(
+        &mut self,
+        key: &str,
+        label: &str,
+        field_type: crate::core::config::ConfigFieldType,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::core::config::ConfigValue;
+        let initial = self
+            .settings_state
+            .adapter_config
+            .values
+            .get(key)
+            .map(|v| match v {
+                ConfigValue::String(s) => s.clone(),
+                ConfigValue::Integer(n) => n.to_string(),
+                ConfigValue::Bool(b) => b.to_string(),
+                ConfigValue::StringList(list) => list.join(", "),
+            })
+            .unwrap_or_default();
+        let placeholder = label.to_string();
+        let input = cx.new(|cx| {
+            let mut ti = crate::components::TextInput::new(cx, placeholder);
+            ti.set_content(initial, cx);
+            ti
+        });
+        self.settings_state.edit = Some(crate::views::settings::SettingsEdit {
+            key: key.to_string(),
+            label: label.to_string(),
+            field_type,
+            input,
+        });
+        cx.notify();
+    }
+
+    pub fn close_settings_edit(&mut self, cx: &mut Context<Self>) {
+        self.settings_state.edit = None;
+        cx.notify();
+    }
+
+    pub fn apply_settings_edit(&mut self, raw: String, cx: &mut Context<Self>) {
+        use crate::core::config::{ConfigFieldType, ConfigValue};
+        let edit = match self.settings_state.edit.take() {
+            Some(e) => e,
+            None => return,
+        };
+        let new_value = match edit.field_type {
+            ConfigFieldType::Number => match raw.trim().parse::<i64>() {
+                Ok(n) => ConfigValue::Integer(n),
+                Err(_) => {
+                    self.add_toast(ToastLevel::Error, format!("'{raw}' is not a valid number"));
+                    self.settings_state.edit = Some(edit);
+                    return;
+                }
+            },
+            ConfigFieldType::Toggle => return,
+            _ => ConfigValue::String(raw),
+        };
+        self.settings_state
+            .adapter_config
+            .values
+            .insert(edit.key, new_value);
+        self.settings_state.adapter_dirty =
+            self.settings_state.adapter_config != self.settings_state.adapter_config_original;
+        cx.notify();
+    }
+
     /// Run an installed package by enumerating executables in its install_path.
     /// 0 → error toast; 1 → spawn directly; many → open a RunPicker overlay.
     pub fn run_installed(
@@ -1967,6 +2034,139 @@ impl Render for App {
                                 ),
                         ),
                 );
+        }
+
+        // Settings edit modal (text/number/select fields)
+        if let Some(ref edit) = self.settings_state.edit {
+            use crate::core::config::ConfigFieldType;
+            let surface = theme.surface;
+            let border = theme.border;
+            let primary = theme.primary;
+            let hover = theme.hover;
+            let text_muted = theme.text_muted;
+
+            let cancel = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.close_settings_edit(cx);
+            });
+
+            let mut body = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::SM))
+                .min_w(px(380.0))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::HEADING))
+                        .child(format!("Edit {}", edit.label)),
+                );
+
+            match edit.field_type.clone() {
+                ConfigFieldType::Select(options) => {
+                    body = body.child(
+                        div()
+                            .text_size(px(styles::font_size::CAPTION))
+                            .text_color(text_muted)
+                            .child("Select a value"),
+                    );
+                    let mut list = div().flex().flex_col().gap(px(styles::spacing::XS));
+                    for (idx, opt) in options.iter().enumerate() {
+                        let opt_clone = opt.clone();
+                        let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                            app.apply_settings_edit(opt_clone.clone(), cx);
+                        });
+                        list = list.child(
+                            div()
+                                .id(SharedString::from(format!("set-edit-{idx}")))
+                                .px(px(styles::spacing::MD))
+                                .py(px(styles::spacing::SM))
+                                .rounded(px(styles::radius::MD))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover))
+                                .on_click(listener)
+                                .child(opt.clone()),
+                        );
+                    }
+                    body = body.child(list);
+                }
+                _ => {
+                    body = body.child(
+                        div()
+                            .px(px(styles::spacing::MD))
+                            .py(px(10.0))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .child(edit.input.clone()),
+                    );
+                    let input_handle = edit.input.clone();
+                    let save = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                        let value = input_handle.read(cx).content().to_string();
+                        app.apply_settings_edit(value, cx);
+                    });
+                    body = body.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(styles::spacing::SM))
+                            .justify_end()
+                            .child(
+                                div()
+                                    .id("settings-edit-cancel")
+                                    .px(px(styles::spacing::LG))
+                                    .py(px(styles::spacing::XS))
+                                    .rounded(px(styles::radius::MD))
+                                    .bg(surface)
+                                    .border_1()
+                                    .border_color(border)
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(hover))
+                                    .on_click(cancel)
+                                    .child("Cancel"),
+                            )
+                            .child(
+                                div()
+                                    .id("settings-edit-save")
+                                    .px(px(styles::spacing::LG))
+                                    .py(px(styles::spacing::XS))
+                                    .rounded(px(styles::radius::MD))
+                                    .bg(primary)
+                                    .text_color(gpui::white())
+                                    .cursor_pointer()
+                                    .on_click(save)
+                                    .child("Save"),
+                            ),
+                    );
+                }
+            }
+
+            root = root.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.5,
+                    })
+                    .child(
+                        div()
+                            .p(px(styles::spacing::XXL))
+                            .rounded(px(styles::radius::LG))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .child(body),
+                    ),
+            );
         }
 
         root
