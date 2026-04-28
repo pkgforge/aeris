@@ -833,15 +833,20 @@ impl App {
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
+                    let mut errors: Vec<(String, String)> = Vec::new();
                     for adapter in &manager_adapters {
                         if adapter.capabilities().can_sync {
                             match adapter.sync(Some(progress_sender.clone())).await {
                                 Ok(_) => log::info!("Synced {}", adapter.info().id),
-                                Err(e) => log::warn!("Sync failed for {}: {e}", adapter.info().id),
+                                Err(e) => {
+                                    log::warn!("Sync failed for {}: {e}", adapter.info().id);
+                                    errors.push((adapter.info().id.clone(), format!("{e}")));
+                                }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -850,6 +855,24 @@ impl App {
                     this.update(cx, |app, cx| {
                         app.adapter_view.syncing = None;
                         app.adapter_view.repos_version += 1;
+                        if errors.is_empty() {
+                            app.add_toast(ToastLevel::Success, "Repositories synced".into());
+                            app.adapter_view.sync_error = None;
+                        } else {
+                            for (adapter_id, err) in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Sync failed for {adapter_id}: {err}"),
+                                );
+                            }
+                            app.adapter_view.sync_error = Some(
+                                errors
+                                    .iter()
+                                    .map(|(id, e)| format!("{id}: {e}"))
+                                    .collect::<Vec<_>>()
+                                    .join("; "),
+                            );
+                        }
                         cx.notify();
                     })
                 });
