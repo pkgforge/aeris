@@ -528,7 +528,7 @@ impl SoarAdapter {
                         can_add_repo: true,
                         can_remove_repo: true,
                         can_list_repos: true,
-                        has_profiles: false,
+                        has_profiles: true,
                         has_size_info: true,
                         has_package_detail: false,
                         supports_verification: true,
@@ -1096,42 +1096,81 @@ impl Adapter for SoarAdapter {
     }
 
     async fn run_package(&self, package: &Package, args: &[String]) -> Result<()> {
-        let ctx = self.user_ctx();
-        let query = package.soar_query().unwrap_or_else(|| package.name.clone());
-        let prep = soar_run::prepare_run(&ctx, &query, None, None)
-            .await
-            .map_err(|e| AdapterError::Other(e.to_string()))?;
+        // For installed packages, soar exposes the binary at the active profile's
+        // bin path (typically ~/.local/share/soar/bin/<name>). Try that first;
+        // fall back to PATH resolution.
+        let config = soar_config::config::get_config();
+        let active_profile = &config.default_profile;
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(profile) = config.profile.get(active_profile) {
+            let root = std::path::PathBuf::from(&profile.root_path);
+            candidates.push(root.join("bin").join(&package.name));
+        }
 
-        let path = match prep {
-            PrepareRunResult::Ready(path) => path,
-            PrepareRunResult::Ambiguous(amb) => {
-                return Err(AdapterError::Other(format!(
-                    "Ambiguous package '{}' ({} candidates)",
-                    amb.query,
-                    amb.candidates.len()
-                )));
-            }
+        let exec_path = candidates.into_iter().find(|p| p.exists());
+        let mut cmd = match exec_path {
+            Some(p) => std::process::Command::new(p),
+            None => std::process::Command::new(&package.name),
         };
 
-        // Spawn detached so the GUI stays responsive; user-launched binary
+        // Spawn detached so the GUI stays responsive; the launched binary
         // owns its own lifecycle.
-        std::process::Command::new(&path)
-            .args(args)
+        cmd.args(args)
             .spawn()
-            .map_err(|e| AdapterError::Other(format!("failed to spawn {}: {e}", path.display())))?;
+            .map_err(|e| AdapterError::Other(format!("failed to spawn {}: {e}", package.name)))?;
         Ok(())
     }
 
     async fn list_profiles(&self) -> Result<Vec<Profile>> {
-        Err(AdapterError::NotSupported)
+        let config = soar_config::config::get_config();
+        let active = &config.default_profile;
+        let mut profiles: Vec<Profile> = config
+            .profile
+            .keys()
+            .map(|name| Profile {
+                id: name.clone(),
+                name: name.clone(),
+                is_active: name == active,
+                package_count: 0,
+            })
+            .collect();
+        profiles.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(profiles)
     }
 
     async fn active_profile(&self) -> Result<Profile> {
-        Err(AdapterError::NotSupported)
+        let config = soar_config::config::get_config();
+        let name = config.default_profile.clone();
+        Ok(Profile {
+            id: name.clone(),
+            name,
+            is_active: true,
+            package_count: 0,
+        })
     }
 
-    async fn switch_profile(&self, _profile_id: &str) -> Result<()> {
-        Err(AdapterError::NotSupported)
+    async fn switch_profile(&self, profile_id: &str) -> Result<()> {
+        use toml_edit::DocumentMut;
+
+        let config = soar_config::config::get_config();
+        if !config.profile.contains_key(profile_id) {
+            return Err(AdapterError::Other(format!(
+                "Profile '{profile_id}' not found"
+            )));
+        }
+
+        let config_path = soar_config::config::CONFIG_PATH
+            .read()
+            .unwrap()
+            .to_path_buf();
+        let mut doc = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| s.parse::<DocumentMut>().ok())
+            .unwrap_or_default();
+        doc["default_profile"] = toml_edit::value(profile_id);
+        std::fs::write(&config_path, doc.to_string())
+            .map_err(|e| AdapterError::Other(format!("failed to write soar config: {e}")))?;
+        Ok(())
     }
 
     fn config_schema(&self) -> Option<ConfigSchema> {

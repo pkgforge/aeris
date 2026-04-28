@@ -338,6 +338,7 @@ impl App {
         if can_run {
             let run_pkg = pkg.package.clone();
             let run_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
                 app.run_package(run_pkg.clone(), cx);
             });
             buttons = buttons.child(
@@ -415,6 +416,7 @@ impl App {
             let remove_pkg = pkg.package.clone();
             let remove_unique_key = unique_key.clone();
             let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
                 app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveInstalled {
                     pkg: remove_pkg.clone(),
                     unique_key: remove_unique_key.clone(),
