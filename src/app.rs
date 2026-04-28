@@ -1066,6 +1066,61 @@ impl App {
         cx.notify();
     }
 
+    pub fn load_package_detail(
+        &mut self,
+        pkg: crate::core::package::Package,
+        cx: &mut Context<Self>,
+    ) {
+        let adapter = match self.adapter_manager.get_adapter(&pkg.adapter_id) {
+            Some(a) => a,
+            None => return,
+        };
+        if !adapter.capabilities().has_package_detail {
+            self.browse_state.selected_detail = None;
+            self.browse_state.detail_loading = false;
+            self.browse_state.detail_error = None;
+            return;
+        }
+
+        self.browse_state.detail_request_id = self.browse_state.detail_request_id.wrapping_add(1);
+        let request_id = self.browse_state.detail_request_id;
+        self.browse_state.selected_detail = None;
+        self.browse_state.detail_loading = true;
+        self.browse_state.detail_error = None;
+
+        let pkg_id = pkg.id.clone();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result =
+                    crate::tokio_spawn(async move { adapter.package_detail(&pkg_id).await })
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
+                        });
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        // Discard result if a newer request superseded this one
+                        if request_id != app.browse_state.detail_request_id {
+                            return;
+                        }
+                        app.browse_state.detail_loading = false;
+                        match result {
+                            Ok(detail) => {
+                                app.browse_state.selected_detail = Some(detail);
+                            }
+                            Err(e) => {
+                                app.browse_state.detail_error = Some(format!("{e}"));
+                            }
+                        }
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
     pub(crate) fn add_toast(&mut self, level: ToastLevel, message: String) {
         let id = self.next_toast_id;
         self.next_toast_id += 1;

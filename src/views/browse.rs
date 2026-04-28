@@ -19,6 +19,10 @@ pub struct BrowseState {
     pub result_version: u64,
     pub installing: Option<String>,
     pub selected_package: Option<Package>,
+    pub selected_detail: Option<crate::core::package::PackageDetail>,
+    pub detail_loading: bool,
+    pub detail_error: Option<String>,
+    pub detail_request_id: u64,
     pub search_debounce_version: u64,
     pub selected: HashSet<String>,
     pub package_progress: HashMap<String, OperationStatus>,
@@ -451,7 +455,7 @@ impl App {
         let pkg_id = pkg.id.clone();
         let pkg_clone = pkg.clone();
         let is_installed = pkg.installed;
-        let card_listener = cx.listener(move |app, _: &ClickEvent, _window, _cx| {
+        let card_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
             if !is_installed {
                 if app.browse_state.selected.contains(&pkg_id) {
                     app.browse_state.selected.remove(&pkg_id);
@@ -460,6 +464,7 @@ impl App {
                 }
             }
             app.browse_state.selected_package = Some(pkg_clone.clone());
+            app.load_package_detail(pkg_clone.clone(), cx);
         });
 
         div()
@@ -491,6 +496,9 @@ impl App {
 
         let close_listener = cx.listener(|app, _: &ClickEvent, _window, _cx| {
             app.browse_state.selected_package = None;
+            app.browse_state.selected_detail = None;
+            app.browse_state.detail_loading = false;
+            app.browse_state.detail_error = None;
         });
 
         let mut content = div()
@@ -611,12 +619,72 @@ impl App {
                 .child(status_badge),
         );
 
+        // Detail (loaded asynchronously via Adapter::package_detail)
+        if self.browse_state.detail_loading {
+            content = content.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child("Loading details..."),
+            );
+        } else if let Some(ref err) = self.browse_state.detail_error {
+            content = content.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(format!("Detail unavailable: {err}")),
+            );
+        } else if let Some(ref detail) = self.browse_state.selected_detail {
+            if !detail.maintainers.is_empty() {
+                content = content.child(self.detail_row(
+                    "Maintainers",
+                    &detail.maintainers.join(", "),
+                    theme,
+                ));
+            }
+            if let Some(ref date) = detail.build_date {
+                content = content.child(self.detail_row("Build date", date, theme));
+            }
+            if !detail.dependencies.is_empty() {
+                let deps = detail
+                    .dependencies
+                    .iter()
+                    .map(|d| {
+                        if let Some(ref req) = d.version_req {
+                            format!("{} ({req})", d.name)
+                        } else {
+                            d.name.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                content = content.child(self.detail_row("Dependencies", &deps, theme));
+            }
+            if let Some(ref readme) = detail.readme {
+                content = content.child(div().w_full().h(px(1.0)).bg(border));
+                content = content.child(
+                    div()
+                        .text_size(px(styles::font_size::SMALL))
+                        .text_color(text_muted)
+                        .child("Readme"),
+                );
+                content = content.child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .child(readme.clone()),
+                );
+            }
+        }
+
         // Separator
         content = content.child(div().w_full().h(px(1.0)).bg(border));
 
         // Bottom buttons
         let close_bottom = cx.listener(|app, _: &ClickEvent, _window, _cx| {
             app.browse_state.selected_package = None;
+            app.browse_state.selected_detail = None;
+            app.browse_state.detail_loading = false;
+            app.browse_state.detail_error = None;
         });
 
         let mut buttons = div()

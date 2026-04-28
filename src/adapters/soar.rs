@@ -530,7 +530,7 @@ impl SoarAdapter {
                         can_list_repos: true,
                         has_profiles: false,
                         has_size_info: true,
-                        has_package_detail: true,
+                        has_package_detail: false,
                         supports_verification: true,
                         supports_portable: true,
                         supports_hooks: true,
