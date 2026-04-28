@@ -199,7 +199,7 @@ pub struct App {
     pub(crate) adapter: Arc<SoarAdapter>,
     pub(crate) adapter_manager: AdapterManager,
     pub(crate) adapter_view: AdapterViewState,
-    confirm_dialog: Option<ConfirmAction>,
+    pub(crate) confirm_dialog: Option<ConfirmAction>,
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
     package_progress: HashMap<String, OperationStatus>,
@@ -1324,6 +1324,10 @@ impl Render for App {
                 ConfirmAction::BatchUpdate(pkgs, _) => {
                     format!("Update {} packages?", pkgs.len())
                 }
+                ConfirmAction::RemoveInstalled { pkg, .. } => format!("Remove {}?", pkg.name),
+                ConfirmAction::BatchRemoveInstalled { count } => {
+                    format!("Remove {count} packages?")
+                }
             };
 
             let confirm_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
@@ -1603,6 +1607,16 @@ impl App {
             }
             ConfirmAction::BatchUpdate(pkgs, mode) => {
                 self.batch_update(pkgs, mode, cx);
+            }
+            ConfirmAction::RemoveInstalled {
+                pkg,
+                unique_key,
+                mode,
+            } => {
+                self.remove_installed_package(pkg, unique_key, mode, cx);
+            }
+            ConfirmAction::BatchRemoveInstalled { .. } => {
+                self.remove_selected_installed(cx);
             }
         }
     }

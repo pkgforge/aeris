@@ -127,7 +127,10 @@ impl App {
         if !self.installed_state.selected.is_empty() {
             let count = self.installed_state.selected.len();
             let remove_selected = cx.listener(|app, _: &ClickEvent, _window, cx| {
-                app.remove_selected_installed(cx);
+                let count = app.installed_state.selected.len();
+                app.confirm_dialog =
+                    Some(crate::app::ConfirmAction::BatchRemoveInstalled { count });
+                cx.notify();
             });
             let clear_selection = cx.listener(|app, _: &ClickEvent, _window, _cx| {
                 app.installed_state.selected.clear();
@@ -359,12 +362,12 @@ impl App {
             let remove_pkg = pkg.package.clone();
             let remove_unique_key = unique_key.clone();
             let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
-                app.remove_installed_package(
-                    remove_pkg.clone(),
-                    remove_unique_key.clone(),
-                    app.current_mode,
-                    cx,
-                );
+                app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveInstalled {
+                    pkg: remove_pkg.clone(),
+                    unique_key: remove_unique_key.clone(),
+                    mode: app.current_mode,
+                });
+                cx.notify();
             });
             buttons = buttons.child(
                 div()

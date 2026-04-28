@@ -9,6 +9,16 @@ pub enum ConfirmAction {
     BatchInstall(Vec<Package>, PackageMode),
     BatchRemove(Vec<Package>, PackageMode),
     BatchUpdate(Vec<Package>, PackageMode),
+    /// Remove a specific installed entry, disambiguated by unique_key.
+    RemoveInstalled {
+        pkg: Package,
+        unique_key: String,
+        mode: PackageMode,
+    },
+    /// Remove the current selection in the Installed view.
+    BatchRemoveInstalled {
+        count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
