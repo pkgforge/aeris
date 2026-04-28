@@ -1889,6 +1889,7 @@ impl App {
         mode: PackageMode,
         cx: &mut Context<Self>,
     ) {
+        let count = pkgs.len();
         self.browse_state.installing = Some("__batch__".to_string());
         let progress_sender = self.progress_sender.clone();
         let manager_adapters: Vec<Arc<dyn Adapter>> = self
@@ -1900,7 +1901,7 @@ impl App {
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in pkgs {
@@ -1910,6 +1911,7 @@ impl App {
                             .push(pkg);
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -1919,10 +1921,14 @@ impl App {
                                 .await
                             {
                                 Ok(_) => log::info!("Batch install completed for {adapter_id}"),
-                                Err(e) => log::error!("Batch install failed for {adapter_id}: {e}"),
+                                Err(e) => {
+                                    log::error!("Batch install failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
+                                }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -1931,6 +1937,20 @@ impl App {
                     this.update(cx, |app, cx| {
                         app.browse_state.installing = None;
                         app.browse_state.result_version += 1;
+                        if errors.is_empty() {
+                            app.add_toast(
+                                ToastLevel::Success,
+                                format!("Installed {count} packages"),
+                            );
+                        } else {
+                            for err in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to install: {err}"),
+                                );
+                            }
+                        }
+                        app.installed_state.loaded = false;
                         cx.notify();
                     })
                 });
@@ -1954,9 +1974,10 @@ impl App {
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
             .collect();
 
+        let count = pkgs.len();
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in pkgs {
@@ -1966,6 +1987,7 @@ impl App {
                             .push(pkg);
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -1975,10 +1997,14 @@ impl App {
                                 .await
                             {
                                 Ok(_) => log::info!("Batch remove completed for {adapter_id}"),
-                                Err(e) => log::error!("Batch remove failed for {adapter_id}: {e}"),
+                                Err(e) => {
+                                    log::error!("Batch remove failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
+                                }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -1987,6 +2013,16 @@ impl App {
                     this.update(cx, |app, cx| {
                         app.installed_state.removing = None;
                         app.installed_state.result_version += 1;
+                        if errors.is_empty() {
+                            app.add_toast(ToastLevel::Success, format!("Removed {count} packages"));
+                        } else {
+                            for err in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to remove: {err}"),
+                                );
+                            }
+                        }
                         app.load_installed(cx);
                     })
                 });
@@ -2010,9 +2046,10 @@ impl App {
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
             .collect();
 
+        let count = pkgs.len();
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in pkgs {
@@ -2022,6 +2059,7 @@ impl App {
                             .push(pkg);
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -2031,10 +2069,14 @@ impl App {
                                 .await
                             {
                                 Ok(_) => log::info!("Batch update completed for {adapter_id}"),
-                                Err(e) => log::error!("Batch update failed for {adapter_id}: {e}"),
+                                Err(e) => {
+                                    log::error!("Batch update failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
+                                }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -2043,6 +2085,17 @@ impl App {
                     this.update(cx, |app, cx| {
                         app.updates_state.updating = None;
                         app.updates_state.result_version += 1;
+                        if errors.is_empty() {
+                            app.add_toast(ToastLevel::Success, format!("Updated {count} packages"));
+                        } else {
+                            for err in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to update: {err}"),
+                                );
+                            }
+                        }
+                        app.installed_state.loaded = false;
                         cx.notify();
                     })
                 });
