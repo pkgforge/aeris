@@ -18,7 +18,6 @@ pub struct BrowseState {
     pub install_error: Option<String>,
     pub result_version: u64,
     pub installing: Option<String>,
-    pub installing_batch_ids: Vec<String>,
     pub selected_package: Option<Package>,
     pub search_debounce_version: u64,
     pub selected: HashSet<String>,

@@ -144,15 +144,6 @@ pub struct ActiveOperation {
     pub status: OperationStatus,
 }
 
-#[allow(dead_code)]
-pub struct TrackedOperation {
-    pub id: u64,
-    pub operation_type: OperationType,
-    pub package_name: String,
-    pub status: OperationStatus,
-    pub started_at: Instant,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastLevel {
     Success,
@@ -166,13 +157,6 @@ pub struct Toast {
     pub message: String,
     pub created_at: Instant,
     pub duration: Duration,
-}
-
-#[allow(dead_code)]
-pub struct QueuedOperation {
-    pub id: u64,
-    pub action: ConfirmAction,
-    pub queued_at: Instant,
 }
 
 #[derive(Default)]
@@ -203,11 +187,9 @@ pub struct App {
     event_receiver: std::sync::mpsc::Receiver<SoarEvent>,
     active_operation: Option<ActiveOperation>,
     package_progress: HashMap<String, OperationStatus>,
-    operations: Vec<TrackedOperation>,
     next_operation_id: u64,
     toasts: Vec<Toast>,
     next_toast_id: u64,
-    operation_queue: Vec<QueuedOperation>,
     /// Latest BatchProgress event from any adapter: (adapter_id, completed, total, failed).
     batch_progress: Option<(String, u32, u32, u32)>,
     progress_sender: crate::core::adapter::ProgressSender,
@@ -297,11 +279,9 @@ impl App {
             event_receiver,
             active_operation: None,
             package_progress: HashMap::new(),
-            operations: Vec::new(),
             next_operation_id: 1,
             toasts: Vec::new(),
             next_toast_id: 1,
-            operation_queue: Vec::new(),
             batch_progress: None,
             progress_sender,
             progress_receiver,
