@@ -166,30 +166,50 @@ pub struct RunPicker {
     pub binaries: Vec<std::path::PathBuf>,
 }
 
-/// List regular files inside `dir` that are executable (Unix +x).
-pub(crate) fn list_executables(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
+/// Find user-runnable binaries for a package: symlinks in `bin_path` whose
+/// canonicalized target lives inside `install_path`. Avoids launching
+/// internal helpers/libraries inside the install dir that happen to be
+/// marked executable but aren't meant to be invoked directly.
+pub(crate) fn list_package_binaries(
+    install_path: &std::path::Path,
+    bin_path: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let read = match std::fs::read_dir(dir) {
+    let canonical_install = match std::fs::canonicalize(install_path) {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    let read = match std::fs::read_dir(bin_path) {
         Ok(r) => r,
         Err(_) => return out,
     };
     for entry in read.flatten() {
         let path = entry.path();
-        let meta = match entry.metadata() {
+        let symlink_meta = match path.symlink_metadata() {
             Ok(m) => m,
             Err(_) => continue,
         };
-        if !meta.is_file() {
+        if !symlink_meta.file_type().is_symlink() {
             continue;
         }
-        if meta.permissions().mode() & 0o111 == 0 {
-            continue;
+        let canonical_target = match std::fs::canonicalize(&path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if canonical_target.starts_with(&canonical_install) {
+            out.push(path);
         }
-        out.push(path);
     }
     out.sort();
     out
+}
+
+/// Best-effort lookup of soar's bin directory for the active profile.
+pub(crate) fn soar_active_bin_path() -> Option<std::path::PathBuf> {
+    let config = soar_config::config::get_config();
+    let active = &config.default_profile;
+    let profile = config.profile.get(active)?;
+    Some(std::path::PathBuf::from(&profile.root_path).join("bin"))
 }
 
 #[derive(Default)]
@@ -1137,11 +1157,25 @@ impl App {
             return;
         }
 
-        let binaries = list_executables(&install_path);
+        let bin_path = match soar_active_bin_path() {
+            Some(p) => p,
+            None => {
+                self.add_toast(
+                    ToastLevel::Error,
+                    "Could not locate active profile bin directory".into(),
+                );
+                return;
+            }
+        };
+        let binaries = list_package_binaries(&install_path, &bin_path);
         match binaries.len() {
             0 => self.add_toast(
                 ToastLevel::Error,
-                format!("No executable found in {}", install_path.display()),
+                format!(
+                    "No binaries from {} are exposed in {}",
+                    install_path.display(),
+                    bin_path.display()
+                ),
             ),
             1 => {
                 let path = binaries.into_iter().next().unwrap();
@@ -1604,6 +1638,7 @@ impl Render for App {
                 div()
                     .absolute()
                     .size_full()
+                    .occlude()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1717,6 +1752,7 @@ impl Render for App {
                     div()
                         .absolute()
                         .size_full()
+                        .occlude()
                         .flex()
                         .items_center()
                         .justify_center()
