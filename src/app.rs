@@ -19,6 +19,15 @@ use crate::{
 
 pub use message::{ConfirmAction, RepoInfo};
 
+actions!(app, [Escape, Confirm]);
+
+pub fn bind_app_keys(cx: &mut gpui::App) {
+    cx.bind_keys([
+        KeyBinding::new("escape", Escape, None),
+        KeyBinding::new("enter", Confirm, None),
+    ]);
+}
+
 pub const APP_NAME: &str = "Aeris";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1491,6 +1500,46 @@ impl App {
         .detach();
     }
 
+    /// Handle the Escape key. Closes the topmost overlay or clears selection.
+    pub(crate) fn handle_escape(&mut self, cx: &mut Context<Self>) {
+        if self.settings_state.edit.is_some() {
+            self.close_settings_edit(cx);
+            return;
+        }
+        if self.run_picker.is_some() {
+            self.run_picker = None;
+            cx.notify();
+            return;
+        }
+        if self.confirm_dialog.is_some() {
+            self.confirm_dialog = None;
+            cx.notify();
+            return;
+        }
+        if !self.browse_state.selected.is_empty() {
+            self.browse_state.selected.clear();
+            cx.notify();
+            return;
+        }
+        if !self.installed_state.selected.is_empty() {
+            self.installed_state.selected.clear();
+            cx.notify();
+            return;
+        }
+        if self.browse_state.selected_package.is_some() {
+            self.browse_state.selected_package = None;
+            self.browse_state.selected_detail = None;
+            cx.notify();
+        }
+    }
+
+    /// Handle Enter to confirm the active dialog.
+    pub(crate) fn handle_confirm(&mut self, cx: &mut Context<Self>) {
+        if let Some(action) = self.confirm_dialog.take() {
+            self.execute_confirmed_action(action, cx);
+        }
+    }
+
     pub(crate) fn add_toast(&mut self, level: ToastLevel, message: String) {
         let id = self.next_toast_id;
         self.next_toast_id += 1;
@@ -1755,6 +1804,14 @@ impl Render for App {
         self.reap_running();
 
         let mut root = div()
+            .id("app-root")
+            .key_context("App")
+            .on_action(cx.listener(|app, _: &Escape, _window, cx| {
+                app.handle_escape(cx);
+            }))
+            .on_action(cx.listener(|app, _: &Confirm, _window, cx| {
+                app.handle_confirm(cx);
+            }))
             .size_full()
             .flex()
             .flex_row()

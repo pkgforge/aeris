@@ -39,6 +39,7 @@ fn main() {
 
     Application::new().run(|cx| {
         components::text_input::bind_text_input_keys(cx);
+        app::bind_app_keys(cx);
 
         let options = WindowOptions {
             window_min_size: Some(size(px(900.0), px(600.0))),
