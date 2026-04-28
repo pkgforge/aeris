@@ -491,10 +491,10 @@ impl App {
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
             .collect();
 
+        let count = packages.len();
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
-                    // Group by adapter
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in &packages {
@@ -504,6 +504,7 @@ impl App {
                             .push(pkg.clone());
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -513,10 +514,14 @@ impl App {
                                 .await
                             {
                                 Ok(_) => log::info!("Updated packages for {adapter_id}"),
-                                Err(e) => log::error!("Update failed for {adapter_id}: {e}"),
+                                Err(e) => {
+                                    log::error!("Update failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
+                                }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -526,6 +531,17 @@ impl App {
                         app.updates_state.updating = None;
                         app.updates_state.updates.clear();
                         app.updates_state.result_version += 1;
+                        if errors.is_empty() {
+                            app.add_toast(ToastLevel::Success, format!("Updated {count} packages"));
+                        } else {
+                            for err in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to update: {err}"),
+                                );
+                            }
+                        }
+                        app.installed_state.loaded = false;
                         cx.notify();
                     })
                 });
@@ -557,9 +573,10 @@ impl App {
             .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
             .collect();
 
+        let count = packages.len();
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in &packages {
@@ -569,6 +586,7 @@ impl App {
                             .push(pkg.clone());
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -579,11 +597,13 @@ impl App {
                             {
                                 Ok(_) => log::info!("Updated selected packages for {adapter_id}"),
                                 Err(e) => {
-                                    log::error!("Update selected failed for {adapter_id}: {e}")
+                                    log::error!("Update selected failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
                                 }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -593,7 +613,17 @@ impl App {
                         app.updates_state.updating = None;
                         app.updates_state.selected.clear();
                         app.updates_state.result_version += 1;
-                        // Refresh updates list
+                        if errors.is_empty() {
+                            app.add_toast(ToastLevel::Success, format!("Updated {count} packages"));
+                        } else {
+                            for err in &errors {
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Failed to update: {err}"),
+                                );
+                            }
+                        }
+                        app.installed_state.loaded = false;
                         cx.notify();
                     })
                 });
@@ -1783,6 +1813,7 @@ impl App {
         mode: PackageMode,
         cx: &mut Context<Self>,
     ) {
+        let pkg_name = pkg.name.clone();
         self.updates_state.updating = Some(pkg.id.clone());
         let progress_sender = self.progress_sender.clone();
         let adapter = self.adapter_manager.get_adapter(&pkg.adapter_id);
@@ -1790,19 +1821,36 @@ impl App {
         if let Some(adapter) = adapter {
             cx.spawn(
                 async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                    crate::tokio_spawn(async move {
-                        match adapter.update(&[pkg], Some(progress_sender), mode).await {
-                            Ok(_) => log::info!("Update completed"),
-                            Err(e) => log::error!("Update failed: {e}"),
-                        }
+                    let result = crate::tokio_spawn(async move {
+                        adapter.update(&[pkg], Some(progress_sender), mode).await
                     })
-                    .await
-                    .unwrap_or_default();
+                    .await;
 
                     let _ = cx.update(|cx| {
                         this.update(cx, |app, cx| {
                             app.updates_state.updating = None;
                             app.updates_state.result_version += 1;
+                            match result {
+                                Ok(Ok(_)) => {
+                                    app.add_toast(
+                                        ToastLevel::Success,
+                                        format!("Updated {pkg_name}"),
+                                    );
+                                }
+                                Ok(Err(e)) => {
+                                    app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to update {pkg_name}: {e}"),
+                                    );
+                                }
+                                Err(e) => {
+                                    app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to update {pkg_name}: {e}"),
+                                    );
+                                }
+                            }
+                            app.installed_state.loaded = false;
                             cx.notify();
                         })
                     });
