@@ -509,11 +509,13 @@ impl App {
 
         let adapter = self.adapter.clone();
         let mode = self.current_mode;
+        let prune = self.manifest_state.prune;
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let result =
-                    crate::tokio_spawn(async move { adapter.manifest_diff(mode).await }).await;
+                    crate::tokio_spawn(async move { adapter.manifest_diff(mode, prune).await })
+                        .await;
 
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
@@ -524,6 +526,122 @@ impl App {
                             Ok(Err(ManifestLoadError::Other(e))) => ManifestStatus::Failed(e),
                             Err(e) => ManifestStatus::Failed(format!("{e}")),
                         };
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn request_manifest_apply(&mut self, cx: &mut Context<Self>) {
+        use views::manifest::ManifestStatus;
+        let prune = self.manifest_state.prune;
+        let remove_names: Vec<String> = match &self.manifest_state.status {
+            ManifestStatus::Loaded(diff) if prune => {
+                diff.to_remove.iter().map(|e| e.name.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        if remove_names.is_empty() {
+            self.apply_manifest(prune, cx);
+        } else {
+            self.confirm_dialog = Some(ConfirmAction::ApplyManifest {
+                prune,
+                remove_names,
+            });
+            cx.notify();
+        }
+    }
+
+    pub fn apply_manifest(&mut self, prune: bool, cx: &mut Context<Self>) {
+        use crate::adapters::soar::ManifestLoadError;
+        use views::manifest::ManifestStatus;
+
+        let adapter_id = self.adapter.info().id.clone();
+        let seed_keys: Vec<String> = match &self.manifest_state.status {
+            ManifestStatus::Loaded(diff) => {
+                let mut keys: Vec<String> = diff
+                    .to_install
+                    .iter()
+                    .chain(diff.to_update.iter())
+                    .filter_map(|e| e.pkg_id.clone())
+                    .map(|pid| crate::core::adapter::progress_key(&adapter_id, &pid))
+                    .collect();
+                if prune {
+                    keys.extend(
+                        diff.to_remove
+                            .iter()
+                            .filter_map(|e| e.pkg_id.clone())
+                            .map(|pid| crate::core::adapter::progress_key(&adapter_id, &pid)),
+                    );
+                }
+                keys
+            }
+            _ => Vec::new(),
+        };
+        for key in seed_keys {
+            self.record_progress(key, OperationStatus::Starting);
+        }
+
+        self.manifest_state.applying = true;
+        self.manifest_state.apply_error = None;
+        self.manifest_state.last_report = None;
+
+        let adapter = self.adapter.clone();
+        let mode = self.current_mode;
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result = crate::tokio_spawn(async move {
+                    adapter.apply_manifest(mode, prune, false).await
+                })
+                .await;
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.manifest_state.applying = false;
+                        match result {
+                            Ok(Ok(report)) => {
+                                app.manifest_state.last_report = Some(report);
+                                let msg = format!(
+                                    "Manifest applied: {} installed, {} updated, {} removed",
+                                    report.installed, report.updated, report.removed
+                                );
+                                if report.failed > 0 {
+                                    app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("{msg}, {} failed", report.failed),
+                                    );
+                                } else {
+                                    app.add_toast(ToastLevel::Success, msg);
+                                }
+                            }
+                            Ok(Err(err)) => {
+                                let msg = match err {
+                                    ManifestLoadError::FileMissing => {
+                                        "Manifest file is missing".to_string()
+                                    }
+                                    ManifestLoadError::Parse(e) | ManifestLoadError::Other(e) => e,
+                                };
+                                app.manifest_state.apply_error = Some(msg.clone());
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Manifest apply failed: {msg}"),
+                                );
+                            }
+                            Err(e) => {
+                                let msg = format!("{e}");
+                                app.manifest_state.apply_error = Some(msg.clone());
+                                app.add_toast(
+                                    ToastLevel::Error,
+                                    format!("Manifest apply failed: {msg}"),
+                                );
+                            }
+                        }
+                        app.installed_state.loaded = false;
+                        app.updates_state.checked = false;
+                        app.load_manifest_diff(cx);
                         cx.notify();
                     })
                 });
@@ -1954,6 +2072,27 @@ impl Render for App {
                         mode_suffix(&self.current_mode)
                     )
                 }
+                ConfirmAction::ApplyManifest { remove_names, .. } => {
+                    if remove_names.is_empty() {
+                        format!("Apply manifest?{}", mode_suffix(&self.current_mode))
+                    } else {
+                        let preview = remove_names
+                            .iter()
+                            .take(5)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let suffix = if remove_names.len() > 5 {
+                            format!(" and {} more", remove_names.len() - 5)
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "Apply manifest with prune?{} This will remove: {preview}{suffix}.",
+                            mode_suffix(&self.current_mode)
+                        )
+                    }
+                }
             };
 
             let confirm_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
@@ -2584,6 +2723,9 @@ impl App {
             }
             ConfirmAction::BatchRemoveInstalled { .. } => {
                 self.remove_selected_installed(cx);
+            }
+            ConfirmAction::ApplyManifest { prune, .. } => {
+                self.apply_manifest(prune, cx);
             }
         }
     }

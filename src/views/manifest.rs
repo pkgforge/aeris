@@ -7,6 +7,7 @@ use crate::{app::App, styles, theme};
 #[derive(Debug, Clone, Default)]
 pub struct ManifestEntry {
     pub name: String,
+    pub pkg_id: Option<String>,
     pub current_version: Option<String>,
     pub new_version: Option<String>,
 }
@@ -18,6 +19,14 @@ pub struct ManifestDiff {
     pub to_remove: Vec<ManifestEntry>,
     pub in_sync: Vec<String>,
     pub not_found: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ManifestApplyReport {
+    pub installed: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub failed: usize,
 }
 
 #[derive(Debug)]
@@ -40,6 +49,10 @@ impl Default for ManifestStatus {
 pub struct ManifestState {
     pub path: Option<PathBuf>,
     pub status: ManifestStatus,
+    pub prune: bool,
+    pub applying: bool,
+    pub last_report: Option<ManifestApplyReport>,
+    pub apply_error: Option<String>,
 }
 
 impl App {
@@ -86,8 +99,20 @@ impl App {
             );
 
         let is_loading = matches!(self.manifest_state.status, ManifestStatus::Loading);
+        let applying = self.manifest_state.applying;
+        let has_changes = matches!(
+            &self.manifest_state.status,
+            ManifestStatus::Loaded(diff) if !diff.to_install.is_empty()
+                || !diff.to_update.is_empty()
+                || !diff.to_remove.is_empty()
+        );
+        let apply_enabled = has_changes && !applying && !is_loading;
+
         let reload_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.load_manifest_diff(cx);
+        });
+        let apply_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.request_manifest_apply(cx);
         });
 
         let reload_btn = div()
@@ -105,17 +130,42 @@ impl App {
             .on_click(reload_listener)
             .child(if is_loading { "Reloading…" } else { "Reload" });
 
-        let apply_btn = div()
+        let apply_label = if applying {
+            "Applying…"
+        } else {
+            "Apply"
+        };
+        let apply_bg = if apply_enabled { primary } else { surface };
+        let apply_fg = if apply_enabled {
+            gpui::white()
+        } else {
+            text_muted
+        };
+        let apply_border_color = if apply_enabled { primary } else { border };
+        let apply_hover_bg = if apply_enabled {
+            primary.opacity(0.85)
+        } else {
+            surface
+        };
+
+        let mut apply_btn = div()
+            .id("manifest-apply")
             .px(px(styles::spacing::LG))
             .py(px(styles::spacing::XS))
             .rounded(px(styles::radius::MD))
-            .bg(surface)
-            .text_color(text_muted)
+            .bg(apply_bg)
+            .text_color(apply_fg)
             .border_1()
-            .border_color(border)
+            .border_color(apply_border_color)
             .text_size(px(styles::font_size::SMALL))
             .font_weight(FontWeight::MEDIUM)
-            .child("Apply (coming soon)");
+            .child(apply_label.to_string());
+        if apply_enabled {
+            apply_btn = apply_btn
+                .cursor_pointer()
+                .hover(move |s| s.bg(apply_hover_bg))
+                .on_click(apply_listener);
+        }
 
         let header_row = div()
             .flex()
@@ -133,6 +183,13 @@ impl App {
                     .child(apply_btn),
             );
 
+        let prune_state = self.manifest_state.prune;
+        let prune_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.manifest_state.prune = !app.manifest_state.prune;
+            app.load_manifest_diff(cx);
+        });
+        let prune_switch = switch_pill(prune_state, primary, border, Box::new(prune_listener));
+
         let path_card = div()
             .px(px(styles::spacing::LG))
             .py(px(styles::spacing::MD))
@@ -143,19 +200,102 @@ impl App {
             .w_full()
             .flex()
             .flex_col()
-            .gap(px(styles::spacing::XXXS))
+            .gap(px(styles::spacing::SM))
             .child(
                 div()
-                    .text_size(px(styles::font_size::CAPTION))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(text_muted)
-                    .child("STATE FILE"),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(styles::spacing::XXXS))
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::CAPTION))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(text_muted)
+                                    .child("STATE FILE"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::SMALL))
+                                    .child(path_label),
+                            ),
+                    ),
             )
             .child(
                 div()
-                    .text_size(px(styles::font_size::SMALL))
-                    .child(path_label),
+                    .border_t_1()
+                    .border_color(border)
+                    .pt(px(styles::spacing::SM))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(styles::spacing::XXXS))
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Prune"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::CAPTION))
+                                    .text_color(text_muted)
+                                    .child(
+                                        "Remove installed packages that are not in the manifest.",
+                                    ),
+                            ),
+                    )
+                    .child(prune_switch),
             );
+
+        let report_card: Option<Div> = self.manifest_state.last_report.map(|report| {
+            let color = if report.failed > 0 { danger } else { success };
+            let summary = if report.failed > 0 {
+                format!(
+                    "Last apply: {} installed, {} updated, {} removed, {} failed",
+                    report.installed, report.updated, report.removed, report.failed
+                )
+            } else {
+                format!(
+                    "Last apply: {} installed, {} updated, {} removed",
+                    report.installed, report.updated, report.removed
+                )
+            };
+            div()
+                .px(px(styles::spacing::LG))
+                .py(px(styles::spacing::SM))
+                .rounded(px(styles::radius::MD))
+                .bg(color.opacity(0.12))
+                .border_1()
+                .border_color(color.opacity(0.3))
+                .text_size(px(styles::font_size::SMALL))
+                .text_color(color)
+                .child(summary)
+        });
+
+        let apply_error_card: Option<Div> =
+            self.manifest_state.apply_error.as_ref().map(|err| {
+                div()
+                    .px(px(styles::spacing::LG))
+                    .py(px(styles::spacing::SM))
+                    .rounded(px(styles::radius::MD))
+                    .bg(danger.opacity(0.12))
+                    .border_1()
+                    .border_color(danger.opacity(0.3))
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(danger)
+                    .child(format!("Apply failed: {err}"))
+            });
 
         let body: AnyElement = match &self.manifest_state.status {
             ManifestStatus::Idle | ManifestStatus::Loading => empty_panel(
@@ -199,14 +339,20 @@ impl App {
             .into_any_element(),
         };
 
-        let content = div()
+        let mut content = div()
             .flex()
             .flex_col()
             .gap(px(styles::spacing::LG))
             .w_full()
             .child(header_row)
-            .child(path_card)
-            .child(body);
+            .child(path_card);
+        if let Some(card) = report_card {
+            content = content.child(card);
+        }
+        if let Some(card) = apply_error_card {
+            content = content.child(card);
+        }
+        content = content.child(body);
 
         div()
             .id("manifest-scroll")
@@ -543,6 +689,38 @@ fn summary_chip(label: &str, count: usize, color: Hsla, theme: &theme::Theme) ->
                 .text_color(theme.text_muted)
                 .child(label.to_string()),
         )
+}
+
+fn switch_pill(
+    on: bool,
+    on_color: Hsla,
+    off_color: Hsla,
+    listener: Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
+) -> Stateful<Div> {
+    let track = if on { on_color } else { off_color };
+    let thumb = if on {
+        div()
+            .ml_auto()
+            .w(px(16.0))
+            .h(px(16.0))
+            .rounded_full()
+            .bg(gpui::white())
+    } else {
+        div().w(px(16.0)).h(px(16.0)).rounded_full().bg(gpui::white())
+    };
+    div()
+        .id("manifest-prune-switch")
+        .w(px(34.0))
+        .h(px(20.0))
+        .p(px(2.0))
+        .rounded_full()
+        .bg(track)
+        .cursor_pointer()
+        .flex()
+        .flex_row()
+        .items_center()
+        .on_click(listener)
+        .child(thumb)
 }
 
 fn chip(text: &str, bg: Hsla, border: Hsla, fg: Hsla) -> Div {

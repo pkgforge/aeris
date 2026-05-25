@@ -10,8 +10,11 @@ use soar_config::{
 };
 use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
 use soar_operations::{
-    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, apply::compute_diff, install,
-    remove, repo::RepoUpdate, update,
+    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext,
+    apply::{compute_diff, execute_apply},
+    install, remove,
+    repo::RepoUpdate,
+    update,
 };
 
 use crate::core::{
@@ -138,6 +141,7 @@ impl SoarAdapter {
     pub async fn manifest_diff(
         &self,
         mode: PackageMode,
+        prune: bool,
     ) -> std::result::Result<crate::views::manifest::ManifestDiff, ManifestLoadError> {
         let ctx = match mode {
             PackageMode::User => self.user_ctx(),
@@ -161,7 +165,7 @@ impl SoarAdapter {
         };
 
         let resolved = cfg.resolved_packages();
-        let diff = compute_diff(&ctx, &resolved, false)
+        let diff = compute_diff(&ctx, &resolved, prune)
             .await
             .map_err(|e| ManifestLoadError::Other(e.to_string()))?;
 
@@ -170,6 +174,7 @@ impl SoarAdapter {
             .into_iter()
             .map(|(pkg, target)| crate::views::manifest::ManifestEntry {
                 name: pkg.name.clone(),
+                pkg_id: Some(target.package.pkg_id.clone()),
                 current_version: None,
                 new_version: Some(target.package.version.clone()),
             })
@@ -180,6 +185,7 @@ impl SoarAdapter {
             .into_iter()
             .map(|(pkg, target)| crate::views::manifest::ManifestEntry {
                 name: pkg.name.clone(),
+                pkg_id: Some(target.package.pkg_id.clone()),
                 current_version: pkg.version.clone(),
                 new_version: Some(target.package.version.clone()),
             })
@@ -190,6 +196,7 @@ impl SoarAdapter {
             .into_iter()
             .map(|installed| crate::views::manifest::ManifestEntry {
                 name: installed.pkg_name.clone(),
+                pkg_id: Some(installed.pkg_id.clone()),
                 current_version: Some(installed.version.clone()),
                 new_version: None,
             })
@@ -201,6 +208,50 @@ impl SoarAdapter {
             to_remove,
             in_sync: diff.in_sync,
             not_found: diff.not_found,
+        })
+    }
+
+    pub async fn apply_manifest(
+        &self,
+        mode: PackageMode,
+        prune: bool,
+        no_verify: bool,
+    ) -> std::result::Result<crate::views::manifest::ManifestApplyReport, ManifestLoadError> {
+        let ctx = match mode {
+            PackageMode::User => self.user_ctx(),
+            PackageMode::System => self
+                .system_ctx()
+                .ok_or_else(|| ManifestLoadError::Other("System mode not available".into()))?,
+        };
+
+        let cfg = match PackagesConfig::load(None) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not found") || msg.to_lowercase().contains("no such file") {
+                    return Err(ManifestLoadError::FileMissing);
+                }
+                if msg.contains("toml") || msg.contains("parse") || msg.contains("expected") {
+                    return Err(ManifestLoadError::Parse(msg));
+                }
+                return Err(ManifestLoadError::Other(msg));
+            }
+        };
+
+        let resolved = cfg.resolved_packages();
+        let diff = compute_diff(&ctx, &resolved, prune)
+            .await
+            .map_err(|e| ManifestLoadError::Other(e.to_string()))?;
+
+        let report = execute_apply(&ctx, diff, no_verify)
+            .await
+            .map_err(|e| ManifestLoadError::Other(e.to_string()))?;
+
+        Ok(crate::views::manifest::ManifestApplyReport {
+            installed: report.installed_count,
+            updated: report.updated_count,
+            removed: report.removed_count,
+            failed: report.failed_count,
         })
     }
 

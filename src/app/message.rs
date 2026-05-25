@@ -19,6 +19,11 @@ pub enum ConfirmAction {
     BatchRemoveInstalled {
         count: usize,
     },
+    /// Apply the soar declarative manifest.
+    ApplyManifest {
+        prune: bool,
+        remove_names: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
