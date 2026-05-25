@@ -36,11 +36,16 @@ impl App {
         let surface = theme.surface;
         let border = theme.border;
         let hover = theme.hover;
+        let text_muted = theme.text_muted;
 
         let mode = self.current_mode;
         let title = match mode {
             PackageMode::User => "Installed Packages (User)",
             PackageMode::System => "Installed Packages (System)",
+        };
+        let subtitle = match mode {
+            PackageMode::User => "Packages installed in your user profile.",
+            PackageMode::System => "Packages installed system wide.",
         };
 
         let refresh_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
@@ -52,13 +57,30 @@ impl App {
         let syncing = self.adapter_view.syncing.is_some();
         let sync_label = if syncing { "Syncing..." } else { "Sync" };
 
+        let title_block = div()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::XXS))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::TITLE))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(text_muted)
+                    .child(subtitle),
+            );
+
         let header = div()
             .flex()
             .flex_row()
-            .items_center()
+            .items_start()
             .justify_between()
             .w_full()
-            .child(div().text_size(px(styles::font_size::TITLE)).child(title))
+            .child(title_block)
             .child(
                 div()
                     .flex()
@@ -170,11 +192,19 @@ impl App {
         }
 
         div()
-            .p(px(styles::spacing::XL))
+            .id("installed-scroll")
             .flex_1()
-            .flex()
-            .flex_col()
-            .child(main_col)
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .p(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(main_col),
+            )
     }
 
     fn render_installed_card(
@@ -406,11 +436,22 @@ impl App {
                         .border_1()
                         .border_color(border)
                         .text_size(px(styles::font_size::SMALL))
+                        .text_color(text_muted)
                         .child(label),
                 );
             } else {
+                let update_pkg = pkg.package.clone();
+                let update_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                    cx.stop_propagation();
+                    app.confirm_dialog = Some(crate::app::ConfirmAction::Update(
+                        update_pkg.clone(),
+                        app.current_mode,
+                    ));
+                    cx.notify();
+                });
                 buttons = buttons.child(
                     div()
+                        .id(SharedString::from(format!("update-installed-{idx}")))
                         .px(px(14.0))
                         .py(px(styles::spacing::XXS))
                         .rounded(px(styles::radius::MD))
@@ -418,6 +459,7 @@ impl App {
                         .text_color(gpui::white())
                         .text_size(px(styles::font_size::SMALL))
                         .cursor_pointer()
+                        .on_click(update_listener)
                         .child("Update"),
                 );
             }
