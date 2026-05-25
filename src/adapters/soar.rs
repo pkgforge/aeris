@@ -52,111 +52,6 @@ impl std::fmt::Display for ManifestLoadError {
     }
 }
 
-fn entry_to_snapshot(
-    name: &str,
-    item: &toml_edit::Item,
-) -> crate::views::manifest::ManifestEntrySnapshot {
-    let mut snap = crate::views::manifest::ManifestEntrySnapshot {
-        name: name.to_string(),
-        ..Default::default()
-    };
-    match item {
-        toml_edit::Item::Value(toml_edit::Value::String(s)) => {
-            let v = s.value().as_str();
-            snap.version = if v == "*" { String::new() } else { v.to_string() };
-        }
-        toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
-            for (k, v) in t.iter() {
-                read_field(&mut snap, k, v);
-            }
-        }
-        toml_edit::Item::Table(t) => {
-            for (k, item) in t.iter() {
-                if let Some(v) = item.as_value() {
-                    read_field(&mut snap, k, v);
-                } else if let toml_edit::Item::Table(sub) = item {
-                    if k == "build" {
-                        for (sk, sub_item) in sub.iter() {
-                            if let Some(sv) = sub_item.as_value() {
-                                read_build_field(&mut snap, sk, sv);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    snap
-}
-
-fn read_field(
-    snap: &mut crate::views::manifest::ManifestEntrySnapshot,
-    key: &str,
-    value: &toml_edit::Value,
-) {
-    let str_val = |v: &toml_edit::Value| v.as_str().map(|s| s.to_string());
-    let bool_val = |v: &toml_edit::Value| v.as_bool();
-    let arr_val = |v: &toml_edit::Value| {
-        v.as_array().map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>()
-        })
-    };
-    match key {
-        "version" => {
-            if let Some(s) = str_val(value) {
-                snap.version = if s == "*" { String::new() } else { s };
-            }
-        }
-        "pkg_id" => snap.pkg_id = str_val(value).unwrap_or_default(),
-        "repo" => snap.repo = str_val(value).unwrap_or_default(),
-        "url" => snap.url = str_val(value).unwrap_or_default(),
-        "github" => snap.github = str_val(value).unwrap_or_default(),
-        "gitlab" => snap.gitlab = str_val(value).unwrap_or_default(),
-        "asset_pattern" => snap.asset_pattern = str_val(value).unwrap_or_default(),
-        "tag_pattern" => snap.tag_pattern = str_val(value).unwrap_or_default(),
-        "include_prerelease" => snap.include_prerelease = bool_val(value).unwrap_or(false),
-        "pinned" => snap.pinned = bool_val(value).unwrap_or(false),
-        "binary_only" => snap.binary_only = bool_val(value).unwrap_or(false),
-        "profile" => snap.profile = str_val(value).unwrap_or_default(),
-        "install_patterns" => {
-            if let Some(list) = arr_val(value) {
-                snap.install_patterns = list.join(", ");
-            }
-        }
-        _ => {}
-    }
-}
-
-fn read_build_field(
-    snap: &mut crate::views::manifest::ManifestEntrySnapshot,
-    key: &str,
-    value: &toml_edit::Value,
-) {
-    let arr_val = |v: &toml_edit::Value| {
-        v.as_array().map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>()
-        })
-    };
-    match key {
-        "commands" => {
-            if let Some(list) = arr_val(value) {
-                snap.build_commands = list.join("; ");
-            }
-        }
-        "dependencies" => {
-            if let Some(list) = arr_val(value) {
-                snap.build_dependencies = list.join(", ");
-            }
-        }
-        _ => {}
-    }
-}
-
 fn split_list(s: &str, sep: char) -> Vec<String> {
     s.split(sep)
         .map(|p| p.trim().to_string())
@@ -164,7 +59,39 @@ fn split_list(s: &str, sep: char) -> Vec<String> {
         .collect()
 }
 
-fn fill_inline_table(
+fn upsert_str_inline(t: &mut toml_edit::InlineTable, key: &str, value: &str) {
+    if value.is_empty() {
+        t.remove(key);
+    } else {
+        t.insert(key, value.into());
+    }
+}
+
+fn upsert_bool_inline(t: &mut toml_edit::InlineTable, key: &str, value: bool) {
+    if value {
+        t.insert(key, true.into());
+    } else {
+        t.remove(key);
+    }
+}
+
+fn upsert_str_table(t: &mut toml_edit::Table, key: &str, value: &str) {
+    if value.is_empty() {
+        t.remove(key);
+    } else {
+        t.insert(key, toml_edit::value(value.to_string()));
+    }
+}
+
+fn upsert_bool_table(t: &mut toml_edit::Table, key: &str, value: bool) {
+    if value {
+        t.insert(key, toml_edit::value(true));
+    } else {
+        t.remove(key);
+    }
+}
+
+fn upsert_inline_fields(
     t: &mut toml_edit::InlineTable,
     snap: &crate::views::manifest::ManifestEntrySnapshot,
 ) {
@@ -174,113 +101,140 @@ fn fill_inline_table(
         snap.version.clone()
     };
     t.insert("version", v.into());
-    if !snap.pkg_id.is_empty() {
-        t.insert("pkg_id", snap.pkg_id.clone().into());
-    }
-    if !snap.repo.is_empty() {
-        t.insert("repo", snap.repo.clone().into());
-    }
-    if !snap.url.is_empty() {
-        t.insert("url", snap.url.clone().into());
-    }
-    if !snap.github.is_empty() {
-        t.insert("github", snap.github.clone().into());
-    }
-    if !snap.gitlab.is_empty() {
-        t.insert("gitlab", snap.gitlab.clone().into());
-    }
-    if !snap.asset_pattern.is_empty() {
-        t.insert("asset_pattern", snap.asset_pattern.clone().into());
-    }
-    if !snap.tag_pattern.is_empty() {
-        t.insert("tag_pattern", snap.tag_pattern.clone().into());
-    }
-    if snap.include_prerelease {
-        t.insert("include_prerelease", true.into());
-    }
-    if !snap.profile.is_empty() {
-        t.insert("profile", snap.profile.clone().into());
-    }
-    if snap.pinned {
-        t.insert("pinned", true.into());
-    }
-    if snap.binary_only {
-        t.insert("binary_only", true.into());
-    }
-    if !snap.install_patterns.is_empty() {
+
+    upsert_str_inline(t, "pkg_id", &snap.pkg_id);
+    upsert_str_inline(t, "repo", &snap.repo);
+    upsert_str_inline(t, "url", &snap.url);
+    upsert_str_inline(t, "github", &snap.github);
+    upsert_str_inline(t, "gitlab", &snap.gitlab);
+    upsert_str_inline(t, "asset_pattern", &snap.asset_pattern);
+    upsert_str_inline(t, "tag_pattern", &snap.tag_pattern);
+    upsert_str_inline(t, "profile", &snap.profile);
+    upsert_bool_inline(t, "include_prerelease", snap.include_prerelease);
+    upsert_bool_inline(t, "pinned", snap.pinned);
+    upsert_bool_inline(t, "binary_only", snap.binary_only);
+
+    if snap.install_patterns.is_empty() {
+        t.remove("install_patterns");
+    } else {
         let mut arr = toml_edit::Array::new();
         for p in split_list(&snap.install_patterns, ',') {
             arr.push(p);
         }
         t.insert("install_patterns", toml_edit::Value::Array(arr));
     }
+
+    let want_commands = !snap.build_commands.is_empty();
+    let want_deps = !snap.build_dependencies.is_empty();
+    if want_commands || want_deps {
+        let existing_build = match t.get_mut("build") {
+            Some(toml_edit::Value::InlineTable(b)) => Some(b),
+            _ => None,
+        };
+        let mut owned;
+        let build_ref = if let Some(b) = existing_build {
+            b
+        } else {
+            owned = toml_edit::InlineTable::new();
+            t.insert("build", toml_edit::Value::InlineTable(owned.clone()));
+            match t.get_mut("build").unwrap() {
+                toml_edit::Value::InlineTable(b) => b,
+                _ => unreachable!(),
+            }
+        };
+        if want_commands {
+            let mut arr = toml_edit::Array::new();
+            for c in split_list(&snap.build_commands, ';') {
+                arr.push(c);
+            }
+            build_ref.insert("commands", toml_edit::Value::Array(arr));
+        } else {
+            build_ref.remove("commands");
+        }
+        if want_deps {
+            let mut arr = toml_edit::Array::new();
+            for d in split_list(&snap.build_dependencies, ',') {
+                arr.push(d);
+            }
+            build_ref.insert("dependencies", toml_edit::Value::Array(arr));
+        } else {
+            build_ref.remove("dependencies");
+        }
+    } else if let Some(toml_edit::Value::InlineTable(b)) = t.get_mut("build") {
+        b.remove("commands");
+        b.remove("dependencies");
+        if b.is_empty() {
+            t.remove("build");
+        }
+    }
 }
 
-fn fill_table(t: &mut toml_edit::Table, snap: &crate::views::manifest::ManifestEntrySnapshot) {
+fn upsert_table_fields(
+    t: &mut toml_edit::Table,
+    snap: &crate::views::manifest::ManifestEntrySnapshot,
+) {
     let v = if snap.version.is_empty() {
         "*".to_string()
     } else {
         snap.version.clone()
     };
     t.insert("version", toml_edit::value(v));
-    if !snap.pkg_id.is_empty() {
-        t.insert("pkg_id", toml_edit::value(snap.pkg_id.clone()));
-    }
-    if !snap.repo.is_empty() {
-        t.insert("repo", toml_edit::value(snap.repo.clone()));
-    }
-    if !snap.url.is_empty() {
-        t.insert("url", toml_edit::value(snap.url.clone()));
-    }
-    if !snap.github.is_empty() {
-        t.insert("github", toml_edit::value(snap.github.clone()));
-    }
-    if !snap.gitlab.is_empty() {
-        t.insert("gitlab", toml_edit::value(snap.gitlab.clone()));
-    }
-    if !snap.asset_pattern.is_empty() {
-        t.insert("asset_pattern", toml_edit::value(snap.asset_pattern.clone()));
-    }
-    if !snap.tag_pattern.is_empty() {
-        t.insert("tag_pattern", toml_edit::value(snap.tag_pattern.clone()));
-    }
-    if snap.include_prerelease {
-        t.insert("include_prerelease", toml_edit::value(true));
-    }
-    if !snap.profile.is_empty() {
-        t.insert("profile", toml_edit::value(snap.profile.clone()));
-    }
-    if snap.pinned {
-        t.insert("pinned", toml_edit::value(true));
-    }
-    if snap.binary_only {
-        t.insert("binary_only", toml_edit::value(true));
-    }
-    if !snap.install_patterns.is_empty() {
+
+    upsert_str_table(t, "pkg_id", &snap.pkg_id);
+    upsert_str_table(t, "repo", &snap.repo);
+    upsert_str_table(t, "url", &snap.url);
+    upsert_str_table(t, "github", &snap.github);
+    upsert_str_table(t, "gitlab", &snap.gitlab);
+    upsert_str_table(t, "asset_pattern", &snap.asset_pattern);
+    upsert_str_table(t, "tag_pattern", &snap.tag_pattern);
+    upsert_str_table(t, "profile", &snap.profile);
+    upsert_bool_table(t, "include_prerelease", snap.include_prerelease);
+    upsert_bool_table(t, "pinned", snap.pinned);
+    upsert_bool_table(t, "binary_only", snap.binary_only);
+
+    if snap.install_patterns.is_empty() {
+        t.remove("install_patterns");
+    } else {
         let mut arr = toml_edit::Array::new();
         for p in split_list(&snap.install_patterns, ',') {
             arr.push(p);
         }
         t.insert("install_patterns", toml_edit::value(arr));
     }
-    if !snap.build_commands.is_empty() || !snap.build_dependencies.is_empty() {
-        let mut build = toml_edit::Table::new();
-        build.set_implicit(false);
-        if !snap.build_commands.is_empty() {
-            let mut arr = toml_edit::Array::new();
-            for c in split_list(&snap.build_commands, ';') {
-                arr.push(c);
+
+    let want_commands = !snap.build_commands.is_empty();
+    let want_deps = !snap.build_dependencies.is_empty();
+    if want_commands || want_deps {
+        let build_item = t
+            .entry("build")
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+        if let toml_edit::Item::Table(build) = build_item {
+            build.set_implicit(false);
+            if want_commands {
+                let mut arr = toml_edit::Array::new();
+                for c in split_list(&snap.build_commands, ';') {
+                    arr.push(c);
+                }
+                build.insert("commands", toml_edit::value(arr));
+            } else {
+                build.remove("commands");
             }
-            build.insert("commands", toml_edit::value(arr));
-        }
-        if !snap.build_dependencies.is_empty() {
-            let mut arr = toml_edit::Array::new();
-            for d in split_list(&snap.build_dependencies, ',') {
-                arr.push(d);
+            if want_deps {
+                let mut arr = toml_edit::Array::new();
+                for d in split_list(&snap.build_dependencies, ',') {
+                    arr.push(d);
+                }
+                build.insert("dependencies", toml_edit::value(arr));
+            } else {
+                build.remove("dependencies");
             }
-            build.insert("dependencies", toml_edit::value(arr));
         }
-        t.insert("build", toml_edit::Item::Table(build));
+    } else if let Some(toml_edit::Item::Table(b)) = t.get_mut("build") {
+        b.remove("commands");
+        b.remove("dependencies");
+        if b.is_empty() {
+            t.remove("build");
+        }
     }
 }
 
@@ -476,28 +430,60 @@ impl SoarAdapter {
         &self,
         name: &str,
     ) -> std::result::Result<Option<crate::views::manifest::ManifestEntrySnapshot>, String> {
+        use soar_config::packages::PackageSpec;
         let path = self.manifest_path();
         if !path.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let doc = content
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| e.to_string())?;
-        let pkgs = match doc.get("packages").and_then(|i| i.as_table()) {
-            Some(t) => t,
+        let cfg = PackagesConfig::load(None).map_err(|e| e.to_string())?;
+        let spec = match cfg.packages.get(name) {
+            Some(s) => s,
             None => return Ok(None),
         };
-        let item = match pkgs.get(name) {
-            Some(it) => it,
-            None => return Ok(None),
+        let mut snap = crate::views::manifest::ManifestEntrySnapshot {
+            name: name.to_string(),
+            ..Default::default()
         };
-        Ok(Some(entry_to_snapshot(name, item)))
+        match spec {
+            PackageSpec::Simple(version) => {
+                snap.version = if version == "*" {
+                    String::new()
+                } else {
+                    version.clone()
+                };
+            }
+            PackageSpec::Detailed(opts) => {
+                snap.version = opts
+                    .version
+                    .clone()
+                    .filter(|v| v != "*")
+                    .unwrap_or_default();
+                snap.pkg_id = opts.pkg_id.clone().unwrap_or_default();
+                snap.repo = opts.repo.clone().unwrap_or_default();
+                snap.url = opts.url.clone().unwrap_or_default();
+                snap.github = opts.github.clone().unwrap_or_default();
+                snap.gitlab = opts.gitlab.clone().unwrap_or_default();
+                snap.asset_pattern = opts.asset_pattern.clone().unwrap_or_default();
+                snap.tag_pattern = opts.tag_pattern.clone().unwrap_or_default();
+                snap.include_prerelease = opts.include_prerelease.unwrap_or(false);
+                snap.profile = opts.profile.clone().unwrap_or_default();
+                snap.pinned = opts.pinned;
+                snap.binary_only = opts.binary_only.unwrap_or(false);
+                if let Some(ref build) = opts.build {
+                    snap.build_commands = build.commands.join("; ");
+                    snap.build_dependencies = build.dependencies.join(", ");
+                }
+                if let Some(ref pats) = opts.install_patterns {
+                    snap.install_patterns = pats.join(", ");
+                }
+            }
+        }
+        Ok(Some(snap))
     }
 
     pub fn write_manifest_entry(
         &self,
-        snapshot: &crate::views::manifest::ManifestEntrySnapshot,
+        snap: &crate::views::manifest::ManifestEntrySnapshot,
     ) -> std::result::Result<(), String> {
         let path = self.manifest_path();
         let mut doc = read_or_new_manifest(&path)?;
@@ -508,33 +494,44 @@ impl SoarAdapter {
             .as_table_mut()
             .ok_or_else(|| "packages entry is not a table".to_string())?;
 
-        if !snapshot.needs_detailed() {
-            let v = if snapshot.version.is_empty() {
+        let existing = pkgs_tbl.get(&snap.name);
+        let was_simple = matches!(
+            existing,
+            Some(toml_edit::Item::Value(toml_edit::Value::String(_)))
+        );
+        let was_inline = matches!(
+            existing,
+            Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(_)))
+        );
+        let was_table = matches!(existing, Some(toml_edit::Item::Table(_)));
+        let did_exist = was_simple || was_inline || was_table;
+
+        if !snap.needs_detailed() && (was_simple || !did_exist) {
+            let v = if snap.version.is_empty() {
                 "*".to_string()
             } else {
-                snapshot.version.clone()
+                snap.version.clone()
             };
-            pkgs_tbl.insert(&snapshot.name, toml_edit::value(v));
-        } else {
-            // Preserve sub-table shape if the existing entry uses one. Otherwise
-            // write a fresh sub-table so multi-line fields stay readable.
-            let existing_inline = matches!(
-                pkgs_tbl.get(&snapshot.name),
-                Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(_)))
-            );
-            if existing_inline {
-                let mut t = toml_edit::InlineTable::new();
-                fill_inline_table(&mut t, snapshot);
-                pkgs_tbl.insert(
-                    &snapshot.name,
-                    toml_edit::Item::Value(toml_edit::Value::InlineTable(t)),
-                );
-            } else {
-                let mut t = toml_edit::Table::new();
-                fill_table(&mut t, snapshot);
-                pkgs_tbl.insert(&snapshot.name, toml_edit::Item::Table(t));
-            }
+            pkgs_tbl.insert(&snap.name, toml_edit::value(v));
+            return atomic_write_manifest(&path, &doc);
         }
+
+        if was_inline {
+            if let Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(t))) =
+                pkgs_tbl.get_mut(&snap.name)
+            {
+                upsert_inline_fields(t, snap);
+            }
+        } else if was_table {
+            if let Some(toml_edit::Item::Table(t)) = pkgs_tbl.get_mut(&snap.name) {
+                upsert_table_fields(t, snap);
+            }
+        } else {
+            let mut t = toml_edit::Table::new();
+            upsert_table_fields(&mut t, snap);
+            pkgs_tbl.insert(&snap.name, toml_edit::Item::Table(t));
+        }
+
         atomic_write_manifest(&path, &doc)
     }
 
