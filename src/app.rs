@@ -638,6 +638,12 @@ impl App {
             .filter(|u| selected.contains(&u.package.id))
             .map(|u| u.package.clone())
             .collect();
+        for pkg in &packages {
+            let key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+            self.updates_state
+                .package_progress
+                .insert(key, OperationStatus::Starting);
+        }
         let mode = self.current_mode;
         let progress_sender = self.progress_sender.clone();
 
@@ -1566,6 +1572,16 @@ impl App {
         self.toasts.retain(|t| t.created_at.elapsed() < t.duration);
     }
 
+    fn record_progress(&mut self, key: String, status: OperationStatus) {
+        self.browse_state
+            .package_progress
+            .insert(key.clone(), status.clone());
+        self.installed_state
+            .package_progress
+            .insert(key.clone(), status.clone());
+        self.updates_state.package_progress.insert(key, status);
+    }
+
     fn drain_progress(&mut self, cx: &mut Context<Self>) {
         use crate::core::adapter::{ProgressEvent, progress_key};
         use soar_events::{InstallStage, RemoveStage, SoarEvent, VerifyStage};
@@ -1583,14 +1599,13 @@ impl App {
                     total_bytes,
                 } => {
                     let key = progress_key(&adapter_id, &package_id);
-                    let status = OperationStatus::Downloading {
-                        current: current_bytes,
-                        total: total_bytes,
-                    };
-                    self.browse_state
-                        .package_progress
-                        .insert(key.clone(), status.clone());
-                    self.installed_state.package_progress.insert(key, status);
+                    self.record_progress(
+                        key,
+                        OperationStatus::Downloading {
+                            current: current_bytes,
+                            total: total_bytes,
+                        },
+                    );
                 }
                 ProgressEvent::Phase {
                     adapter_id,
@@ -1599,23 +1614,14 @@ impl App {
                     ..
                 } => {
                     let key = progress_key(&adapter_id, &package_id);
-                    let status = OperationStatus::Installing(phase);
-                    self.browse_state
-                        .package_progress
-                        .insert(key.clone(), status.clone());
-                    self.installed_state.package_progress.insert(key, status);
+                    self.record_progress(key, OperationStatus::Installing(phase));
                 }
                 ProgressEvent::Completed {
                     adapter_id,
                     package_id,
                 } => {
                     let key = progress_key(&adapter_id, &package_id);
-                    self.browse_state
-                        .package_progress
-                        .insert(key.clone(), OperationStatus::Completed);
-                    self.installed_state
-                        .package_progress
-                        .insert(key, OperationStatus::Completed);
+                    self.record_progress(key, OperationStatus::Completed);
                     for pkg in &mut self.browse_state.search_results {
                         if pkg.id == package_id && pkg.adapter_id == adapter_id {
                             pkg.installed = true;
@@ -1628,11 +1634,7 @@ impl App {
                     error,
                 } => {
                     let key = progress_key(&adapter_id, &package_id);
-                    let status = OperationStatus::Failed(error);
-                    self.browse_state
-                        .package_progress
-                        .insert(key.clone(), status.clone());
-                    self.installed_state.package_progress.insert(key, status);
+                    self.record_progress(key, OperationStatus::Failed(error));
                 }
                 ProgressEvent::Status { message, .. } => {
                     log::info!("Progress status: {message}");
@@ -1658,11 +1660,10 @@ impl App {
             match event {
                 SoarEvent::DownloadStarting { pkg_id, total, .. } => {
                     if let Some(key) = self.soar_progress_key(&pkg_id) {
-                        let status = OperationStatus::Downloading { current: 0, total };
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(
+                            key,
+                            OperationStatus::Downloading { current: 0, total },
+                        );
                     }
                 }
                 SoarEvent::DownloadProgress {
@@ -1678,20 +1679,18 @@ impl App {
                     ..
                 } => {
                     if let Some(key) = self.soar_progress_key(&pkg_id) {
-                        let status = OperationStatus::Downloading { current, total };
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(
+                            key,
+                            OperationStatus::Downloading { current, total },
+                        );
                     }
                 }
                 SoarEvent::DownloadComplete { pkg_id, .. } => {
                     if let Some(key) = self.soar_progress_key(&pkg_id) {
-                        let status = OperationStatus::Installing("Download complete".into());
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(
+                            key,
+                            OperationStatus::Installing("Download complete".into()),
+                        );
                     }
                 }
                 SoarEvent::Verifying { pkg_id, stage, .. } => {
@@ -1702,11 +1701,7 @@ impl App {
                             VerifyStage::Passed => "Verification passed",
                             VerifyStage::Failed(_) => "Verification failed",
                         };
-                        let status = OperationStatus::Verifying(label.into());
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(key, OperationStatus::Verifying(label.into()));
                     }
                 }
                 SoarEvent::Installing { pkg_id, stage, .. } => {
@@ -1721,11 +1716,7 @@ impl App {
                             InstallStage::RunningHook(h) => format!("Running hook: {h}"),
                             InstallStage::Complete => "Complete".to_string(),
                         };
-                        let status = OperationStatus::Installing(label);
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(key, OperationStatus::Installing(label));
                     }
                 }
                 SoarEvent::Removing { pkg_id, stage, .. } => {
@@ -1739,40 +1730,26 @@ impl App {
                             RemoveStage::CleaningDatabase => "Cleaning database".to_string(),
                             RemoveStage::Complete { .. } => "Complete".to_string(),
                         };
-                        let status = OperationStatus::Removing(label);
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(key, OperationStatus::Removing(label));
                     }
                 }
                 SoarEvent::OperationComplete { pkg_id, .. } => {
                     if let Some(key) = self.soar_progress_key(&pkg_id) {
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), OperationStatus::Completed);
-                        self.installed_state
-                            .package_progress
-                            .insert(key, OperationStatus::Completed);
+                        self.record_progress(key, OperationStatus::Completed);
                     }
                 }
                 SoarEvent::OperationFailed { pkg_id, error, .. } => {
                     if let Some(key) = self.soar_progress_key(&pkg_id) {
-                        let status = OperationStatus::Failed(error);
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(key, OperationStatus::Failed(error));
                     }
                 }
                 SoarEvent::DownloadRetry { pkg_id, .. }
                 | SoarEvent::DownloadAborted { pkg_id, .. } => {
                     if let Some(key) = self.soar_progress_key(&pkg_id) {
-                        let status = OperationStatus::Failed("Download failed".into());
-                        self.browse_state
-                            .package_progress
-                            .insert(key.clone(), status.clone());
-                        self.installed_state.package_progress.insert(key, status);
+                        self.record_progress(
+                            key,
+                            OperationStatus::Failed("Download failed".into()),
+                        );
                     }
                 }
                 _ => {}
