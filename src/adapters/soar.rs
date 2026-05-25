@@ -4,11 +4,14 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use soar_config::config::Config;
+use soar_config::{
+    config::Config,
+    packages::{PackagesConfig, PACKAGES_CONFIG_PATH},
+};
 use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
 use soar_operations::{
-    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove,
-    repo::RepoUpdate, update,
+    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, apply::compute_diff, install,
+    remove, repo::RepoUpdate, update,
 };
 
 use crate::core::{
@@ -27,6 +30,23 @@ pub struct SoarAdapter {
     user_events: EventSinkHandle,
     has_system: bool,
     info: AdapterInfo,
+}
+
+#[derive(Debug, Clone)]
+pub enum ManifestLoadError {
+    FileMissing,
+    Parse(String),
+    Other(String),
+}
+
+impl std::fmt::Display for ManifestLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileMissing => write!(f, "Manifest file is missing"),
+            Self::Parse(e) => write!(f, "{e}"),
+            Self::Other(e) => write!(f, "{e}"),
+        }
+    }
 }
 
 impl SoarAdapter {
@@ -109,6 +129,79 @@ impl SoarAdapter {
     ) -> Result<()> {
         self.run_system_command(settings, &["install", "--system", query])
             .await
+    }
+
+    pub fn manifest_path(&self) -> PathBuf {
+        PACKAGES_CONFIG_PATH.read().unwrap().clone()
+    }
+
+    pub async fn manifest_diff(
+        &self,
+        mode: PackageMode,
+    ) -> std::result::Result<crate::views::manifest::ManifestDiff, ManifestLoadError> {
+        let ctx = match mode {
+            PackageMode::User => self.user_ctx(),
+            PackageMode::System => self
+                .system_ctx()
+                .ok_or_else(|| ManifestLoadError::Other("System mode not available".into()))?,
+        };
+
+        let cfg = match PackagesConfig::load(None) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not found") || msg.to_lowercase().contains("no such file") {
+                    return Err(ManifestLoadError::FileMissing);
+                }
+                if msg.contains("toml") || msg.contains("parse") || msg.contains("expected") {
+                    return Err(ManifestLoadError::Parse(msg));
+                }
+                return Err(ManifestLoadError::Other(msg));
+            }
+        };
+
+        let resolved = cfg.resolved_packages();
+        let diff = compute_diff(&ctx, &resolved, false)
+            .await
+            .map_err(|e| ManifestLoadError::Other(e.to_string()))?;
+
+        let to_install = diff
+            .to_install
+            .into_iter()
+            .map(|(pkg, target)| crate::views::manifest::ManifestEntry {
+                name: pkg.name.clone(),
+                current_version: None,
+                new_version: Some(target.package.version.clone()),
+            })
+            .collect();
+
+        let to_update = diff
+            .to_update
+            .into_iter()
+            .map(|(pkg, target)| crate::views::manifest::ManifestEntry {
+                name: pkg.name.clone(),
+                current_version: pkg.version.clone(),
+                new_version: Some(target.package.version.clone()),
+            })
+            .collect();
+
+        let to_remove = diff
+            .to_remove
+            .into_iter()
+            .map(|installed| crate::views::manifest::ManifestEntry {
+                name: installed.pkg_name.clone(),
+                current_version: Some(installed.version.clone()),
+                new_version: None,
+            })
+            .collect();
+
+        Ok(crate::views::manifest::ManifestDiff {
+            to_install,
+            to_update,
+            to_remove,
+            in_sync: diff.in_sync,
+            not_found: diff.not_found,
+        })
     }
 
     fn find_executable_path() -> String {
@@ -536,6 +629,7 @@ impl SoarAdapter {
                         supports_hooks: true,
                         supports_build_from_source: true,
                         supports_batch_install: true,
+                        supports_declarative: true,
                         supports_user_packages: true,
                         supports_system_packages: has_system,
                         ..Capabilities::default()

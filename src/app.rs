@@ -61,6 +61,7 @@ pub enum View {
     Installed,
     Updates,
     AdapterInfo,
+    Manifest,
     Settings,
 }
 
@@ -81,6 +82,7 @@ impl std::fmt::Display for View {
             View::Installed => write!(f, "Installed"),
             View::Updates => write!(f, "Updates"),
             View::AdapterInfo => write!(f, "Adapters"),
+            View::Manifest => write!(f, "Manifest"),
             View::Settings => write!(f, "Settings"),
         }
     }
@@ -282,6 +284,7 @@ pub struct App {
     pub(crate) installed_state: views::installed::InstalledState,
     pub(crate) updates_state: views::updates::UpdatesState,
     pub(crate) settings_state: views::settings::SettingsState,
+    pub(crate) manifest_state: views::manifest::ManifestState,
 
     // Text input entities
     pub(crate) search_input: Entity<crate::components::TextInput>,
@@ -381,6 +384,7 @@ impl App {
             installed_state: views::installed::InstalledState::default(),
             updates_state: views::updates::UpdatesState::default(),
             settings_state,
+            manifest_state: views::manifest::ManifestState::default(),
             search_input,
             focus_handle: cx.focus_handle(),
             pending_settings_edit_focus: false,
@@ -488,6 +492,38 @@ impl App {
                         app.installed_state.loaded = true;
                         app.installed_state.result_version += 1;
                         app.installed_state.updatable_adapters = updatable_adapters;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    pub fn load_manifest_diff(&mut self, cx: &mut Context<Self>) {
+        use crate::adapters::soar::ManifestLoadError;
+        use views::manifest::ManifestStatus;
+
+        self.manifest_state.path = Some(self.adapter.manifest_path());
+        self.manifest_state.status = ManifestStatus::Loading;
+
+        let adapter = self.adapter.clone();
+        let mode = self.current_mode;
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result =
+                    crate::tokio_spawn(async move { adapter.manifest_diff(mode).await }).await;
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.manifest_state.status = match result {
+                            Ok(Ok(diff)) => ManifestStatus::Loaded(diff),
+                            Ok(Err(ManifestLoadError::FileMissing)) => ManifestStatus::FileMissing,
+                            Ok(Err(ManifestLoadError::Parse(e))) => ManifestStatus::ParseError(e),
+                            Ok(Err(ManifestLoadError::Other(e))) => ManifestStatus::Failed(e),
+                            Err(e) => ManifestStatus::Failed(format!("{e}")),
+                        };
                         cx.notify();
                     })
                 });
@@ -2321,14 +2357,22 @@ impl Render for App {
 impl App {
     fn render_sidebar(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.current_view;
-        let nav_items: [(View, &str); 6] = [
+        let mut nav_items: Vec<(View, &str)> = vec![
             (View::Dashboard, "Dashboard"),
             (View::Browse, "Browse"),
             (View::Installed, "Installed"),
             (View::Updates, "Updates"),
             (View::AdapterInfo, "Adapters"),
-            (View::Settings, "Settings"),
         ];
+        if self
+            .adapter_manager
+            .list_adapters()
+            .iter()
+            .any(|info| info.capabilities.supports_declarative)
+        {
+            nav_items.push((View::Manifest, "Manifest"));
+        }
+        nav_items.push((View::Settings, "Settings"));
 
         let nav_listeners: Vec<_> = nav_items
             .iter()
@@ -2503,6 +2547,7 @@ impl App {
             View::Installed => wrapper.child(self.render_installed(theme, cx)),
             View::Updates => wrapper.child(self.render_updates(theme, cx)),
             View::AdapterInfo => wrapper.child(self.render_adapter_info(theme, cx)),
+            View::Manifest => wrapper.child(self.render_manifest(theme, cx)),
             View::Settings => wrapper.child(self.render_settings(theme, cx)),
         }
     }
