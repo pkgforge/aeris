@@ -73,7 +73,6 @@ impl App {
             app.sync_all_repos(cx);
         });
 
-        let primary = theme.primary;
         let surface = theme.surface;
         let border = theme.border;
         let text_muted = theme.text_muted;
@@ -224,7 +223,6 @@ impl App {
     ) -> impl IntoElement {
         let surface = theme.surface;
         let border = theme.border;
-        let primary = theme.primary;
         let hover = theme.hover;
 
         div()

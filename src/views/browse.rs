@@ -37,12 +37,8 @@ impl App {
         let surface = theme.surface;
         let border = theme.border;
         let text_muted = theme.text_muted;
-        let primary = theme.primary;
         let hover = theme.hover;
         let danger = theme.danger;
-        let success = theme.success;
-        let warning = theme.warning;
-        let text_color = theme.text;
 
         // Sync search query from input entity
         let current_query = self.search_input.read(cx).content().to_string();
@@ -397,9 +393,7 @@ impl App {
             .child(description)
             .child(info_parts);
 
-        // Progress bar
         if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
-            let pct = (progress * 100.0).min(100.0);
             left = left.child(
                 div().w_full().h(px(4.0)).rounded(px(2.0)).bg(border).child(
                     div()

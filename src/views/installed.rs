@@ -35,12 +35,7 @@ impl App {
 
         let surface = theme.surface;
         let border = theme.border;
-        let text_muted = theme.text_muted;
-        let primary = theme.primary;
         let hover = theme.hover;
-        let danger = theme.danger;
-        let success = theme.success;
-        let warning = theme.warning;
 
         let mode = self.current_mode;
         let title = match mode {

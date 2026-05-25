@@ -19,23 +19,18 @@ impl App {
     ) -> impl IntoElement {
         let surface = theme.surface;
         let border = theme.border;
-        let text_muted = theme.text_muted;
         let primary = theme.primary;
         let hover = theme.hover;
-        let success = theme.success;
         let danger = theme.danger;
 
-        // Auto-load repos on first render
         let any_loaded = self.adapter_view.repos_loaded.values().any(|v| *v);
         if !any_loaded {
             self.load_repos(cx);
         }
 
         let mut adapters = self.adapter_manager.list_adapters_with_status();
-        // Sort: built-in adapters first
         adapters.sort_by(|(a, _), (b, _)| b.is_builtin.cmp(&a.is_builtin));
         let installed_ids: Vec<String> = adapters.iter().map(|(info, _)| info.id.clone()).collect();
-        let mode = self.current_mode;
 
         let header = div()
             .text_size(px(styles::font_size::TITLE))
@@ -703,7 +698,6 @@ impl App {
             let adapter = app.adapter_manager.get_adapter(&toggle_adapter_id);
             if let Some(adapter) = adapter {
                 let name = repo_name.clone();
-                let aid = toggle_adapter_id.clone();
                 let mode = app.current_mode;
                 cx.spawn(
                     async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {

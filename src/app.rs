@@ -2234,7 +2234,7 @@ impl Render for App {
                     if needs_browse {
                         let pick_dir = matches!(edit.field_type, ConfigFieldType::PathList);
                         let input_handle = edit.input.clone();
-                        let browse = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                        let browse = cx.listener(move |_app, _: &ClickEvent, _window, cx| {
                             let dialog = rfd::FileDialog::new();
                             let chosen = if pick_dir {
                                 dialog.pick_folder()
@@ -2540,7 +2540,7 @@ impl App {
             ConfirmAction::Update(pkg, mode) => {
                 self.update_package(pkg, mode, cx);
             }
-            ConfirmAction::UpdateAll(mode) => {
+            ConfirmAction::UpdateAll(_mode) => {
                 self.update_all(cx);
             }
             ConfirmAction::BatchInstall(pkgs, mode) => {

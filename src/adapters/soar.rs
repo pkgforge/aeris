@@ -7,8 +7,8 @@ use std::{
 use soar_config::config::Config;
 use soar_events::{ChannelSink, EventSinkHandle, NullSink, SoarEvent};
 use soar_operations::{
-    InstallOptions, PrepareRunResult, RemoveResolveResult, ResolveResult, SoarContext, install,
-    remove, repo::RepoUpdate, run as soar_run, update,
+    InstallOptions, RemoveResolveResult, ResolveResult, SoarContext, install, remove,
+    repo::RepoUpdate, update,
 };
 
 use crate::core::{

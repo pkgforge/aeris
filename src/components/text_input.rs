@@ -326,7 +326,7 @@ impl EntityInputHandler for TextInput {
         &mut self,
         range_utf16: Option<Range<usize>>,
         new_text: &str,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let range = range_utf16
@@ -348,7 +348,7 @@ impl EntityInputHandler for TextInput {
         range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let range = range_utf16

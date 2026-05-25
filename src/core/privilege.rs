@@ -129,7 +129,7 @@ impl PrivilegeManager {
     pub fn prepare_command(
         &self,
         mode: PackageMode,
-        mut cmd: std::process::Command,
+        cmd: std::process::Command,
     ) -> Result<std::process::Command, PrivilegeError> {
         if mode == PackageMode::User {
             return Ok(cmd);
