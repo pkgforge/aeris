@@ -714,6 +714,14 @@ impl App {
             Some(e) => e,
             None => return,
         };
+        let build_commands_raw = edit.build_commands_input.read(cx).content().to_string();
+        let build_commands_joined = build_commands_raw
+            .split('\n')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("; ");
+
         let mut snap = ManifestEntrySnapshot {
             name: edit.name_input.read(cx).content().trim().to_string(),
             version: edit.version_input.read(cx).content().trim().to_string(),
@@ -725,7 +733,7 @@ impl App {
             asset_pattern: edit.asset_pattern_input.read(cx).content().trim().to_string(),
             tag_pattern: edit.tag_pattern_input.read(cx).content().trim().to_string(),
             include_prerelease: edit.include_prerelease,
-            build_commands: edit.build_commands_input.read(cx).content().trim().to_string(),
+            build_commands: build_commands_joined,
             build_dependencies: edit
                 .build_dependencies_input
                 .read(cx)

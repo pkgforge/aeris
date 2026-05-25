@@ -1208,6 +1208,34 @@ pub fn build_manifest_edit_modal(
         })
     }
 
+    fn make_multiline_input(
+        cx: &mut Context<App>,
+        placeholder: &str,
+        value: &str,
+        min_lines: usize,
+    ) -> Entity<TextInput> {
+        let placeholder_owned = placeholder.to_string();
+        let value_owned = value.to_string();
+        cx.new(|cx| {
+            let mut ti = TextInput::new(cx, placeholder_owned.clone()).multiline(min_lines);
+            if !value_owned.is_empty() {
+                ti.set_content(value_owned, cx);
+            }
+            ti
+        })
+    }
+
+    // Convert the stored ;-separated build commands into a newline form so
+    // multiline editing is natural. We will collapse newlines back into ;
+    // on save.
+    let build_commands_display = snap
+        .build_commands
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
     ManifestEditModal {
         kind,
         name_input: make_input(cx, "package name", &snap.name),
@@ -1223,10 +1251,11 @@ pub fn build_manifest_edit_modal(
         gitlab_input: make_input(cx, "owner/repo on GitLab", &snap.gitlab),
         asset_pattern_input: make_input(cx, "*linux*.AppImage", &snap.asset_pattern),
         tag_pattern_input: make_input(cx, "v*-stable", &snap.tag_pattern),
-        build_commands_input: make_input(
+        build_commands_input: make_multiline_input(
             cx,
-            "command 1; command 2",
-            &snap.build_commands,
+            "one command per line",
+            &build_commands_display,
+            4,
         ),
         build_dependencies_input: make_input(cx, "gcc, make, pkg-config", &snap.build_dependencies),
         install_patterns_input: make_input(cx, "*.AppImage, *.tar.gz", &snap.install_patterns),
