@@ -651,46 +651,43 @@ impl App {
     }
 
     pub fn open_manifest_add(&mut self, cx: &mut Context<Self>) {
-        use crate::components::TextInput;
-        use views::manifest::{ManifestEditKind, ManifestEditModal};
-        let name_input = cx.new(|cx| TextInput::new(cx, "package name"));
-        let version_input = cx.new(|cx| {
-            let mut ti = TextInput::new(cx, "version (* for latest)");
-            ti.set_content("*".to_string(), cx);
-            ti
-        });
-        self.manifest_state.edit = Some(ManifestEditModal {
-            kind: ManifestEditKind::Add,
-            name_input,
-            version_input,
-        });
+        use views::manifest::{
+            build_manifest_edit_modal, ManifestEditKind, ManifestEntrySnapshot,
+        };
+        let snap = ManifestEntrySnapshot {
+            version: "*".to_string(),
+            ..Default::default()
+        };
+        self.manifest_state.edit = Some(build_manifest_edit_modal(
+            ManifestEditKind::Add,
+            &snap,
+            cx,
+        ));
         self.manifest_state.pending_edit_focus = true;
         cx.notify();
     }
 
-    pub fn open_manifest_edit_version(
-        &mut self,
-        name: String,
-        current_version: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::components::TextInput;
-        use views::manifest::{ManifestEditKind, ManifestEditModal};
-        let name_input = cx.new(|cx| {
-            let mut ti = TextInput::new(cx, "package name");
-            ti.set_content(name.clone(), cx);
-            ti
-        });
-        let version_input = cx.new(|cx| {
-            let mut ti = TextInput::new(cx, "version (* for latest)");
-            ti.set_content(current_version.unwrap_or_else(|| "*".to_string()), cx);
-            ti
-        });
-        self.manifest_state.edit = Some(ManifestEditModal {
-            kind: ManifestEditKind::EditVersion(name),
-            name_input,
-            version_input,
-        });
+    pub fn open_manifest_edit(&mut self, name: String, cx: &mut Context<Self>) {
+        use views::manifest::{
+            build_manifest_edit_modal, ManifestEditKind, ManifestEntrySnapshot,
+        };
+        let snap = match self.adapter.read_manifest_entry(&name) {
+            Ok(Some(s)) => s,
+            Ok(None) => ManifestEntrySnapshot {
+                name: name.clone(),
+                version: "*".to_string(),
+                ..Default::default()
+            },
+            Err(e) => {
+                self.add_toast(ToastLevel::Error, format!("Read failed: {e}"));
+                return;
+            }
+        };
+        self.manifest_state.edit = Some(build_manifest_edit_modal(
+            ManifestEditKind::Edit(name),
+            &snap,
+            cx,
+        ));
         self.manifest_state.pending_edit_focus = true;
         cx.notify();
     }
@@ -701,28 +698,64 @@ impl App {
     }
 
     pub fn apply_manifest_edit(&mut self, cx: &mut Context<Self>) {
-        use views::manifest::ManifestEditKind;
+        use views::manifest::{ManifestEditKind, ManifestEntrySnapshot};
         let edit = match self.manifest_state.edit.take() {
             Some(e) => e,
             None => return,
         };
-        let name = edit.name_input.read(cx).content().trim().to_string();
-        let version = edit.version_input.read(cx).content().trim().to_string();
+        let mut snap = ManifestEntrySnapshot {
+            name: edit.name_input.read(cx).content().trim().to_string(),
+            version: edit.version_input.read(cx).content().trim().to_string(),
+            pkg_id: edit.pkg_id_input.read(cx).content().trim().to_string(),
+            repo: edit.repo_input.read(cx).content().trim().to_string(),
+            url: edit.url_input.read(cx).content().trim().to_string(),
+            github: edit.github_input.read(cx).content().trim().to_string(),
+            gitlab: edit.gitlab_input.read(cx).content().trim().to_string(),
+            asset_pattern: edit.asset_pattern_input.read(cx).content().trim().to_string(),
+            tag_pattern: edit.tag_pattern_input.read(cx).content().trim().to_string(),
+            include_prerelease: edit.include_prerelease,
+            build_commands: edit.build_commands_input.read(cx).content().trim().to_string(),
+            build_dependencies: edit
+                .build_dependencies_input
+                .read(cx)
+                .content()
+                .trim()
+                .to_string(),
+            install_patterns: edit
+                .install_patterns_input
+                .read(cx)
+                .content()
+                .trim()
+                .to_string(),
+            profile: edit.profile_input.read(cx).content().trim().to_string(),
+            pinned: edit.pinned,
+            binary_only: edit.binary_only,
+        };
 
-        if name.is_empty() {
+        if snap.name.is_empty() {
             self.add_toast(ToastLevel::Error, "Package name cannot be empty".into());
             self.manifest_state.edit = Some(edit);
             return;
         }
+        if let ManifestEditKind::Edit(ref original) = edit.kind {
+            if original != &snap.name {
+                // The name was changed on an existing entry. Remove the old key so
+                // we do not leave both.
+                if let Err(e) = self.adapter.write_manifest_remove(original) {
+                    self.manifest_state.save_error = Some(e.clone());
+                    self.add_toast(ToastLevel::Error, format!("Manifest save failed: {e}"));
+                    return;
+                }
+            }
+        }
 
-        let result = match edit.kind {
-            ManifestEditKind::Add => self.adapter.write_manifest_upsert(&name, &version),
-            ManifestEditKind::EditVersion(_) => self
-                .adapter
-                .write_manifest_update_version(&name, &version),
-        };
+        // Normalize: "*" version becomes empty so Simple form is chosen when
+        // nothing else differentiates the entry.
+        if snap.version == "*" {
+            snap.version = String::new();
+        }
 
-        match result {
+        match self.adapter.write_manifest_entry(&snap) {
             Ok(()) => {
                 self.manifest_state.save_error = None;
                 self.load_manifest_diff(cx);
@@ -2120,7 +2153,7 @@ impl Render for App {
                 use views::manifest::ManifestEditKind;
                 let handle = match &edit.kind {
                     ManifestEditKind::Add => edit.name_input.focus_handle(cx),
-                    ManifestEditKind::EditVersion(_) => edit.version_input.focus_handle(cx),
+                    ManifestEditKind::Edit(_) => edit.version_input.focus_handle(cx),
                 };
                 window.focus(&handle);
                 self.manifest_state.pending_edit_focus = false;
@@ -2655,160 +2688,8 @@ impl Render for App {
             );
         }
 
-        if let Some(ref edit) = self.manifest_state.edit {
-            use views::manifest::ManifestEditKind;
-            let surface = theme.surface;
-            let border = theme.border;
-            let primary = theme.primary;
-            let hover = theme.hover;
-            let text_muted = theme.text_muted;
-
-            let title = match &edit.kind {
-                ManifestEditKind::Add => "Add package to manifest".to_string(),
-                ManifestEditKind::EditVersion(name) => format!("Edit {name}"),
-            };
-
-            let cancel = cx.listener(|app, _: &ClickEvent, _window, cx| {
-                app.close_manifest_edit(cx);
-            });
-            let save = cx.listener(|app, _: &ClickEvent, _window, cx| {
-                app.apply_manifest_edit(cx);
-            });
-
-            let name_input = edit.name_input.clone();
-            let version_input = edit.version_input.clone();
-            let name_editable = matches!(edit.kind, ManifestEditKind::Add);
-
-            let mut body = div()
-                .flex()
-                .flex_col()
-                .gap(px(styles::spacing::SM))
-                .w(px(540.0))
-                .child(
-                    div()
-                        .text_size(px(styles::font_size::HEADING))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(styles::font_size::CAPTION))
-                        .text_color(text_muted)
-                        .child("Press Escape to cancel."),
-                );
-
-            let name_field = div()
-                .flex()
-                .flex_col()
-                .gap(px(styles::spacing::XXS))
-                .child(
-                    div()
-                        .text_size(px(styles::font_size::CAPTION))
-                        .text_color(text_muted)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("NAME"),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .px(px(styles::spacing::MD))
-                        .py(px(10.0))
-                        .rounded(px(styles::radius::MD))
-                        .bg(if name_editable {
-                            surface
-                        } else {
-                            theme.hover
-                        })
-                        .border_1()
-                        .border_color(border)
-                        .child(name_input.clone()),
-                );
-            body = body.child(name_field);
-
-            let version_field = div()
-                .flex()
-                .flex_col()
-                .gap(px(styles::spacing::XXS))
-                .child(
-                    div()
-                        .text_size(px(styles::font_size::CAPTION))
-                        .text_color(text_muted)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("VERSION"),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .px(px(styles::spacing::MD))
-                        .py(px(10.0))
-                        .rounded(px(styles::radius::MD))
-                        .bg(surface)
-                        .border_1()
-                        .border_color(border)
-                        .child(version_input.clone()),
-                );
-            body = body.child(version_field);
-
-            body = body.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(styles::spacing::SM))
-                    .justify_end()
-                    .child(
-                        div()
-                            .id("manifest-edit-cancel")
-                            .px(px(styles::spacing::LG))
-                            .py(px(styles::spacing::XS))
-                            .rounded(px(styles::radius::MD))
-                            .bg(surface)
-                            .border_1()
-                            .border_color(border)
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
-                            .on_click(cancel)
-                            .child("Cancel"),
-                    )
-                    .child(
-                        div()
-                            .id("manifest-edit-save")
-                            .px(px(styles::spacing::LG))
-                            .py(px(styles::spacing::XS))
-                            .rounded(px(styles::radius::MD))
-                            .bg(primary)
-                            .text_color(gpui::white())
-                            .cursor_pointer()
-                            .on_click(save)
-                            .child("Save"),
-                    ),
-            );
-
-            root = root.child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .occlude()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(Hsla {
-                        h: 0.0,
-                        s: 0.0,
-                        l: 0.0,
-                        a: 0.5,
-                    })
-                    .child(
-                        div()
-                            .p(px(styles::spacing::XXL))
-                            .rounded(px(styles::radius::LG))
-                            .bg(surface)
-                            .border_1()
-                            .border_color(border)
-                            .child(body),
-                    ),
-            );
+        if self.manifest_state.edit.is_some() {
+            root = root.child(self.render_manifest_edit_modal(&theme, cx));
         }
 
         root
@@ -2816,6 +2697,419 @@ impl Render for App {
 }
 
 impl App {
+    fn render_manifest_edit_modal(
+        &mut self,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        use views::manifest::ManifestEditKind;
+        let edit = self
+            .manifest_state
+            .edit
+            .as_ref()
+            .expect("called only when edit is Some");
+
+        let surface = theme.surface;
+        let border = theme.border;
+        let primary = theme.primary;
+        let hover = theme.hover;
+        let text_muted = theme.text_muted;
+
+        let title = match &edit.kind {
+            ManifestEditKind::Add => "Add package to manifest".to_string(),
+            ManifestEditKind::Edit(name) => format!("Edit {name}"),
+        };
+        let name_editable = matches!(edit.kind, ManifestEditKind::Add);
+
+        let cancel = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.close_manifest_edit(cx);
+        });
+        let save = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.apply_manifest_edit(cx);
+        });
+        let toggle_prerelease = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            if let Some(ref mut e) = app.manifest_state.edit {
+                e.include_prerelease = !e.include_prerelease;
+                cx.notify();
+            }
+        });
+        let toggle_pinned = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            if let Some(ref mut e) = app.manifest_state.edit {
+                e.pinned = !e.pinned;
+                cx.notify();
+            }
+        });
+        let toggle_binary_only = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            if let Some(ref mut e) = app.manifest_state.edit {
+                e.binary_only = !e.binary_only;
+                cx.notify();
+            }
+        });
+
+        let include_prerelease = edit.include_prerelease;
+        let pinned = edit.pinned;
+        let binary_only = edit.binary_only;
+
+        let name_input = edit.name_input.clone();
+        let version_input = edit.version_input.clone();
+        let pkg_id_input = edit.pkg_id_input.clone();
+        let repo_input = edit.repo_input.clone();
+        let url_input = edit.url_input.clone();
+        let github_input = edit.github_input.clone();
+        let gitlab_input = edit.gitlab_input.clone();
+        let asset_pattern_input = edit.asset_pattern_input.clone();
+        let tag_pattern_input = edit.tag_pattern_input.clone();
+        let build_commands_input = edit.build_commands_input.clone();
+        let build_dependencies_input = edit.build_dependencies_input.clone();
+        let install_patterns_input = edit.install_patterns_input.clone();
+        let profile_input = edit.profile_input.clone();
+
+        let field_input = |entity: Entity<crate::components::TextInput>, editable: bool| -> Div {
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .px(px(styles::spacing::MD))
+                .py(px(10.0))
+                .rounded(px(styles::radius::MD))
+                .bg(if editable { surface } else { theme.hover })
+                .border_1()
+                .border_color(border)
+                .child(entity)
+        };
+
+        let field_label = |label: &str, hint: Option<&str>| -> Div {
+            let mut col = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::XXXS))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(text_muted)
+                        .child(label.to_string()),
+                );
+            if let Some(h) = hint {
+                col = col.child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .text_color(text_muted)
+                        .child(h.to_string()),
+                );
+            }
+            col
+        };
+
+        let section = |title: &str, rows: Vec<Div>| -> Div {
+            let mut col = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::SM))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(text_muted)
+                        .child(title.to_uppercase()),
+                );
+            for row in rows {
+                col = col.child(row);
+            }
+            col
+        };
+
+        let toggle_row = |label: &str,
+                          description: &str,
+                          on: bool,
+                          id: &str,
+                          listener: Box<
+            dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        >|
+         -> Div {
+            let track_on = primary;
+            let track_off = border;
+            let track = if on { track_on } else { track_off };
+            let thumb = if on {
+                div().ml_auto().w(px(16.0)).h(px(16.0)).rounded_full().bg(gpui::white())
+            } else {
+                div().w(px(16.0)).h(px(16.0)).rounded_full().bg(gpui::white())
+            };
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(styles::spacing::MD))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(styles::spacing::XXXS))
+                        .child(
+                            div()
+                                .text_size(px(styles::font_size::BODY))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label.to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(styles::font_size::CAPTION))
+                                .text_color(text_muted)
+                                .child(description.to_string()),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(id.to_string()))
+                        .w(px(34.0))
+                        .h(px(20.0))
+                        .p(px(2.0))
+                        .rounded_full()
+                        .bg(track)
+                        .cursor_pointer()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .on_click(listener)
+                        .child(thumb),
+                )
+        };
+
+        let labeled_row = |label: &str,
+                           hint: Option<&str>,
+                           entity: Entity<crate::components::TextInput>,
+                           editable: bool|
+         -> Div {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::XXS))
+                .child(field_label(label, hint))
+                .child(field_input(entity, editable))
+        };
+
+        let basic = section(
+            "Basic",
+            vec![
+                labeled_row("Name", None, name_input, name_editable),
+                labeled_row(
+                    "Version",
+                    Some("Use * for latest, or a specific version like 1.2.3"),
+                    version_input,
+                    true,
+                ),
+            ],
+        );
+
+        let identity = section(
+            "Identity",
+            vec![
+                labeled_row(
+                    "Package ID",
+                    Some("Optional. Disambiguates packages that share a name across repos."),
+                    pkg_id_input,
+                    true,
+                ),
+                labeled_row(
+                    "Repository",
+                    Some("Optional. Restricts the lookup to a specific repository."),
+                    repo_input,
+                    true,
+                ),
+            ],
+        );
+
+        let source = section(
+            "External source",
+            vec![
+                labeled_row(
+                    "Download URL",
+                    Some("Direct URL to an installable asset."),
+                    url_input,
+                    true,
+                ),
+                labeled_row(
+                    "GitHub repository",
+                    Some("owner/repo to fetch a release from."),
+                    github_input,
+                    true,
+                ),
+                labeled_row(
+                    "GitLab repository",
+                    Some("owner/repo to fetch a release from."),
+                    gitlab_input,
+                    true,
+                ),
+                labeled_row(
+                    "Asset pattern",
+                    Some("Glob to match the release asset, e.g. *linux*.AppImage."),
+                    asset_pattern_input,
+                    true,
+                ),
+                labeled_row(
+                    "Tag pattern",
+                    Some("Glob to filter releases, e.g. v*-stable."),
+                    tag_pattern_input,
+                    true,
+                ),
+                toggle_row(
+                    "Include prereleases",
+                    "Pull pre-release tags from github or gitlab when matching.",
+                    include_prerelease,
+                    "manifest-toggle-prerelease",
+                    Box::new(toggle_prerelease),
+                ),
+            ],
+        );
+
+        let build = section(
+            "Build",
+            vec![
+                labeled_row(
+                    "Commands",
+                    Some("Shell commands separated by semicolons. Env: $INSTALL_DIR, $PKG_NAME, $PKG_VERSION, $NPROC."),
+                    build_commands_input,
+                    true,
+                ),
+                labeled_row(
+                    "Dependencies",
+                    Some("Comma-separated build dependencies expected on PATH."),
+                    build_dependencies_input,
+                    true,
+                ),
+            ],
+        );
+
+        let options = section(
+            "Options",
+            vec![
+                labeled_row(
+                    "Install patterns",
+                    Some("Comma-separated glob patterns of files to keep."),
+                    install_patterns_input,
+                    true,
+                ),
+                labeled_row(
+                    "Profile",
+                    Some("Override the default profile this package installs into."),
+                    profile_input,
+                    true,
+                ),
+                toggle_row(
+                    "Pinned",
+                    "Skip automatic updates for this package.",
+                    pinned,
+                    "manifest-toggle-pinned",
+                    Box::new(toggle_pinned),
+                ),
+                toggle_row(
+                    "Binary only",
+                    "Install just the binaries, no desktop or icon files.",
+                    binary_only,
+                    "manifest-toggle-binary-only",
+                    Box::new(toggle_binary_only),
+                ),
+            ],
+        );
+
+        let inner = div()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::LG))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::HEADING))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child("Press Escape to cancel."),
+            )
+            .child(basic)
+            .child(identity)
+            .child(source)
+            .child(build)
+            .child(options);
+
+        let footer = div()
+            .flex()
+            .flex_row()
+            .gap(px(styles::spacing::SM))
+            .justify_end()
+            .pt(px(styles::spacing::MD))
+            .border_t_1()
+            .border_color(border)
+            .child(
+                div()
+                    .id("manifest-edit-cancel")
+                    .px(px(styles::spacing::LG))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cancel)
+                    .child("Cancel"),
+            )
+            .child(
+                div()
+                    .id("manifest-edit-save")
+                    .px(px(styles::spacing::LG))
+                    .py(px(styles::spacing::XS))
+                    .rounded(px(styles::radius::MD))
+                    .bg(primary)
+                    .text_color(gpui::white())
+                    .cursor_pointer()
+                    .on_click(save)
+                    .child("Save"),
+            );
+
+        div()
+            .absolute()
+            .size_full()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 0.0,
+                a: 0.5,
+            })
+            .child(
+                div()
+                    .w(px(640.0))
+                    .max_h(px(720.0))
+                    .rounded(px(styles::radius::LG))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("manifest-edit-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p(px(styles::spacing::XXL))
+                            .child(inner),
+                    )
+                    .child(
+                        div()
+                            .px(px(styles::spacing::XXL))
+                            .pb(px(styles::spacing::LG))
+                            .child(footer),
+                    ),
+            )
+    }
+
     fn render_sidebar(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.current_view;
         let mut nav_items: Vec<(View, &str)> = vec![

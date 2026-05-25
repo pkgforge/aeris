@@ -29,6 +29,50 @@ pub struct ManifestApplyReport {
     pub failed: usize,
 }
 
+/// Flat snapshot of an editable manifest entry. Strings use "" for unset to
+/// keep the modal form bindings simple. The adapter decides Simple vs
+/// Detailed when serializing back.
+#[derive(Debug, Clone, Default)]
+pub struct ManifestEntrySnapshot {
+    pub name: String,
+    pub version: String,
+    pub pkg_id: String,
+    pub repo: String,
+    pub url: String,
+    pub github: String,
+    pub gitlab: String,
+    pub asset_pattern: String,
+    pub tag_pattern: String,
+    pub include_prerelease: bool,
+    pub build_commands: String,
+    pub build_dependencies: String,
+    pub install_patterns: String,
+    pub profile: String,
+    pub pinned: bool,
+    pub binary_only: bool,
+}
+
+impl ManifestEntrySnapshot {
+    /// Whether this entry has any field set beyond a bare version. Used to
+    /// decide whether to write Simple or Detailed form.
+    pub fn needs_detailed(&self) -> bool {
+        !self.pkg_id.is_empty()
+            || !self.repo.is_empty()
+            || !self.url.is_empty()
+            || !self.github.is_empty()
+            || !self.gitlab.is_empty()
+            || !self.asset_pattern.is_empty()
+            || !self.tag_pattern.is_empty()
+            || self.include_prerelease
+            || !self.build_commands.is_empty()
+            || !self.build_dependencies.is_empty()
+            || !self.install_patterns.is_empty()
+            || !self.profile.is_empty()
+            || self.pinned
+            || self.binary_only
+    }
+}
+
 #[derive(Debug)]
 pub enum ManifestStatus {
     Idle,
@@ -48,13 +92,27 @@ impl Default for ManifestStatus {
 #[derive(Debug)]
 pub enum ManifestEditKind {
     Add,
-    EditVersion(String),
+    Edit(String),
 }
 
 pub struct ManifestEditModal {
     pub kind: ManifestEditKind,
     pub name_input: Entity<TextInput>,
     pub version_input: Entity<TextInput>,
+    pub pkg_id_input: Entity<TextInput>,
+    pub repo_input: Entity<TextInput>,
+    pub url_input: Entity<TextInput>,
+    pub github_input: Entity<TextInput>,
+    pub gitlab_input: Entity<TextInput>,
+    pub asset_pattern_input: Entity<TextInput>,
+    pub tag_pattern_input: Entity<TextInput>,
+    pub build_commands_input: Entity<TextInput>,
+    pub build_dependencies_input: Entity<TextInput>,
+    pub install_patterns_input: Entity<TextInput>,
+    pub profile_input: Entity<TextInput>,
+    pub include_prerelease: bool,
+    pub pinned: bool,
+    pub binary_only: bool,
 }
 
 #[derive(Default)]
@@ -661,12 +719,8 @@ fn entry_row(
             DiffKind::Remove => "remove",
         };
         let edit_name = entry.name.clone();
-        let edit_version = entry
-            .new_version
-            .clone()
-            .or_else(|| entry.current_version.clone());
         let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
-            app.open_manifest_edit_version(edit_name.clone(), edit_version.clone(), cx);
+            app.open_manifest_edit(edit_name.clone(), cx);
         });
         let remove_name = entry.name.clone();
         let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
@@ -797,7 +851,7 @@ fn name_section_with_actions(
         let edit_name = name.clone();
         let remove_name = name.clone();
         let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
-            app.open_manifest_edit_version(edit_name.clone(), None, cx);
+            app.open_manifest_edit(edit_name.clone(), cx);
         });
         let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
             app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveManifestEntry {
@@ -885,6 +939,52 @@ fn summary_chip(label: &str, count: usize, color: Hsla, theme: &theme::Theme) ->
                 .text_color(theme.text_muted)
                 .child(label.to_string()),
         )
+}
+
+pub fn build_manifest_edit_modal(
+    kind: ManifestEditKind,
+    snap: &ManifestEntrySnapshot,
+    cx: &mut Context<App>,
+) -> ManifestEditModal {
+    fn make_input(cx: &mut Context<App>, placeholder: &str, value: &str) -> Entity<TextInput> {
+        let placeholder_owned = placeholder.to_string();
+        let value_owned = value.to_string();
+        cx.new(|cx| {
+            let mut ti = TextInput::new(cx, placeholder_owned.clone());
+            if !value_owned.is_empty() {
+                ti.set_content(value_owned, cx);
+            }
+            ti
+        })
+    }
+
+    ManifestEditModal {
+        kind,
+        name_input: make_input(cx, "package name", &snap.name),
+        version_input: make_input(
+            cx,
+            "version (* for latest)",
+            if snap.version.is_empty() { "*" } else { &snap.version },
+        ),
+        pkg_id_input: make_input(cx, "optional pkg_id", &snap.pkg_id),
+        repo_input: make_input(cx, "optional repository name", &snap.repo),
+        url_input: make_input(cx, "direct download URL", &snap.url),
+        github_input: make_input(cx, "owner/repo on GitHub", &snap.github),
+        gitlab_input: make_input(cx, "owner/repo on GitLab", &snap.gitlab),
+        asset_pattern_input: make_input(cx, "*linux*.AppImage", &snap.asset_pattern),
+        tag_pattern_input: make_input(cx, "v*-stable", &snap.tag_pattern),
+        build_commands_input: make_input(
+            cx,
+            "command 1; command 2",
+            &snap.build_commands,
+        ),
+        build_dependencies_input: make_input(cx, "gcc, make, pkg-config", &snap.build_dependencies),
+        install_patterns_input: make_input(cx, "*.AppImage, *.tar.gz", &snap.install_patterns),
+        profile_input: make_input(cx, "profile name", &snap.profile),
+        include_prerelease: snap.include_prerelease,
+        pinned: snap.pinned,
+        binary_only: snap.binary_only,
+    }
 }
 
 fn switch_pill(

@@ -52,6 +52,238 @@ impl std::fmt::Display for ManifestLoadError {
     }
 }
 
+fn entry_to_snapshot(
+    name: &str,
+    item: &toml_edit::Item,
+) -> crate::views::manifest::ManifestEntrySnapshot {
+    let mut snap = crate::views::manifest::ManifestEntrySnapshot {
+        name: name.to_string(),
+        ..Default::default()
+    };
+    match item {
+        toml_edit::Item::Value(toml_edit::Value::String(s)) => {
+            let v = s.value().as_str();
+            snap.version = if v == "*" { String::new() } else { v.to_string() };
+        }
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
+            for (k, v) in t.iter() {
+                read_field(&mut snap, k, v);
+            }
+        }
+        toml_edit::Item::Table(t) => {
+            for (k, item) in t.iter() {
+                if let Some(v) = item.as_value() {
+                    read_field(&mut snap, k, v);
+                } else if let toml_edit::Item::Table(sub) = item {
+                    if k == "build" {
+                        for (sk, sub_item) in sub.iter() {
+                            if let Some(sv) = sub_item.as_value() {
+                                read_build_field(&mut snap, sk, sv);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    snap
+}
+
+fn read_field(
+    snap: &mut crate::views::manifest::ManifestEntrySnapshot,
+    key: &str,
+    value: &toml_edit::Value,
+) {
+    let str_val = |v: &toml_edit::Value| v.as_str().map(|s| s.to_string());
+    let bool_val = |v: &toml_edit::Value| v.as_bool();
+    let arr_val = |v: &toml_edit::Value| {
+        v.as_array().map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+    };
+    match key {
+        "version" => {
+            if let Some(s) = str_val(value) {
+                snap.version = if s == "*" { String::new() } else { s };
+            }
+        }
+        "pkg_id" => snap.pkg_id = str_val(value).unwrap_or_default(),
+        "repo" => snap.repo = str_val(value).unwrap_or_default(),
+        "url" => snap.url = str_val(value).unwrap_or_default(),
+        "github" => snap.github = str_val(value).unwrap_or_default(),
+        "gitlab" => snap.gitlab = str_val(value).unwrap_or_default(),
+        "asset_pattern" => snap.asset_pattern = str_val(value).unwrap_or_default(),
+        "tag_pattern" => snap.tag_pattern = str_val(value).unwrap_or_default(),
+        "include_prerelease" => snap.include_prerelease = bool_val(value).unwrap_or(false),
+        "pinned" => snap.pinned = bool_val(value).unwrap_or(false),
+        "binary_only" => snap.binary_only = bool_val(value).unwrap_or(false),
+        "profile" => snap.profile = str_val(value).unwrap_or_default(),
+        "install_patterns" => {
+            if let Some(list) = arr_val(value) {
+                snap.install_patterns = list.join(", ");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn read_build_field(
+    snap: &mut crate::views::manifest::ManifestEntrySnapshot,
+    key: &str,
+    value: &toml_edit::Value,
+) {
+    let arr_val = |v: &toml_edit::Value| {
+        v.as_array().map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+    };
+    match key {
+        "commands" => {
+            if let Some(list) = arr_val(value) {
+                snap.build_commands = list.join("; ");
+            }
+        }
+        "dependencies" => {
+            if let Some(list) = arr_val(value) {
+                snap.build_dependencies = list.join(", ");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn split_list(s: &str, sep: char) -> Vec<String> {
+    s.split(sep)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+fn fill_inline_table(
+    t: &mut toml_edit::InlineTable,
+    snap: &crate::views::manifest::ManifestEntrySnapshot,
+) {
+    let v = if snap.version.is_empty() {
+        "*".to_string()
+    } else {
+        snap.version.clone()
+    };
+    t.insert("version", v.into());
+    if !snap.pkg_id.is_empty() {
+        t.insert("pkg_id", snap.pkg_id.clone().into());
+    }
+    if !snap.repo.is_empty() {
+        t.insert("repo", snap.repo.clone().into());
+    }
+    if !snap.url.is_empty() {
+        t.insert("url", snap.url.clone().into());
+    }
+    if !snap.github.is_empty() {
+        t.insert("github", snap.github.clone().into());
+    }
+    if !snap.gitlab.is_empty() {
+        t.insert("gitlab", snap.gitlab.clone().into());
+    }
+    if !snap.asset_pattern.is_empty() {
+        t.insert("asset_pattern", snap.asset_pattern.clone().into());
+    }
+    if !snap.tag_pattern.is_empty() {
+        t.insert("tag_pattern", snap.tag_pattern.clone().into());
+    }
+    if snap.include_prerelease {
+        t.insert("include_prerelease", true.into());
+    }
+    if !snap.profile.is_empty() {
+        t.insert("profile", snap.profile.clone().into());
+    }
+    if snap.pinned {
+        t.insert("pinned", true.into());
+    }
+    if snap.binary_only {
+        t.insert("binary_only", true.into());
+    }
+    if !snap.install_patterns.is_empty() {
+        let mut arr = toml_edit::Array::new();
+        for p in split_list(&snap.install_patterns, ',') {
+            arr.push(p);
+        }
+        t.insert("install_patterns", toml_edit::Value::Array(arr));
+    }
+}
+
+fn fill_table(t: &mut toml_edit::Table, snap: &crate::views::manifest::ManifestEntrySnapshot) {
+    let v = if snap.version.is_empty() {
+        "*".to_string()
+    } else {
+        snap.version.clone()
+    };
+    t.insert("version", toml_edit::value(v));
+    if !snap.pkg_id.is_empty() {
+        t.insert("pkg_id", toml_edit::value(snap.pkg_id.clone()));
+    }
+    if !snap.repo.is_empty() {
+        t.insert("repo", toml_edit::value(snap.repo.clone()));
+    }
+    if !snap.url.is_empty() {
+        t.insert("url", toml_edit::value(snap.url.clone()));
+    }
+    if !snap.github.is_empty() {
+        t.insert("github", toml_edit::value(snap.github.clone()));
+    }
+    if !snap.gitlab.is_empty() {
+        t.insert("gitlab", toml_edit::value(snap.gitlab.clone()));
+    }
+    if !snap.asset_pattern.is_empty() {
+        t.insert("asset_pattern", toml_edit::value(snap.asset_pattern.clone()));
+    }
+    if !snap.tag_pattern.is_empty() {
+        t.insert("tag_pattern", toml_edit::value(snap.tag_pattern.clone()));
+    }
+    if snap.include_prerelease {
+        t.insert("include_prerelease", toml_edit::value(true));
+    }
+    if !snap.profile.is_empty() {
+        t.insert("profile", toml_edit::value(snap.profile.clone()));
+    }
+    if snap.pinned {
+        t.insert("pinned", toml_edit::value(true));
+    }
+    if snap.binary_only {
+        t.insert("binary_only", toml_edit::value(true));
+    }
+    if !snap.install_patterns.is_empty() {
+        let mut arr = toml_edit::Array::new();
+        for p in split_list(&snap.install_patterns, ',') {
+            arr.push(p);
+        }
+        t.insert("install_patterns", toml_edit::value(arr));
+    }
+    if !snap.build_commands.is_empty() || !snap.build_dependencies.is_empty() {
+        let mut build = toml_edit::Table::new();
+        build.set_implicit(false);
+        if !snap.build_commands.is_empty() {
+            let mut arr = toml_edit::Array::new();
+            for c in split_list(&snap.build_commands, ';') {
+                arr.push(c);
+            }
+            build.insert("commands", toml_edit::value(arr));
+        }
+        if !snap.build_dependencies.is_empty() {
+            let mut arr = toml_edit::Array::new();
+            for d in split_list(&snap.build_dependencies, ',') {
+                arr.push(d);
+            }
+            build.insert("dependencies", toml_edit::value(arr));
+        }
+        t.insert("build", toml_edit::Item::Table(build));
+    }
+}
+
 fn read_or_new_manifest(path: &PathBuf) -> std::result::Result<toml_edit::DocumentMut, String> {
     if path.exists() {
         let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -240,48 +472,68 @@ impl SoarAdapter {
         })
     }
 
-    pub fn write_manifest_upsert(
+    pub fn read_manifest_entry(
         &self,
         name: &str,
-        version: &str,
+    ) -> std::result::Result<Option<crate::views::manifest::ManifestEntrySnapshot>, String> {
+        let path = self.manifest_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let doc = content
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| e.to_string())?;
+        let pkgs = match doc.get("packages").and_then(|i| i.as_table()) {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let item = match pkgs.get(name) {
+            Some(it) => it,
+            None => return Ok(None),
+        };
+        Ok(Some(entry_to_snapshot(name, item)))
+    }
+
+    pub fn write_manifest_entry(
+        &self,
+        snapshot: &crate::views::manifest::ManifestEntrySnapshot,
     ) -> std::result::Result<(), String> {
         let path = self.manifest_path();
         let mut doc = read_or_new_manifest(&path)?;
         let pkgs = doc
             .entry("packages")
             .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
-        if let Some(tbl) = pkgs.as_table_mut() {
-            let v = if version.is_empty() { "*" } else { version };
-            tbl.insert(name, toml_edit::value(v));
-        } else {
-            return Err("packages entry is not a table".into());
-        }
-        atomic_write_manifest(&path, &doc)
-    }
+        let pkgs_tbl = pkgs
+            .as_table_mut()
+            .ok_or_else(|| "packages entry is not a table".to_string())?;
 
-    pub fn write_manifest_update_version(
-        &self,
-        name: &str,
-        version: &str,
-    ) -> std::result::Result<(), String> {
-        let path = self.manifest_path();
-        let mut doc = read_or_new_manifest(&path)?;
-        let pkgs = doc
-            .get_mut("packages")
-            .and_then(|i| i.as_table_mut())
-            .ok_or_else(|| "No [packages] section".to_string())?;
-        let v = if version.is_empty() { "*" } else { version };
-        match pkgs.get_mut(name) {
-            Some(toml_edit::Item::Value(toml_edit::Value::String(_))) | None => {
-                pkgs.insert(name, toml_edit::value(v));
+        if !snapshot.needs_detailed() {
+            let v = if snapshot.version.is_empty() {
+                "*".to_string()
+            } else {
+                snapshot.version.clone()
+            };
+            pkgs_tbl.insert(&snapshot.name, toml_edit::value(v));
+        } else {
+            // Preserve sub-table shape if the existing entry uses one. Otherwise
+            // write a fresh sub-table so multi-line fields stay readable.
+            let existing_inline = matches!(
+                pkgs_tbl.get(&snapshot.name),
+                Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(_)))
+            );
+            if existing_inline {
+                let mut t = toml_edit::InlineTable::new();
+                fill_inline_table(&mut t, snapshot);
+                pkgs_tbl.insert(
+                    &snapshot.name,
+                    toml_edit::Item::Value(toml_edit::Value::InlineTable(t)),
+                );
+            } else {
+                let mut t = toml_edit::Table::new();
+                fill_table(&mut t, snapshot);
+                pkgs_tbl.insert(&snapshot.name, toml_edit::Item::Table(t));
             }
-            Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(t))) => {
-                t.insert("version", v.into());
-            }
-            Some(toml_edit::Item::Table(t)) => {
-                t.insert("version", toml_edit::value(v));
-            }
-            _ => return Err(format!("Unexpected entry shape for '{name}'")),
         }
         atomic_write_manifest(&path, &doc)
     }
