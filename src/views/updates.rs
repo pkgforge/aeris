@@ -27,7 +27,6 @@ impl App {
         theme: &theme::Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // Auto-load on first render
         if !self.updates_state.checked && !self.updates_state.loading {
             self.check_updates(cx);
         }
@@ -43,21 +42,32 @@ impl App {
             PackageMode::User => "Updates (User)",
             PackageMode::System => "Updates (System)",
         };
+        let subtitle = match mode {
+            PackageMode::User => "Available updates for your user packages.",
+            PackageMode::System => "Available updates for system packages.",
+        };
 
         let is_busy = self.updates_state.updating.is_some() || self.updates_state.loading;
 
-        // Header
-        let mut header_row = div()
+        let title_block = div()
             .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .w_full()
-            .child(div().text_size(px(styles::font_size::TITLE)).child(title));
+            .flex_col()
+            .gap(px(styles::spacing::XXS))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::TITLE))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(text_muted)
+                    .child(subtitle),
+            );
 
         let mut header_buttons = div().flex().flex_row().gap(px(styles::spacing::SM));
 
-        // Update All button
         if !self.updates_state.updates.is_empty() && !is_busy {
             let update_all_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
                 app.update_all(cx);
@@ -77,7 +87,6 @@ impl App {
             );
         }
 
-        // Check button
         if !is_busy {
             let check_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
                 app.check_updates(cx);
@@ -99,7 +108,6 @@ impl App {
             );
         }
 
-        // Sync button
         let sync_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.sync_all_repos(cx);
         });
@@ -121,126 +129,118 @@ impl App {
                 .child(sync_label),
         );
 
-        header_row = header_row.child(header_buttons);
+        let header_row = div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .justify_between()
+            .w_full()
+            .child(title_block)
+            .child(header_buttons);
 
-        // Content
-        let content = if self.updates_state.loading {
-            div().flex_1().flex().items_center().justify_center().child(
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .child("Checking for updates..."),
-            )
+        let content: AnyElement = if self.updates_state.loading {
+            div()
+                .py(px(styles::spacing::XXL))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::BODY))
+                        .text_color(text_muted)
+                        .child("Checking for updates..."),
+                )
+                .into_any_element()
         } else if let Some(ref err) = self.updates_state.error {
-            div().flex_1().flex().items_center().justify_center().child(
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .child(format!("Failed: {err}")),
-            )
+            div()
+                .py(px(styles::spacing::XXL))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::BODY))
+                        .text_color(text_muted)
+                        .child(format!("Failed: {err}")),
+                )
+                .into_any_element()
         } else if self.updates_state.updates.is_empty() {
             let msg = if self.updates_state.checked {
                 "All packages are up to date"
             } else {
                 "Click Check to look for updates"
             };
-
-            let mut col = div()
-                .flex()
-                .flex_col()
-                .gap(px(styles::spacing::SM))
-                .items_center()
-                .child(div().text_size(px(styles::font_size::BODY)).child(msg));
-
-            // Show adapter-specific update notes
-            if self.updates_state.checked && !self.updates_state.no_update_listing.is_empty() {
-                for (_adapter_id, adapter_name) in &self.updates_state.no_update_listing {
-                    col = col.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(styles::spacing::SM))
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(px(styles::font_size::CAPTION))
-                                    .text_color(text_muted)
-                                    .child(format!(
-                                        "{adapter_name} cannot detect available updates."
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .px(px(styles::spacing::SM))
-                                    .py(px(styles::spacing::XXXS))
-                                    .rounded(px(styles::radius::MD))
-                                    .bg(surface)
-                                    .border_1()
-                                    .border_color(border)
-                                    .text_size(px(styles::font_size::CAPTION))
-                                    .child(format!("Update All {adapter_name}")),
-                            ),
-                    );
-                }
-            }
-
             div()
-                .flex_1()
+                .py(px(styles::spacing::XXL))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(col)
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::BODY))
+                        .text_color(text_muted)
+                        .child(msg),
+                )
+                .into_any_element()
         } else {
             let mut cards_col = div()
-                .flex_1()
                 .flex()
                 .flex_col()
                 .gap(px(styles::spacing::SM));
 
             for (idx, update) in self.updates_state.updates.iter().enumerate() {
-                cards_col = cards_col.child(self.render_update_card(update, idx, theme));
+                cards_col = cards_col.child(self.render_update_card(update, idx, theme, cx));
             }
 
-            // Per-adapter notes
+            cards_col.into_any_element()
+        };
+
+        let mut notes_col = div()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::XS))
+            .w_full();
+        let mut has_notes = false;
+
+        if self.updates_state.checked {
             for (_adapter_id, adapter_name) in &self.updates_state.no_update_listing {
-                cards_col = cards_col.child(
+                has_notes = true;
+                notes_col = notes_col.child(
                     div()
+                        .px(px(styles::spacing::MD))
                         .py(px(styles::spacing::SM))
+                        .rounded(px(styles::radius::MD))
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
                         .flex()
                         .flex_row()
-                        .gap(px(styles::spacing::SM))
                         .items_center()
+                        .gap(px(styles::spacing::MD))
                         .child(
                             div()
-                                .text_size(px(styles::font_size::CAPTION))
+                                .text_size(px(styles::font_size::SMALL))
                                 .text_color(text_muted)
-                                .child(format!("{adapter_name} cannot detect available updates.")),
-                        )
-                        .child(
-                            div()
-                                .px(px(styles::spacing::SM))
-                                .py(px(styles::spacing::XXXS))
-                                .rounded(px(styles::radius::MD))
-                                .bg(surface)
-                                .border_1()
-                                .border_color(border)
-                                .text_size(px(styles::font_size::CAPTION))
-                                .child(format!("Update All {adapter_name}")),
+                                .child(format!(
+                                    "{adapter_name} cannot detect available updates."
+                                )),
                         ),
                 );
             }
-
-            cards_col
-        };
+        }
 
         let mut main_col = div()
-            .flex_1()
             .flex()
             .flex_col()
-            .gap(px(styles::spacing::MD))
+            .gap(px(styles::spacing::LG))
             .w_full()
             .child(header_row)
             .child(content);
 
-        // Floating action bar for batch update
+        if has_notes {
+            main_col = main_col.child(notes_col);
+        }
+
         if !self.updates_state.selected.is_empty() {
             let count = self.updates_state.selected.len();
             let update_selected = cx.listener(|app, _: &ClickEvent, _window, cx| {
@@ -263,11 +263,19 @@ impl App {
         }
 
         div()
-            .p(px(styles::spacing::XL))
+            .id("updates-scroll")
             .flex_1()
-            .flex()
-            .flex_col()
-            .child(main_col)
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .p(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(main_col),
+            )
     }
 
     fn render_update_card(
@@ -275,6 +283,7 @@ impl App {
         update: &Update,
         idx: usize,
         theme: &theme::Theme,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let surface = theme.surface;
         let border = theme.border;
@@ -293,7 +302,6 @@ impl App {
         let is_updating_batch =
             self.updates_state.updating.as_deref() == Some("__batch__") && pkg_status.is_some();
 
-        // Header
         let header = div()
             .flex()
             .flex_row()
@@ -302,6 +310,7 @@ impl App {
             .child(
                 div()
                     .text_size(px(styles::font_size::HEADING))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(update.package.name.clone()),
             )
             .child(
@@ -313,11 +322,13 @@ impl App {
                     .border_1()
                     .border_color(border)
                     .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
                     .child(update.current_version.clone()),
             )
             .child(
                 div()
                     .text_size(px(styles::font_size::SMALL))
+                    .text_color(text_muted)
                     .child("\u{2192}"),
             )
             .child(
@@ -329,10 +340,11 @@ impl App {
                     .border_1()
                     .border_color(success.opacity(0.4))
                     .text_size(px(styles::font_size::CAPTION))
+                    .text_color(success)
+                    .font_weight(FontWeight::MEDIUM)
                     .child(update.new_version.clone()),
             );
 
-        // Info row
         let mut info_row = div()
             .flex()
             .flex_row()
@@ -361,46 +373,60 @@ impl App {
                     .border_1()
                     .border_color(warning.opacity(0.4))
                     .text_size(px(styles::font_size::BADGE))
+                    .text_color(warning)
+                    .font_weight(FontWeight::MEDIUM)
                     .child("Security"),
             );
         }
 
-        // Update button
-        let update_btn = if is_updating_this || is_updating_all || is_updating_batch {
+        let update_btn: AnyElement = if is_updating_this || is_updating_all || is_updating_batch {
             let label = pkg_status
                 .map(|s| s.label())
                 .unwrap_or_else(|| "Updating...".into());
             div()
-                .px(px(styles::spacing::MD))
-                .py(px(styles::spacing::XXS))
+                .px(px(14.0))
+                .py(px(styles::spacing::XS))
                 .rounded(px(styles::radius::MD))
                 .bg(surface)
                 .border_1()
                 .border_color(border)
                 .text_size(px(styles::font_size::SMALL))
+                .text_color(text_muted)
                 .child(label)
+                .into_any_element()
         } else {
+            let pkg_for_update = update.package.clone();
+            let update_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
+                app.confirm_dialog = Some(crate::app::ConfirmAction::Update(
+                    pkg_for_update.clone(),
+                    app.current_mode,
+                ));
+                cx.notify();
+            });
             div()
-                .px(px(styles::spacing::MD))
-                .py(px(styles::spacing::XXS))
+                .id(SharedString::from(format!("update-pkg-btn-{idx}")))
+                .px(px(styles::spacing::LG))
+                .py(px(styles::spacing::XS))
                 .rounded(px(styles::radius::MD))
                 .bg(primary)
                 .text_color(gpui::white())
                 .text_size(px(styles::font_size::SMALL))
+                .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
+                .on_click(update_listener)
                 .child("Update")
+                .into_any_element()
         };
 
-        // Left column
         let mut left = div()
             .flex_1()
             .flex()
             .flex_col()
-            .gap(px(styles::spacing::XXS))
+            .gap(px(styles::spacing::XS))
             .child(header)
             .child(info_row);
 
-        // Progress bar
         if let Some(progress) = pkg_status.and_then(|s| s.progress()) {
             left = left.child(
                 div().w_full().h(px(4.0)).rounded(px(2.0)).bg(border).child(
@@ -413,23 +439,47 @@ impl App {
             );
         }
 
-        // Checkbox
-        let checkbox_label = if is_selected { "[x]" } else { "[ ]" };
+        let checkbox = div()
+            .size(px(18.0))
+            .rounded(px(styles::radius::SM))
+            .border_1()
+            .border_color(if is_selected { primary } else { border })
+            .bg(if is_selected { primary } else { surface })
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(if is_selected {
+                div()
+                    .text_size(px(12.0))
+                    .text_color(gpui::white())
+                    .child("\u{2713}")
+            } else {
+                div()
+            });
 
         let card_bg = if is_selected {
-            primary.opacity(0.1)
+            primary.opacity(0.08)
         } else {
             surface
         };
         let card_border = if is_selected {
-            primary.opacity(0.3)
+            primary.opacity(0.4)
         } else {
             border
         };
 
+        let toggle_key = update.package.id.clone();
+        let card_listener = cx.listener(move |app, _: &ClickEvent, _window, _cx| {
+            if app.updates_state.selected.contains(&toggle_key) {
+                app.updates_state.selected.remove(&toggle_key);
+            } else {
+                app.updates_state.selected.insert(toggle_key.clone());
+            }
+        });
+
         div()
             .id(SharedString::from(format!("update-pkg-{idx}")))
-            .px(px(styles::spacing::MD))
+            .px(px(styles::spacing::LG))
             .py(px(styles::spacing::MD))
             .rounded(px(styles::radius::MD))
             .bg(card_bg)
@@ -437,15 +487,12 @@ impl App {
             .border_color(card_border)
             .cursor_pointer()
             .hover(move |s| s.bg(hover))
+            .on_click(card_listener)
             .flex()
             .flex_row()
             .gap(px(styles::spacing::MD))
             .items_center()
-            .child(
-                div()
-                    .text_size(px(styles::font_size::BODY))
-                    .child(checkbox_label),
-            )
+            .child(checkbox)
             .child(left)
             .child(update_btn)
     }
