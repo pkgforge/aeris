@@ -2153,11 +2153,14 @@ impl Render for App {
 
             match edit.field_type.clone() {
                 ConfigFieldType::Select(options) => {
+                    let cancel_select = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                        app.close_settings_edit(cx);
+                    });
                     body = body.child(
                         div()
                             .text_size(px(styles::font_size::CAPTION))
                             .text_color(text_muted)
-                            .child("Select a value"),
+                            .child("Select a value, or press Escape to cancel."),
                     );
                     let mut list = div().flex().flex_col().gap(px(styles::spacing::XS));
                     for (idx, opt) in options.iter().enumerate() {
@@ -2181,6 +2184,26 @@ impl Render for App {
                         );
                     }
                     body = body.child(list);
+                    body = body.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .child(
+                                div()
+                                    .id("settings-edit-select-cancel")
+                                    .px(px(styles::spacing::LG))
+                                    .py(px(styles::spacing::XS))
+                                    .rounded(px(styles::radius::MD))
+                                    .bg(surface)
+                                    .border_1()
+                                    .border_color(border)
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(hover))
+                                    .on_click(cancel_select)
+                                    .child("Cancel"),
+                            ),
+                    );
                 }
                 _ => {
                     let mut input_row = div()
