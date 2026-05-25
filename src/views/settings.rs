@@ -225,16 +225,22 @@ impl App {
         }
 
         div()
-            .p(px(styles::spacing::XL))
+            .id("settings-scroll")
             .flex_1()
-            .flex()
-            .flex_col()
-            .gap(px(styles::spacing::XL))
             .w_full()
-            .child(header)
-            .child(aeris_section)
-            .child(div().w_full().h(px(1.0)).bg(border))
-            .child(adapter_section)
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .p(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .gap(px(styles::spacing::XL))
+                    .w_full()
+                    .child(header)
+                    .child(aeris_section)
+                    .child(div().w_full().h(px(1.0)).bg(border))
+                    .child(adapter_section),
+            )
     }
 
     fn section_card(
