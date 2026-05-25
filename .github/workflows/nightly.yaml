@@ -80,8 +80,18 @@ jobs:
         with:
           targets: ${{ matrix.build.TARGET }}
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
       - name: Build
-        run: cargo build --release --locked --target "${{ matrix.build.TARGET }}" --jobs="$(($(nproc)+1))" --verbose
+        run: cargo zigbuild --release --locked --target "${{ matrix.build.TARGET }}" --jobs="$(($(nproc)+1))" --verbose
 
       - name: Prepare release assets
         shell: bash
