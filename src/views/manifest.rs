@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gpui::*;
 
-use crate::{app::App, styles, theme};
+use crate::{app::App, components::TextInput, styles, theme};
 
 #[derive(Debug, Clone, Default)]
 pub struct ManifestEntry {
@@ -45,7 +45,19 @@ impl Default for ManifestStatus {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+pub enum ManifestEditKind {
+    Add,
+    EditVersion(String),
+}
+
+pub struct ManifestEditModal {
+    pub kind: ManifestEditKind,
+    pub name_input: Entity<TextInput>,
+    pub version_input: Entity<TextInput>,
+}
+
+#[derive(Default)]
 pub struct ManifestState {
     pub path: Option<PathBuf>,
     pub status: ManifestStatus,
@@ -53,6 +65,9 @@ pub struct ManifestState {
     pub applying: bool,
     pub last_report: Option<ManifestApplyReport>,
     pub apply_error: Option<String>,
+    pub save_error: Option<String>,
+    pub edit: Option<ManifestEditModal>,
+    pub pending_edit_focus: bool,
 }
 
 impl App {
@@ -107,12 +122,27 @@ impl App {
                 || !diff.to_remove.is_empty()
         );
         let apply_enabled = has_changes && !applying && !is_loading;
+        let file_missing = matches!(self.manifest_state.status, ManifestStatus::FileMissing);
 
         let reload_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.load_manifest_diff(cx);
         });
         let apply_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.request_manifest_apply(cx);
+        });
+        let add_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.open_manifest_add(cx);
+        });
+        let import_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.confirm_dialog = Some(crate::app::ConfirmAction::ImportInstalledManifest);
+            cx.notify();
+        });
+        let import_listener_empty = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.confirm_dialog = Some(crate::app::ConfirmAction::ImportInstalledManifest);
+            cx.notify();
+        });
+        let create_empty_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
+            app.create_empty_manifest(cx);
         });
 
         let reload_btn = div()
@@ -167,6 +197,36 @@ impl App {
                 .on_click(apply_listener);
         }
 
+        let add_btn = div()
+            .id("manifest-add")
+            .px(px(14.0))
+            .py(px(styles::spacing::XS))
+            .rounded(px(styles::radius::MD))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .cursor_pointer()
+            .text_size(px(styles::font_size::SMALL))
+            .font_weight(FontWeight::MEDIUM)
+            .hover(move |s| s.bg(hover))
+            .on_click(add_listener)
+            .child("Add package");
+
+        let import_btn = div()
+            .id("manifest-import")
+            .px(px(14.0))
+            .py(px(styles::spacing::XS))
+            .rounded(px(styles::radius::MD))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .cursor_pointer()
+            .text_size(px(styles::font_size::SMALL))
+            .font_weight(FontWeight::MEDIUM)
+            .hover(move |s| s.bg(hover))
+            .on_click(import_listener)
+            .child("Import installed");
+
         let header_row = div()
             .flex()
             .flex_row()
@@ -180,6 +240,8 @@ impl App {
                     .flex_row()
                     .gap(px(styles::spacing::SM))
                     .child(reload_btn)
+                    .child(add_btn)
+                    .child(import_btn)
                     .child(apply_btn),
             );
 
@@ -308,10 +370,11 @@ impl App {
                 text_muted,
             )
             .into_any_element(),
-            ManifestStatus::FileMissing => empty_panel(
-                "No manifest file yet",
-                Some("Create ~/.config/soar/packages.toml to declare packages."),
-                text_muted,
+            ManifestStatus::FileMissing => missing_file_panel(
+                theme,
+                primary,
+                Box::new(create_empty_listener),
+                Box::new(import_listener_empty),
             )
             .into_any_element(),
             ManifestStatus::ParseError(err) => banner_panel(
@@ -328,15 +391,11 @@ impl App {
                 border,
             )
             .into_any_element(),
-            ManifestStatus::Loaded(diff) => render_diff_sections(
-                diff.clone(),
-                theme,
-                primary,
-                warning,
-                success,
-                danger,
-            )
-            .into_any_element(),
+            ManifestStatus::Loaded(diff) => {
+                let diff = diff.clone();
+                render_diff_sections(diff, theme, primary, warning, success, danger, cx)
+                    .into_any_element()
+            }
         };
 
         let mut content = div()
@@ -378,6 +437,7 @@ fn render_diff_sections(
     warning: Hsla,
     success: Hsla,
     danger: Hsla,
+    cx: &mut Context<App>,
 ) -> Div {
     let mut col = div()
         .flex()
@@ -418,6 +478,7 @@ fn render_diff_sections(
         &diff.to_install,
         DiffKind::Install,
         theme,
+        cx,
     ));
     col = col.child(diff_section(
         "To update",
@@ -425,6 +486,7 @@ fn render_diff_sections(
         &diff.to_update,
         DiffKind::Update,
         theme,
+        cx,
     ));
     if !diff.to_remove.is_empty() {
         col = col.child(diff_section(
@@ -433,20 +495,16 @@ fn render_diff_sections(
             &diff.to_remove,
             DiffKind::Remove,
             theme,
+            cx,
         ));
     }
-    col = col.child(plain_name_section(
-        "In sync",
-        success,
-        &diff.in_sync,
-        theme,
-    ));
+    col = col.child(in_sync_section(success, &diff.in_sync, theme, cx));
     if !diff.not_found.is_empty() {
-        col = col.child(plain_name_section(
-            "Not found",
+        col = col.child(not_found_section(
             theme.text_muted,
             &diff.not_found,
             theme,
+            cx,
         ));
     }
 
@@ -466,6 +524,7 @@ fn diff_section(
     entries: &[ManifestEntry],
     kind: DiffKind,
     theme: &theme::Theme,
+    cx: &mut Context<App>,
 ) -> Div {
     let surface = theme.surface;
     let border = theme.border;
@@ -519,7 +578,7 @@ fn diff_section(
     let count = entries.len();
     let mut body = div().flex().flex_col();
     for (i, entry) in entries.iter().enumerate() {
-        let row = entry_row(entry, kind, accent, theme);
+        let row = entry_row(entry, kind, accent, theme, i, cx);
         let mut row = row.py(px(styles::spacing::SM));
         if i + 1 < count {
             row = row.border_b_1().border_color(border);
@@ -534,10 +593,14 @@ fn entry_row(
     kind: DiffKind,
     accent: Hsla,
     theme: &theme::Theme,
+    idx: usize,
+    cx: &mut Context<App>,
 ) -> Div {
     let surface = theme.surface;
     let border = theme.border;
     let text_muted = theme.text_muted;
+    let hover = theme.hover;
+    let danger = theme.danger;
 
     let mut row = div()
         .flex()
@@ -591,18 +654,97 @@ fn entry_row(
         }
     }
 
+    if matches!(kind, DiffKind::Install | DiffKind::Update) {
+        let kind_prefix = match kind {
+            DiffKind::Install => "install",
+            DiffKind::Update => "update",
+            DiffKind::Remove => "remove",
+        };
+        let edit_name = entry.name.clone();
+        let edit_version = entry
+            .new_version
+            .clone()
+            .or_else(|| entry.current_version.clone());
+        let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.open_manifest_edit_version(edit_name.clone(), edit_version.clone(), cx);
+        });
+        let remove_name = entry.name.clone();
+        let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveManifestEntry {
+                name: remove_name.clone(),
+            });
+            cx.notify();
+        });
+        row = row.child(
+            div()
+                .id(SharedString::from(format!("manifest-edit-{kind_prefix}-{idx}")))
+                .px(px(styles::spacing::SM))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(surface)
+                .border_1()
+                .border_color(border)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::CAPTION))
+                .hover(move |s| s.bg(hover))
+                .on_click(edit_listener)
+                .child("Edit"),
+        );
+        row = row.child(
+            div()
+                .id(SharedString::from(format!(
+                    "manifest-remove-{kind_prefix}-{idx}"
+                )))
+                .px(px(styles::spacing::SM))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(danger.opacity(0.12))
+                .border_1()
+                .border_color(danger.opacity(0.3))
+                .text_color(danger)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::CAPTION))
+                .hover(move |s| s.bg(danger.opacity(0.2)))
+                .on_click(remove_listener)
+                .child("Remove"),
+        );
+    }
+
     row
 }
 
-fn plain_name_section(
+fn in_sync_section(
+    accent: Hsla,
+    names: &[String],
+    theme: &theme::Theme,
+    cx: &mut Context<App>,
+) -> Div {
+    name_section_with_actions("In sync", accent, names, theme, true, "sync", cx)
+}
+
+fn not_found_section(
+    accent: Hsla,
+    names: &[String],
+    theme: &theme::Theme,
+    cx: &mut Context<App>,
+) -> Div {
+    name_section_with_actions("Not found", accent, names, theme, false, "nf", cx)
+}
+
+fn name_section_with_actions(
     title: &str,
     accent: Hsla,
     names: &[String],
     theme: &theme::Theme,
+    show_edit: bool,
+    id_prefix: &'static str,
+    cx: &mut Context<App>,
 ) -> Div {
     let surface = theme.surface;
     let border = theme.border;
     let text_muted = theme.text_muted;
+    let hover = theme.hover;
+    let danger = theme.danger;
 
     let mut card = div()
         .rounded(px(styles::radius::LG))
@@ -652,10 +794,64 @@ fn plain_name_section(
     let count = names.len();
     let mut body = div().flex().flex_col();
     for (i, name) in names.iter().enumerate() {
+        let edit_name = name.clone();
+        let remove_name = name.clone();
+        let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.open_manifest_edit_version(edit_name.clone(), None, cx);
+        });
+        let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveManifestEntry {
+                name: remove_name.clone(),
+            });
+            cx.notify();
+        });
         let mut row = div()
             .py(px(styles::spacing::SM))
-            .text_size(px(styles::font_size::BODY))
-            .child(name.clone());
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(styles::spacing::SM))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(styles::font_size::BODY))
+                    .child(name.clone()),
+            );
+        if show_edit {
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("manifest-edit-{id_prefix}-{i}")))
+                    .px(px(styles::spacing::SM))
+                    .py(px(styles::spacing::XXS))
+                    .rounded(px(styles::radius::SM))
+                    .bg(surface)
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .hover(move |s| s.bg(hover))
+                    .on_click(edit_listener)
+                    .child("Edit"),
+            );
+        }
+        row = row.child(
+            div()
+                .id(SharedString::from(format!(
+                    "manifest-remove-{id_prefix}-{i}"
+                )))
+                .px(px(styles::spacing::SM))
+                .py(px(styles::spacing::XXS))
+                .rounded(px(styles::radius::SM))
+                .bg(danger.opacity(0.12))
+                .border_1()
+                .border_color(danger.opacity(0.3))
+                .text_color(danger)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::CAPTION))
+                .hover(move |s| s.bg(danger.opacity(0.2)))
+                .on_click(remove_listener)
+                .child("Remove"),
+        );
         if i + 1 < count {
             row = row.border_b_1().border_color(border);
         }
@@ -735,6 +931,80 @@ fn chip(text: &str, bg: Hsla, border: Hsla, fg: Hsla) -> Div {
         .text_color(fg)
         .font_weight(FontWeight::MEDIUM)
         .child(text.to_string())
+}
+
+fn missing_file_panel(
+    theme: &theme::Theme,
+    primary: Hsla,
+    create_empty_listener: Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
+    import_listener: Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
+) -> Div {
+    let surface = theme.surface;
+    let border = theme.border;
+    let text_muted = theme.text_muted;
+    let hover = theme.hover;
+
+    div()
+        .py(px(styles::spacing::XXL))
+        .w_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(styles::spacing::SM))
+        .child(
+            div()
+                .text_size(px(styles::font_size::HEADING))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("No manifest file yet"),
+        )
+        .child(
+            div()
+                .text_size(px(styles::font_size::SMALL))
+                .text_color(text_muted)
+                .child(
+                    "Create an empty manifest or import your currently installed packages.",
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(styles::spacing::SM))
+                .pt(px(styles::spacing::SM))
+                .child(
+                    div()
+                        .id("manifest-empty-create")
+                        .px(px(styles::spacing::LG))
+                        .py(px(styles::spacing::XS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
+                        .cursor_pointer()
+                        .text_size(px(styles::font_size::SMALL))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(move |s| s.bg(hover))
+                        .on_click(create_empty_listener)
+                        .child("Create empty"),
+                )
+                .child(
+                    div()
+                        .id("manifest-empty-import")
+                        .px(px(styles::spacing::LG))
+                        .py(px(styles::spacing::XS))
+                        .rounded(px(styles::radius::MD))
+                        .bg(primary)
+                        .text_color(gpui::white())
+                        .border_1()
+                        .border_color(primary)
+                        .cursor_pointer()
+                        .text_size(px(styles::font_size::SMALL))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(move |s| s.bg(primary.opacity(0.85)))
+                        .on_click(import_listener)
+                        .child("Import installed"),
+                ),
+        )
 }
 
 fn empty_panel(title: &str, hint: Option<&str>, muted: Hsla) -> Div {

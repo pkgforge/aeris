@@ -24,6 +24,12 @@ pub enum ConfirmAction {
         prune: bool,
         remove_names: Vec<String>,
     },
+    /// Remove a declared package entry from the manifest file.
+    RemoveManifestEntry {
+        name: String,
+    },
+    /// Replace the manifest's packages table with the current installed set.
+    ImportInstalledManifest,
 }
 
 #[derive(Debug, Clone, Default)]

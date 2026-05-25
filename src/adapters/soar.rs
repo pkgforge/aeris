@@ -52,6 +52,35 @@ impl std::fmt::Display for ManifestLoadError {
     }
 }
 
+fn read_or_new_manifest(path: &PathBuf) -> std::result::Result<toml_edit::DocumentMut, String> {
+    if path.exists() {
+        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        content.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())
+    } else {
+        Ok("[packages]\n"
+            .parse::<toml_edit::DocumentMut>()
+            .expect("static template parses"))
+    }
+}
+
+fn atomic_write_manifest(
+    path: &PathBuf,
+    doc: &toml_edit::DocumentMut,
+) -> std::result::Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut tmp = path.clone();
+    let file_name = tmp
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "packages.toml".to_string());
+    tmp.set_file_name(format!("{file_name}.tmp"));
+    std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 impl SoarAdapter {
     fn user_ctx(&self) -> SoarContext {
         self.user_ctx.read().unwrap().clone()
@@ -209,6 +238,80 @@ impl SoarAdapter {
             in_sync: diff.in_sync,
             not_found: diff.not_found,
         })
+    }
+
+    pub fn write_manifest_upsert(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> std::result::Result<(), String> {
+        let path = self.manifest_path();
+        let mut doc = read_or_new_manifest(&path)?;
+        let pkgs = doc
+            .entry("packages")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        if let Some(tbl) = pkgs.as_table_mut() {
+            let v = if version.is_empty() { "*" } else { version };
+            tbl.insert(name, toml_edit::value(v));
+        } else {
+            return Err("packages entry is not a table".into());
+        }
+        atomic_write_manifest(&path, &doc)
+    }
+
+    pub fn write_manifest_update_version(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> std::result::Result<(), String> {
+        let path = self.manifest_path();
+        let mut doc = read_or_new_manifest(&path)?;
+        let pkgs = doc
+            .get_mut("packages")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| "No [packages] section".to_string())?;
+        let v = if version.is_empty() { "*" } else { version };
+        match pkgs.get_mut(name) {
+            Some(toml_edit::Item::Value(toml_edit::Value::String(_))) | None => {
+                pkgs.insert(name, toml_edit::value(v));
+            }
+            Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(t))) => {
+                t.insert("version", v.into());
+            }
+            Some(toml_edit::Item::Table(t)) => {
+                t.insert("version", toml_edit::value(v));
+            }
+            _ => return Err(format!("Unexpected entry shape for '{name}'")),
+        }
+        atomic_write_manifest(&path, &doc)
+    }
+
+    pub fn write_manifest_remove(&self, name: &str) -> std::result::Result<(), String> {
+        let path = self.manifest_path();
+        let mut doc = read_or_new_manifest(&path)?;
+        if let Some(pkgs) = doc.get_mut("packages").and_then(|i| i.as_table_mut()) {
+            pkgs.remove(name);
+        }
+        atomic_write_manifest(&path, &doc)
+    }
+
+    pub fn write_manifest_replace_packages(
+        &self,
+        entries: &[(String, String)],
+    ) -> std::result::Result<(), String> {
+        let path = self.manifest_path();
+        let mut doc = read_or_new_manifest(&path)?;
+        let mut tbl = toml_edit::Table::new();
+        for (name, version) in entries {
+            let v = if version.is_empty() {
+                "*".to_string()
+            } else {
+                version.clone()
+            };
+            tbl.insert(name, toml_edit::value(v));
+        }
+        doc.insert("packages", toml_edit::Item::Table(tbl));
+        atomic_write_manifest(&path, &doc)
     }
 
     pub async fn apply_manifest(

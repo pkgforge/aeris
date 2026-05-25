@@ -650,6 +650,150 @@ impl App {
         .detach();
     }
 
+    pub fn open_manifest_add(&mut self, cx: &mut Context<Self>) {
+        use crate::components::TextInput;
+        use views::manifest::{ManifestEditKind, ManifestEditModal};
+        let name_input = cx.new(|cx| TextInput::new(cx, "package name"));
+        let version_input = cx.new(|cx| {
+            let mut ti = TextInput::new(cx, "version (* for latest)");
+            ti.set_content("*".to_string(), cx);
+            ti
+        });
+        self.manifest_state.edit = Some(ManifestEditModal {
+            kind: ManifestEditKind::Add,
+            name_input,
+            version_input,
+        });
+        self.manifest_state.pending_edit_focus = true;
+        cx.notify();
+    }
+
+    pub fn open_manifest_edit_version(
+        &mut self,
+        name: String,
+        current_version: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::components::TextInput;
+        use views::manifest::{ManifestEditKind, ManifestEditModal};
+        let name_input = cx.new(|cx| {
+            let mut ti = TextInput::new(cx, "package name");
+            ti.set_content(name.clone(), cx);
+            ti
+        });
+        let version_input = cx.new(|cx| {
+            let mut ti = TextInput::new(cx, "version (* for latest)");
+            ti.set_content(current_version.unwrap_or_else(|| "*".to_string()), cx);
+            ti
+        });
+        self.manifest_state.edit = Some(ManifestEditModal {
+            kind: ManifestEditKind::EditVersion(name),
+            name_input,
+            version_input,
+        });
+        self.manifest_state.pending_edit_focus = true;
+        cx.notify();
+    }
+
+    pub fn close_manifest_edit(&mut self, cx: &mut Context<Self>) {
+        self.manifest_state.edit = None;
+        cx.notify();
+    }
+
+    pub fn apply_manifest_edit(&mut self, cx: &mut Context<Self>) {
+        use views::manifest::ManifestEditKind;
+        let edit = match self.manifest_state.edit.take() {
+            Some(e) => e,
+            None => return,
+        };
+        let name = edit.name_input.read(cx).content().trim().to_string();
+        let version = edit.version_input.read(cx).content().trim().to_string();
+
+        if name.is_empty() {
+            self.add_toast(ToastLevel::Error, "Package name cannot be empty".into());
+            self.manifest_state.edit = Some(edit);
+            return;
+        }
+
+        let result = match edit.kind {
+            ManifestEditKind::Add => self.adapter.write_manifest_upsert(&name, &version),
+            ManifestEditKind::EditVersion(_) => self
+                .adapter
+                .write_manifest_update_version(&name, &version),
+        };
+
+        match result {
+            Ok(()) => {
+                self.manifest_state.save_error = None;
+                self.load_manifest_diff(cx);
+            }
+            Err(e) => {
+                self.manifest_state.save_error = Some(e.clone());
+                self.add_toast(ToastLevel::Error, format!("Manifest save failed: {e}"));
+            }
+        }
+    }
+
+    pub fn remove_manifest_entry(&mut self, name: String, cx: &mut Context<Self>) {
+        match self.adapter.write_manifest_remove(&name) {
+            Ok(()) => {
+                self.manifest_state.save_error = None;
+                self.add_toast(ToastLevel::Info, format!("Removed {name} from manifest"));
+                self.load_manifest_diff(cx);
+            }
+            Err(e) => {
+                self.manifest_state.save_error = Some(e.clone());
+                self.add_toast(ToastLevel::Error, format!("Manifest save failed: {e}"));
+            }
+        }
+    }
+
+    pub fn import_installed_into_manifest(&mut self, cx: &mut Context<Self>) {
+        let entries: Vec<(String, String)> = self
+            .installed_state
+            .packages
+            .iter()
+            .filter(|p| p.package.adapter_id == "soar")
+            .map(|p| (p.package.name.clone(), p.package.version.clone()))
+            .collect();
+        if entries.is_empty() {
+            self.add_toast(
+                ToastLevel::Info,
+                "No installed soar packages to import".into(),
+            );
+            return;
+        }
+        let count = entries.len();
+        match self.adapter.write_manifest_replace_packages(&entries) {
+            Ok(()) => {
+                self.manifest_state.save_error = None;
+                self.add_toast(
+                    ToastLevel::Success,
+                    format!("Imported {count} packages into manifest"),
+                );
+                self.load_manifest_diff(cx);
+            }
+            Err(e) => {
+                self.manifest_state.save_error = Some(e.clone());
+                self.add_toast(ToastLevel::Error, format!("Manifest save failed: {e}"));
+            }
+        }
+    }
+
+    pub fn create_empty_manifest(&mut self, cx: &mut Context<Self>) {
+        match self.adapter.write_manifest_replace_packages(&[]) {
+            Ok(()) => {
+                self.manifest_state.save_error = None;
+                self.add_toast(ToastLevel::Success, "Created an empty manifest".into());
+                self.load_manifest_diff(cx);
+            }
+            Err(e) => {
+                self.manifest_state.save_error = Some(e.clone());
+                self.add_toast(ToastLevel::Error, format!("Manifest save failed: {e}"));
+            }
+        }
+    }
+
     pub fn check_updates(&mut self, cx: &mut Context<Self>) {
         self.updates_state.loading = true;
         self.updates_state.error = None;
@@ -1676,6 +1820,10 @@ impl App {
             self.close_settings_edit(cx);
             return;
         }
+        if self.manifest_state.edit.is_some() {
+            self.close_manifest_edit(cx);
+            return;
+        }
         if self.run_picker.is_some() {
             self.run_picker = None;
             cx.notify();
@@ -1967,6 +2115,18 @@ impl Render for App {
             }
         }
 
+        if self.manifest_state.pending_edit_focus {
+            if let Some(ref edit) = self.manifest_state.edit {
+                use views::manifest::ManifestEditKind;
+                let handle = match &edit.kind {
+                    ManifestEditKind::Add => edit.name_input.focus_handle(cx),
+                    ManifestEditKind::EditVersion(_) => edit.version_input.focus_handle(cx),
+                };
+                window.focus(&handle);
+                self.manifest_state.pending_edit_focus = false;
+            }
+        }
+
         let mut root = div()
             .id("app-root")
             .key_context("App")
@@ -2092,6 +2252,12 @@ impl Render for App {
                             mode_suffix(&self.current_mode)
                         )
                     }
+                }
+                ConfirmAction::RemoveManifestEntry { name } => {
+                    format!("Remove {name} from manifest?")
+                }
+                ConfirmAction::ImportInstalledManifest => {
+                    "Replace the manifest with your currently installed packages?".to_string()
                 }
             };
 
@@ -2489,6 +2655,162 @@ impl Render for App {
             );
         }
 
+        if let Some(ref edit) = self.manifest_state.edit {
+            use views::manifest::ManifestEditKind;
+            let surface = theme.surface;
+            let border = theme.border;
+            let primary = theme.primary;
+            let hover = theme.hover;
+            let text_muted = theme.text_muted;
+
+            let title = match &edit.kind {
+                ManifestEditKind::Add => "Add package to manifest".to_string(),
+                ManifestEditKind::EditVersion(name) => format!("Edit {name}"),
+            };
+
+            let cancel = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.close_manifest_edit(cx);
+            });
+            let save = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.apply_manifest_edit(cx);
+            });
+
+            let name_input = edit.name_input.clone();
+            let version_input = edit.version_input.clone();
+            let name_editable = matches!(edit.kind, ManifestEditKind::Add);
+
+            let mut body = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::SM))
+                .w(px(540.0))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::HEADING))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .text_color(text_muted)
+                        .child("Press Escape to cancel."),
+                );
+
+            let name_field = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::XXS))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .text_color(text_muted)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("NAME"),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .px(px(styles::spacing::MD))
+                        .py(px(10.0))
+                        .rounded(px(styles::radius::MD))
+                        .bg(if name_editable {
+                            surface
+                        } else {
+                            theme.hover
+                        })
+                        .border_1()
+                        .border_color(border)
+                        .child(name_input.clone()),
+                );
+            body = body.child(name_field);
+
+            let version_field = div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::XXS))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .text_color(text_muted)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("VERSION"),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .px(px(styles::spacing::MD))
+                        .py(px(10.0))
+                        .rounded(px(styles::radius::MD))
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
+                        .child(version_input.clone()),
+                );
+            body = body.child(version_field);
+
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(styles::spacing::SM))
+                    .justify_end()
+                    .child(
+                        div()
+                            .id("manifest-edit-cancel")
+                            .px(px(styles::spacing::LG))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .on_click(cancel)
+                            .child("Cancel"),
+                    )
+                    .child(
+                        div()
+                            .id("manifest-edit-save")
+                            .px(px(styles::spacing::LG))
+                            .py(px(styles::spacing::XS))
+                            .rounded(px(styles::radius::MD))
+                            .bg(primary)
+                            .text_color(gpui::white())
+                            .cursor_pointer()
+                            .on_click(save)
+                            .child("Save"),
+                    ),
+            );
+
+            root = root.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.5,
+                    })
+                    .child(
+                        div()
+                            .p(px(styles::spacing::XXL))
+                            .rounded(px(styles::radius::LG))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .child(body),
+                    ),
+            );
+        }
+
         root
     }
 }
@@ -2726,6 +3048,12 @@ impl App {
             }
             ConfirmAction::ApplyManifest { prune, .. } => {
                 self.apply_manifest(prune, cx);
+            }
+            ConfirmAction::RemoveManifestEntry { name } => {
+                self.remove_manifest_entry(name, cx);
+            }
+            ConfirmAction::ImportInstalledManifest => {
+                self.import_installed_into_manifest(cx);
             }
         }
     }
