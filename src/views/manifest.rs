@@ -936,8 +936,15 @@ fn name_section_with_actions(
     let count = names.len();
     let mut body = div().flex().flex_col();
     for (i, name) in names.iter().enumerate() {
-        let edit_name = name.clone();
-        let remove_name = name.clone();
+        // Soar suffixes in_sync entries with " (local)" or similar source labels.
+        // The manifest key is just the bare name, so strip the suffix before
+        // routing edit and remove actions back through the adapter.
+        let base_name = name
+            .split_once(' ')
+            .map(|(n, _)| n.to_string())
+            .unwrap_or_else(|| name.clone());
+        let edit_name = base_name.clone();
+        let remove_name = base_name.clone();
         let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
             cx.stop_propagation();
             app.open_manifest_edit(edit_name.clone(), cx);
@@ -949,10 +956,6 @@ fn name_section_with_actions(
             });
             cx.notify();
         });
-        let base_name = name
-            .split_once(' ')
-            .map(|(n, _)| n.to_string())
-            .unwrap_or_else(|| name.clone());
         let missing_profile = invalid_profiles.get(&base_name).cloned();
         let mut row = div()
             .flex()
