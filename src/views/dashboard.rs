@@ -83,12 +83,10 @@ impl App {
         });
 
         let mut content = div()
-            .p(px(styles::spacing::XL))
             .flex()
             .flex_col()
             .gap(px(styles::spacing::XXL))
             .w_full()
-            // Welcome section
             .child(
                 div()
                     .flex()
@@ -97,16 +95,16 @@ impl App {
                     .child(
                         div()
                             .text_size(px(styles::font_size::TITLE))
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child("Dashboard"),
                     )
                     .child(
                         div()
                             .text_size(px(styles::font_size::SMALL))
                             .text_color(text_muted)
-                            .child(format!("Managing {mode_label} packages")),
+                            .child(format!("Managing {mode_label} packages.")),
                     ),
             )
-            // Stat cards
             .child(
                 div()
                     .flex()
@@ -135,15 +133,15 @@ impl App {
                         theme,
                     )),
             )
-            // Quick actions
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(px(styles::spacing::SM))
                     .child(
                         div()
                             .text_size(px(styles::font_size::HEADING))
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child("Quick Actions"),
                     )
                     .child(
@@ -151,7 +149,7 @@ impl App {
                             .flex()
                             .flex_row()
                             .gap(px(styles::spacing::SM))
-                            .child(self.outlined_button("Search", "qa-search", nav_browse, theme))
+                            .child(self.primary_button("Search", "qa-search", nav_browse, theme))
                             .child(self.outlined_button(
                                 "Refresh",
                                 "qa-refresh",
@@ -173,7 +171,6 @@ impl App {
                     ),
             );
 
-        // Health warning
         if stats.unhealthy_count > 0 {
             content = content.child(
                 div()
@@ -181,17 +178,22 @@ impl App {
                     .py(px(styles::spacing::SM))
                     .w_full()
                     .rounded(px(styles::radius::MD))
-                    .bg(danger.opacity(0.15))
+                    .bg(danger.opacity(0.12))
                     .border_1()
                     .border_color(danger.opacity(0.3))
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(styles::font_size::SMALL)).child(format!(
-                        "\u{26a0} {} package(s) with issues",
-                        stats.unhealthy_count
-                    )))
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::SMALL))
+                            .text_color(danger)
+                            .child(format!(
+                                "\u{26a0} {} package(s) with issues",
+                                stats.unhealthy_count
+                            )),
+                    )
                     .child(
                         div()
                             .id("health-view-btn")
@@ -210,7 +212,20 @@ impl App {
             );
         }
 
-        content
+        div()
+            .id("dashboard-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .p(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(content),
+            )
     }
 
     fn stat_card_button(
@@ -275,7 +290,34 @@ impl App {
             .border_color(border)
             .cursor_pointer()
             .text_size(px(styles::font_size::SMALL))
+            .font_weight(FontWeight::MEDIUM)
             .hover(move |s| s.bg(hover))
+            .on_click(on_click)
+            .child(label.to_string())
+    }
+
+    fn primary_button(
+        &self,
+        label: &str,
+        id: &str,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+        theme: &theme::Theme,
+    ) -> impl IntoElement {
+        let primary = theme.primary;
+
+        div()
+            .id(SharedString::from(id.to_string()))
+            .px(px(styles::spacing::LG))
+            .py(px(styles::spacing::SM))
+            .rounded(px(styles::radius::MD))
+            .bg(primary)
+            .text_color(gpui::white())
+            .border_1()
+            .border_color(primary)
+            .cursor_pointer()
+            .text_size(px(styles::font_size::SMALL))
+            .font_weight(FontWeight::MEDIUM)
+            .hover(move |s| s.bg(primary.opacity(0.85)))
             .on_click(on_click)
             .child(label.to_string())
     }
