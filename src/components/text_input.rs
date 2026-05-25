@@ -54,6 +54,7 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    scroll_offset: Pixels,
 }
 
 impl TextInput {
@@ -68,6 +69,7 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            scroll_offset: px(0.0),
         }
     }
 
@@ -217,7 +219,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        line.closest_index_for_x(position.x - bounds.left() + self.scroll_offset)
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -385,11 +387,11 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
-                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.left() + last_layout.x_for_index(range.start) - self.scroll_offset,
                 bounds.top(),
             ),
             point(
-                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.left() + last_layout.x_for_index(range.end) - self.scroll_offset,
                 bounds.bottom(),
             ),
         ))
@@ -549,12 +551,42 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let cursor_pos = line.x_for_index(cursor);
+        let viewport = bounds.right() - bounds.left();
+        let line_width = line.width;
+        let prev_offset = input.scroll_offset;
+        let padding = px(2.0);
+
+        let mut scroll_offset = if line_width <= viewport {
+            px(0.0)
+        } else {
+            let mut so = prev_offset;
+            if cursor_pos - so < padding {
+                so = (cursor_pos - padding).max(px(0.0));
+            }
+            if cursor_pos - so > viewport - padding {
+                so = cursor_pos - (viewport - padding);
+            }
+            let max_offset = (line_width - viewport).max(px(0.0));
+            so.clamp(px(0.0), max_offset)
+        };
+        if !is_empty {
+            // Persist for next prepaint and for mouse hit testing.
+            self.input.update(cx, |input, _cx| {
+                input.scroll_offset = scroll_offset;
+            });
+        } else {
+            scroll_offset = px(0.0);
+            self.input.update(cx, |input, _cx| {
+                input.scroll_offset = px(0.0);
+            });
+        }
+
         let (selection, cursor) = if is_empty || selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
+                        point(bounds.left() + cursor_pos - scroll_offset, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     hsla(0.6, 0.8, 0.5, 1.0),
@@ -565,11 +597,12 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.left() + line.x_for_index(selected_range.start)
+                                - scroll_offset,
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.left() + line.x_for_index(selected_range.end) - scroll_offset,
                             bounds.bottom(),
                         ),
                     ),
@@ -606,8 +639,9 @@ impl Element for TextElement {
             window.paint_quad(selection)
         }
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        let scroll_offset = self.input.read(cx).scroll_offset;
+        let origin = gpui::point(bounds.origin.x - scroll_offset, bounds.origin.y);
+        line.paint(origin, window.line_height(), window, cx).unwrap();
 
         if focus_handle.is_focused(window) {
             if let Some(cursor) = prepaint.cursor.take() {
