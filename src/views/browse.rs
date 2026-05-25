@@ -234,11 +234,19 @@ impl App {
         }
 
         let browse_panel = div()
-            .p(px(styles::spacing::XL))
+            .id("browse-scroll")
             .flex_1()
-            .flex()
-            .flex_col()
-            .child(browse_list);
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .p(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(browse_list),
+            );
 
         // Detail side panel
         if let Some(ref pkg) = self.browse_state.selected_package.clone() {
@@ -337,8 +345,7 @@ impl App {
             );
         }
 
-        // Install button / status
-        let install_status = if pkg.installed && pkg.update_available {
+        let install_status: AnyElement = if pkg.installed && pkg.update_available {
             div()
                 .px(px(10.0))
                 .py(px(styles::spacing::XXS))
@@ -347,7 +354,10 @@ impl App {
                 .border_1()
                 .border_color(warning.opacity(0.4))
                 .text_size(px(styles::font_size::CAPTION))
+                .text_color(warning)
+                .font_weight(FontWeight::MEDIUM)
                 .child("Update Available")
+                .into_any_element()
         } else if pkg.installed {
             div()
                 .px(px(10.0))
@@ -357,7 +367,10 @@ impl App {
                 .border_1()
                 .border_color(success.opacity(0.4))
                 .text_size(px(styles::font_size::CAPTION))
+                .text_color(success)
+                .font_weight(FontWeight::MEDIUM)
                 .child("Installed")
+                .into_any_element()
         } else if is_installing {
             let label = pkg_status
                 .map(|s| s.label())
@@ -370,17 +383,32 @@ impl App {
                 .border_1()
                 .border_color(primary.opacity(0.4))
                 .text_size(px(styles::font_size::CAPTION))
+                .text_color(primary)
                 .child(label)
+                .into_any_element()
         } else {
+            let install_pkg = pkg.clone();
+            let install_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
+                app.confirm_dialog = Some(crate::app::ConfirmAction::Install(
+                    install_pkg.clone(),
+                    app.current_mode,
+                ));
+                cx.notify();
+            });
             div()
-                .px(px(14.0))
+                .id(SharedString::from(format!("install-pkg-{idx}")))
+                .px(px(styles::spacing::LG))
                 .py(px(styles::spacing::XXS))
                 .rounded(px(styles::radius::SM))
                 .bg(primary)
                 .text_color(gpui::white())
                 .text_size(px(styles::font_size::SMALL))
+                .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
+                .on_click(install_listener)
                 .child("Install")
+                .into_any_element()
         };
 
         // Left column
