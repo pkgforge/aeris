@@ -526,6 +526,17 @@ impl App {
                             Ok(Err(ManifestLoadError::Other(e))) => ManifestStatus::Failed(e),
                             Err(e) => ManifestStatus::Failed(format!("{e}")),
                         };
+                        if let Some(name) = app.manifest_state.selected_entry.clone() {
+                            match app.adapter.read_manifest_entry(&name) {
+                                Ok(Some(snap)) => {
+                                    app.manifest_state.selected_snapshot = Some(snap);
+                                }
+                                _ => {
+                                    app.manifest_state.selected_entry = None;
+                                    app.manifest_state.selected_snapshot = None;
+                                }
+                            }
+                        }
                         cx.notify();
                     })
                 });
@@ -811,6 +822,22 @@ impl App {
                 self.add_toast(ToastLevel::Error, format!("Manifest save failed: {e}"));
             }
         }
+    }
+
+    pub fn select_manifest_entry(&mut self, name: String, cx: &mut Context<Self>) {
+        let snap = match self.adapter.read_manifest_entry(&name) {
+            Ok(s) => s,
+            Err(_) => None,
+        };
+        self.manifest_state.selected_entry = Some(name);
+        self.manifest_state.selected_snapshot = snap;
+        cx.notify();
+    }
+
+    pub fn clear_manifest_selection(&mut self, cx: &mut Context<Self>) {
+        self.manifest_state.selected_entry = None;
+        self.manifest_state.selected_snapshot = None;
+        cx.notify();
     }
 
     pub fn create_empty_manifest(&mut self, cx: &mut Context<Self>) {

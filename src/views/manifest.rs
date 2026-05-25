@@ -128,6 +128,8 @@ pub struct ManifestState {
     pub save_error: Option<String>,
     pub edit: Option<ManifestEditModal>,
     pub pending_edit_focus: bool,
+    pub selected_entry: Option<String>,
+    pub selected_snapshot: Option<ManifestEntrySnapshot>,
 }
 
 impl App {
@@ -473,11 +475,17 @@ impl App {
         }
         content = content.child(body);
 
-        div()
+        let detail = self.manifest_state.selected_snapshot.clone().map(|snap| {
+            let close = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.clear_manifest_selection(cx);
+            });
+            render_manifest_detail(snap, theme, Box::new(close))
+        });
+
+        let scroll = div()
             .id("manifest-scroll")
             .flex_1()
             .min_h_0()
-            .w_full()
             .overflow_y_scroll()
             .child(
                 div()
@@ -486,7 +494,19 @@ impl App {
                     .flex_col()
                     .w_full()
                     .child(content),
-            )
+            );
+
+        let mut outer = div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(scroll);
+        if let Some(panel) = detail {
+            outer = outer.child(panel);
+        }
+        outer
     }
 }
 
@@ -677,13 +697,19 @@ fn entry_row(
     idx: usize,
     missing_profile: Option<String>,
     cx: &mut Context<App>,
-) -> Div {
+) -> Stateful<Div> {
     let surface = theme.surface;
     let border = theme.border;
     let text_muted = theme.text_muted;
     let hover = theme.hover;
     let danger = theme.danger;
     let warning = theme.warning;
+
+    let kind_prefix = match kind {
+        DiffKind::Install => "install",
+        DiffKind::Update => "update",
+        DiffKind::Remove => "remove",
+    };
 
     let mut row = div()
         .flex()
@@ -747,17 +773,14 @@ fn entry_row(
     }
 
     if matches!(kind, DiffKind::Install | DiffKind::Update) {
-        let kind_prefix = match kind {
-            DiffKind::Install => "install",
-            DiffKind::Update => "update",
-            DiffKind::Remove => "remove",
-        };
         let edit_name = entry.name.clone();
         let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            cx.stop_propagation();
             app.open_manifest_edit(edit_name.clone(), cx);
         });
         let remove_name = entry.name.clone();
         let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            cx.stop_propagation();
             app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveManifestEntry {
                 name: remove_name.clone(),
             });
@@ -798,7 +821,16 @@ fn entry_row(
         );
     }
 
-    row
+    let select_name = entry.name.clone();
+    let select_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+        app.select_manifest_entry(select_name.clone(), cx);
+    });
+    let _ = text_muted;
+    div()
+        .id(SharedString::from(format!("manifest-row-{kind_prefix}-{idx}")))
+        .cursor_pointer()
+        .on_click(select_listener)
+        .child(row)
 }
 
 fn in_sync_section(
@@ -907,9 +939,11 @@ fn name_section_with_actions(
         let edit_name = name.clone();
         let remove_name = name.clone();
         let edit_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            cx.stop_propagation();
             app.open_manifest_edit(edit_name.clone(), cx);
         });
         let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            cx.stop_propagation();
             app.confirm_dialog = Some(crate::app::ConfirmAction::RemoveManifestEntry {
                 name: remove_name.clone(),
             });
@@ -921,7 +955,6 @@ fn name_section_with_actions(
             .unwrap_or_else(|| name.clone());
         let missing_profile = invalid_profiles.get(&base_name).cloned();
         let mut row = div()
-            .py(px(styles::spacing::SM))
             .flex()
             .flex_row()
             .items_center()
@@ -975,10 +1008,20 @@ fn name_section_with_actions(
                 .on_click(remove_listener)
                 .child("Remove"),
         );
+        let select_name = base_name.clone();
+        let select_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.select_manifest_entry(select_name.clone(), cx);
+        });
+        let mut clickable = div()
+            .id(SharedString::from(format!("manifest-row-{id_prefix}-{i}")))
+            .py(px(styles::spacing::SM))
+            .cursor_pointer()
+            .on_click(select_listener)
+            .child(row);
         if i + 1 < count {
-            row = row.border_b_1().border_color(border);
+            clickable = clickable.border_b_1().border_color(border);
         }
-        body = body.child(row);
+        body = body.child(clickable);
     }
     card.child(div().px(px(styles::spacing::LG)).child(body))
 }
@@ -1008,6 +1051,144 @@ fn summary_chip(label: &str, count: usize, color: Hsla, theme: &theme::Theme) ->
                 .text_color(theme.text_muted)
                 .child(label.to_string()),
         )
+}
+
+fn render_manifest_detail(
+    snap: ManifestEntrySnapshot,
+    theme: &theme::Theme,
+    close: Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
+) -> Stateful<Div> {
+    let surface = theme.surface;
+    let border = theme.border;
+    let text_muted = theme.text_muted;
+    let hover = theme.hover;
+
+    let field = |label: &str, value: String| -> Option<Div> {
+        if value.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(styles::spacing::XXXS))
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(text_muted)
+                        .child(label.to_uppercase()),
+                )
+                .child(div().text_size(px(styles::font_size::SMALL)).child(value)),
+        )
+    };
+
+    let bool_field = |label: &str, on: bool| -> Option<Div> {
+        if !on {
+            return None;
+        }
+        Some(
+            div()
+                .text_size(px(styles::font_size::SMALL))
+                .child(format!("{label}: on")),
+        )
+    };
+
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(px(styles::spacing::MD))
+        .w_full()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(styles::font_size::HEADING))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(snap.name.clone()),
+                )
+                .child(
+                    div()
+                        .id("manifest-detail-close")
+                        .px(px(styles::spacing::SM))
+                        .py(px(styles::spacing::XXS))
+                        .rounded(px(styles::radius::SM))
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
+                        .cursor_pointer()
+                        .text_size(px(styles::font_size::CAPTION))
+                        .hover(move |s| s.bg(hover))
+                        .on_click(close)
+                        .child("Close"),
+                ),
+        );
+
+    let version_display = if snap.version.is_empty() {
+        "*".to_string()
+    } else {
+        snap.version.clone()
+    };
+    if let Some(f) = field("Version", version_display) {
+        body = body.child(f);
+    }
+    for (label, value) in [
+        ("Package ID", snap.pkg_id.clone()),
+        ("Repository", snap.repo.clone()),
+        ("URL", snap.url.clone()),
+        ("GitHub", snap.github.clone()),
+        ("GitLab", snap.gitlab.clone()),
+        ("Asset pattern", snap.asset_pattern.clone()),
+        ("Tag pattern", snap.tag_pattern.clone()),
+        ("Profile", snap.profile.clone()),
+        ("Install patterns", snap.install_patterns.clone()),
+        ("Build commands", snap.build_commands.clone()),
+        ("Build dependencies", snap.build_dependencies.clone()),
+    ] {
+        if let Some(f) = field(label, value) {
+            body = body.child(f);
+        }
+    }
+
+    let flags: Vec<Div> = [
+        bool_field("Pinned", snap.pinned),
+        bool_field("Include prereleases", snap.include_prerelease),
+        bool_field("Binary only", snap.binary_only),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !flags.is_empty() {
+        let mut flags_block = div()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::XXXS))
+            .child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(text_muted)
+                    .child("FLAGS"),
+            );
+        for f in flags {
+            flags_block = flags_block.child(f);
+        }
+        body = body.child(flags_block);
+    }
+
+    div()
+        .id("manifest-detail")
+        .w(px(360.0))
+        .min_h_0()
+        .border_l_1()
+        .border_color(border)
+        .bg(theme.bg)
+        .overflow_y_scroll()
+        .child(div().p(px(styles::spacing::XL)).child(body))
 }
 
 pub fn build_manifest_edit_modal(
