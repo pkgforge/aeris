@@ -384,6 +384,20 @@ impl SoarAdapter {
             .await
             .map_err(|e| ManifestLoadError::Other(e.to_string()))?;
 
+        let valid_profiles: std::collections::HashSet<String> = soar_config::config::get_config()
+            .profile
+            .keys()
+            .cloned()
+            .collect();
+        let mut invalid_profiles: std::collections::HashMap<String, String> = Default::default();
+        for rp in &resolved {
+            if let Some(ref profile) = rp.profile
+                && !valid_profiles.contains(profile)
+            {
+                invalid_profiles.insert(rp.name.clone(), profile.clone());
+            }
+        }
+
         let to_install = diff
             .to_install
             .into_iter()
@@ -423,6 +437,7 @@ impl SoarAdapter {
             to_remove,
             in_sync: diff.in_sync,
             not_found: diff.not_found,
+            invalid_profiles,
         })
     }
 

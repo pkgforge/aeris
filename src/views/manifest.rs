@@ -19,6 +19,8 @@ pub struct ManifestDiff {
     pub to_remove: Vec<ManifestEntry>,
     pub in_sync: Vec<String>,
     pub not_found: Vec<String>,
+    /// Map of package name to the name of the missing profile it references.
+    pub invalid_profiles: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -503,7 +505,8 @@ fn render_diff_sections(
         .gap(px(styles::spacing::MD))
         .w_full();
 
-    let summary = div()
+    let invalid_profiles = &diff.invalid_profiles;
+    let mut summary = div()
         .flex()
         .flex_row()
         .gap(px(styles::spacing::SM))
@@ -528,6 +531,14 @@ fn render_diff_sections(
             theme.text_muted,
             theme,
         ));
+    if !invalid_profiles.is_empty() {
+        summary = summary.child(summary_chip(
+            "missing profile",
+            invalid_profiles.len(),
+            warning,
+            theme,
+        ));
+    }
     col = col.child(summary);
 
     col = col.child(diff_section(
@@ -536,6 +547,7 @@ fn render_diff_sections(
         &diff.to_install,
         DiffKind::Install,
         theme,
+        invalid_profiles,
         cx,
     ));
     col = col.child(diff_section(
@@ -544,6 +556,7 @@ fn render_diff_sections(
         &diff.to_update,
         DiffKind::Update,
         theme,
+        invalid_profiles,
         cx,
     ));
     if !diff.to_remove.is_empty() {
@@ -553,15 +566,23 @@ fn render_diff_sections(
             &diff.to_remove,
             DiffKind::Remove,
             theme,
+            invalid_profiles,
             cx,
         ));
     }
-    col = col.child(in_sync_section(success, &diff.in_sync, theme, cx));
+    col = col.child(in_sync_section(
+        success,
+        &diff.in_sync,
+        theme,
+        invalid_profiles,
+        cx,
+    ));
     if !diff.not_found.is_empty() {
         col = col.child(not_found_section(
             theme.text_muted,
             &diff.not_found,
             theme,
+            invalid_profiles,
             cx,
         ));
     }
@@ -582,6 +603,7 @@ fn diff_section(
     entries: &[ManifestEntry],
     kind: DiffKind,
     theme: &theme::Theme,
+    invalid_profiles: &std::collections::HashMap<String, String>,
     cx: &mut Context<App>,
 ) -> Div {
     let surface = theme.surface;
@@ -636,7 +658,8 @@ fn diff_section(
     let count = entries.len();
     let mut body = div().flex().flex_col();
     for (i, entry) in entries.iter().enumerate() {
-        let row = entry_row(entry, kind, accent, theme, i, cx);
+        let missing_profile = invalid_profiles.get(&entry.name).cloned();
+        let row = entry_row(entry, kind, accent, theme, i, missing_profile, cx);
         let mut row = row.py(px(styles::spacing::SM));
         if i + 1 < count {
             row = row.border_b_1().border_color(border);
@@ -652,6 +675,7 @@ fn entry_row(
     accent: Hsla,
     theme: &theme::Theme,
     idx: usize,
+    missing_profile: Option<String>,
     cx: &mut Context<App>,
 ) -> Div {
     let surface = theme.surface;
@@ -659,6 +683,7 @@ fn entry_row(
     let text_muted = theme.text_muted;
     let hover = theme.hover;
     let danger = theme.danger;
+    let warning = theme.warning;
 
     let mut row = div()
         .flex()
@@ -672,6 +697,15 @@ fn entry_row(
                 .font_weight(FontWeight::MEDIUM)
                 .child(entry.name.clone()),
         );
+
+    if let Some(ref missing) = missing_profile {
+        row = row.child(chip(
+            &format!("profile {missing} missing"),
+            warning.opacity(0.2),
+            warning.opacity(0.4),
+            warning,
+        ));
+    }
 
     match kind {
         DiffKind::Install => {
@@ -771,18 +805,38 @@ fn in_sync_section(
     accent: Hsla,
     names: &[String],
     theme: &theme::Theme,
+    invalid_profiles: &std::collections::HashMap<String, String>,
     cx: &mut Context<App>,
 ) -> Div {
-    name_section_with_actions("In sync", accent, names, theme, true, "sync", cx)
+    name_section_with_actions(
+        "In sync",
+        accent,
+        names,
+        theme,
+        true,
+        "sync",
+        invalid_profiles,
+        cx,
+    )
 }
 
 fn not_found_section(
     accent: Hsla,
     names: &[String],
     theme: &theme::Theme,
+    invalid_profiles: &std::collections::HashMap<String, String>,
     cx: &mut Context<App>,
 ) -> Div {
-    name_section_with_actions("Not found", accent, names, theme, false, "nf", cx)
+    name_section_with_actions(
+        "Not found",
+        accent,
+        names,
+        theme,
+        false,
+        "nf",
+        invalid_profiles,
+        cx,
+    )
 }
 
 fn name_section_with_actions(
@@ -792,6 +846,7 @@ fn name_section_with_actions(
     theme: &theme::Theme,
     show_edit: bool,
     id_prefix: &'static str,
+    invalid_profiles: &std::collections::HashMap<String, String>,
     cx: &mut Context<App>,
 ) -> Div {
     let surface = theme.surface;
@@ -845,6 +900,7 @@ fn name_section_with_actions(
         return card;
     }
 
+    let warning = theme.warning;
     let count = names.len();
     let mut body = div().flex().flex_col();
     for (i, name) in names.iter().enumerate() {
@@ -859,6 +915,11 @@ fn name_section_with_actions(
             });
             cx.notify();
         });
+        let base_name = name
+            .split_once(' ')
+            .map(|(n, _)| n.to_string())
+            .unwrap_or_else(|| name.clone());
+        let missing_profile = invalid_profiles.get(&base_name).cloned();
         let mut row = div()
             .py(px(styles::spacing::SM))
             .flex()
@@ -871,6 +932,14 @@ fn name_section_with_actions(
                     .text_size(px(styles::font_size::BODY))
                     .child(name.clone()),
             );
+        if let Some(ref missing) = missing_profile {
+            row = row.child(chip(
+                &format!("profile {missing} missing"),
+                warning.opacity(0.2),
+                warning.opacity(0.4),
+                warning,
+            ));
+        }
         if show_edit {
             row = row.child(
                 div()
