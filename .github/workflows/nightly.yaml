@@ -41,18 +41,8 @@ jobs:
               RUNNER: ubuntu-24.04-arm
             }
           - {
-              NAME: aarch64-linux-musl,
-              TARGET: aarch64-unknown-linux-musl,
-              RUNNER: ubuntu-24.04-arm
-            }
-          - {
               NAME: x86_64-linux-gnu,
               TARGET: x86_64-unknown-linux-gnu,
-              RUNNER: ubuntu-latest
-            }
-          - {
-              NAME: x86_64-linux-musl,
-              TARGET: x86_64-unknown-linux-musl,
               RUNNER: ubuntu-latest
             }
     steps:
@@ -70,7 +60,7 @@ jobs:
         run: |
           sudo apt update -y
           sudo apt install -y \
-            b3sum findutils file musl-tools \
+            b3sum findutils file \
             libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig1-dev libwayland-dev libasound2-dev \
             libssl-dev pkg-config
@@ -80,18 +70,8 @@ jobs:
         with:
           targets: ${{ matrix.build.TARGET }}
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.0
-
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-zigbuild
-
       - name: Build
-        run: cargo zigbuild --release --locked --target "${{ matrix.build.TARGET }}" --jobs="$(($(nproc)+1))" --verbose
+        run: cargo build --release --locked --target "${{ matrix.build.TARGET }}" --jobs="$(($(nproc)+1))" --verbose
 
       - name: Prepare release assets
         shell: bash
