@@ -295,6 +295,79 @@ pub struct App {
     /// Set when an overlay opens whose TextInput should be focused on the
     /// next render. Cleared after applying focus.
     pending_settings_edit_focus: bool,
+
+    /// Receives a notification each time the watched manifest file changes on
+    /// disk. Drained on the same timer as adapter progress events.
+    manifest_watcher_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// Kept alive so the underlying inotify/fsevent handles stay registered.
+    /// Boxed as `Any` because notify's watcher type does not appear in any
+    /// other field's signature here.
+    _manifest_watcher: Option<Box<dyn std::any::Any + Send>>,
+    /// Earliest instant at which a queued external reload may run. Lets us
+    /// coalesce bursts of events from a single atomic save.
+    manifest_reload_due: Option<Instant>,
+}
+
+/// Wait at least this long after a notify event before reloading. Coalesces
+/// the burst that an atomic rename produces and keeps us from racing partial
+/// writes from external editors.
+const MANIFEST_RELOAD_COALESCE_MS: u64 = 200;
+
+/// Spawn a notify watcher on the manifest's parent directory and return a
+/// receiver that fires whenever the manifest path is touched. The watcher
+/// itself is returned boxed so the caller can keep it alive without naming
+/// notify types across the field type.
+fn spawn_manifest_watcher(
+    adapter: &Arc<SoarAdapter>,
+) -> (
+    Option<std::sync::mpsc::Receiver<()>>,
+    Option<Box<dyn std::any::Any + Send>>,
+) {
+    use notify::{EventKind, RecursiveMode, Watcher};
+
+    let path = adapter.manifest_path();
+    let parent = match path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return (None, None),
+    };
+    if let Err(e) = std::fs::create_dir_all(&parent) {
+        log::warn!("manifest watcher: cannot create parent dir: {e}");
+        return (None, None);
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = path;
+
+    let watcher_result =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
+            Ok(event) => {
+                let interesting = matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                );
+                if !interesting {
+                    return;
+                }
+                if event.paths.iter().any(|p| p == &target) {
+                    let _ = tx.send(());
+                }
+            }
+            Err(e) => log::warn!("manifest watcher error: {e}"),
+        });
+
+    let mut watcher = match watcher_result {
+        Ok(w) => w,
+        Err(e) => {
+            log::warn!("manifest watcher: failed to create: {e}");
+            return (None, None);
+        }
+    };
+    if let Err(e) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
+        log::warn!("manifest watcher: failed to watch {}: {e}", parent.display());
+        return (None, None);
+    }
+
+    (Some(rx), Some(Box::new(watcher) as Box<dyn std::any::Any + Send>))
 }
 
 impl App {
@@ -333,6 +406,8 @@ impl App {
         let settings_state = views::settings::SettingsState::load(&aeris_config, adapter.as_ref());
 
         let search_input = cx.new(|cx| crate::components::TextInput::new(cx, "Search packages..."));
+
+        let (manifest_watcher_rx, manifest_watcher) = spawn_manifest_watcher(&adapter);
 
         // Poll for progress events periodically
         cx.spawn(
@@ -388,6 +463,9 @@ impl App {
             search_input,
             focus_handle: cx.focus_handle(),
             pending_settings_edit_focus: false,
+            manifest_watcher_rx,
+            _manifest_watcher: manifest_watcher,
+            manifest_reload_due: None,
         }
     }
 
@@ -2128,6 +2206,39 @@ impl App {
 
         if had_events {
             cx.notify();
+        }
+
+        self.process_manifest_watch(cx);
+    }
+
+    /// Drain pending notify events for the manifest file and trigger a
+    /// debounced reload when the change originated outside the app.
+    fn process_manifest_watch(&mut self, cx: &mut Context<Self>) {
+        let mut saw_event = false;
+        if let Some(rx) = &self.manifest_watcher_rx {
+            while rx.try_recv().is_ok() {
+                saw_event = true;
+            }
+        }
+
+        if saw_event && !self.adapter.is_recent_self_write() {
+            self.manifest_reload_due =
+                Some(Instant::now() + Duration::from_millis(MANIFEST_RELOAD_COALESCE_MS));
+        }
+
+        if let Some(due) = self.manifest_reload_due {
+            if Instant::now() >= due {
+                self.manifest_reload_due = None;
+                // Avoid wiping out a modal that the user is actively editing.
+                if self.manifest_state.edit.is_none() {
+                    self.load_manifest_diff(cx);
+                } else {
+                    // Try again shortly so the reload still happens after
+                    // the modal closes.
+                    self.manifest_reload_due =
+                        Some(Instant::now() + Duration::from_millis(MANIFEST_RELOAD_COALESCE_MS));
+                }
+            }
         }
     }
 

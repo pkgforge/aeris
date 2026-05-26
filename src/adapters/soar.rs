@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Arc, RwLock},
+    time::{Duration, Instant},
 };
 
 use soar_config::{
@@ -33,7 +34,12 @@ pub struct SoarAdapter {
     user_events: EventSinkHandle,
     has_system: bool,
     info: AdapterInfo,
+    last_self_write: RwLock<Option<Instant>>,
 }
+
+/// Window during which manifest change events arriving after a self-write are
+/// treated as our own and ignored by the file watcher.
+const SELF_WRITE_DEBOUNCE: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone)]
 pub enum ManifestLoadError {
@@ -265,6 +271,21 @@ fn atomic_write_manifest(
     std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+impl SoarAdapter {
+    fn mark_self_write(&self) {
+        *self.last_self_write.write().unwrap() = Some(Instant::now());
+    }
+
+    /// True if a watcher event arriving now should be treated as our own write.
+    pub fn is_recent_self_write(&self) -> bool {
+        self.last_self_write
+            .read()
+            .unwrap()
+            .map(|t| t.elapsed() < SELF_WRITE_DEBOUNCE)
+            .unwrap_or(false)
+    }
 }
 
 impl SoarAdapter {
@@ -528,6 +549,7 @@ impl SoarAdapter {
                 snap.version.clone()
             };
             pkgs_tbl.insert(&snap.name, toml_edit::value(v));
+            self.mark_self_write();
             return atomic_write_manifest(&path, &doc);
         }
 
@@ -547,6 +569,7 @@ impl SoarAdapter {
             pkgs_tbl.insert(&snap.name, toml_edit::Item::Table(t));
         }
 
+        self.mark_self_write();
         atomic_write_manifest(&path, &doc)
     }
 
@@ -556,6 +579,7 @@ impl SoarAdapter {
         if let Some(pkgs) = doc.get_mut("packages").and_then(|i| i.as_table_mut()) {
             pkgs.remove(name);
         }
+        self.mark_self_write();
         atomic_write_manifest(&path, &doc)
     }
 
@@ -575,6 +599,7 @@ impl SoarAdapter {
             tbl.insert(name, toml_edit::value(v));
         }
         doc.insert("packages", toml_edit::Item::Table(tbl));
+        self.mark_self_write();
         atomic_write_manifest(&path, &doc)
     }
 
@@ -1023,6 +1048,7 @@ impl SoarAdapter {
                 system_ctx: RwLock::new(system_ctx),
                 user_events: events,
                 has_system,
+                last_self_write: RwLock::new(None),
                 info: AdapterInfo {
                     id: "soar".into(),
                     name: "Soar".into(),
