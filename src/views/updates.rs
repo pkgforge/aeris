@@ -266,6 +266,7 @@ impl App {
             .id("updates-scroll")
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .w_full()
             .overflow_y_scroll()
             .child(
@@ -274,6 +275,7 @@ impl App {
                     .flex()
                     .flex_col()
                     .w_full()
+                    .min_w_0()
                     .child(main_col),
             )
     }

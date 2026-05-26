@@ -486,6 +486,7 @@ impl App {
             .id("manifest-scroll")
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .overflow_y_scroll()
             .child(
                 div()
@@ -493,6 +494,7 @@ impl App {
                     .flex()
                     .flex_col()
                     .w_full()
+                    .min_w_0()
                     .child(content),
             );
 
@@ -676,7 +678,7 @@ fn diff_section(
     }
 
     let count = entries.len();
-    let mut body = div().flex().flex_col();
+    let mut body = div().flex().flex_col().w_full();
     for (i, entry) in entries.iter().enumerate() {
         let missing_profile = invalid_profiles.get(&entry.name).cloned();
         let row = entry_row(entry, kind, accent, theme, i, missing_profile, cx);
@@ -686,7 +688,12 @@ fn diff_section(
         }
         body = body.child(row);
     }
-    card.child(div().px(px(styles::spacing::LG)).child(body))
+    card.child(
+        div()
+            .w_full()
+            .px(px(styles::spacing::LG))
+            .child(body),
+    )
 }
 
 fn entry_row(
@@ -714,11 +721,15 @@ fn entry_row(
     let mut row = div()
         .flex()
         .flex_row()
+        .w_full()
+        .min_w_0()
         .gap(px(styles::spacing::SM))
         .items_center()
         .child(
             div()
                 .flex_1()
+                .min_w_0()
+                .overflow_hidden()
                 .text_size(px(styles::font_size::BODY))
                 .font_weight(FontWeight::MEDIUM)
                 .child(entry.name.clone()),
@@ -828,6 +839,8 @@ fn entry_row(
     let _ = text_muted;
     div()
         .id(SharedString::from(format!("manifest-row-{kind_prefix}-{idx}")))
+        .w_full()
+        .min_w_0()
         .cursor_pointer()
         .on_click(select_listener)
         .child(row)
@@ -934,7 +947,7 @@ fn name_section_with_actions(
 
     let warning = theme.warning;
     let count = names.len();
-    let mut body = div().flex().flex_col();
+    let mut body = div().flex().flex_col().w_full();
     for (i, name) in names.iter().enumerate() {
         // Soar suffixes in_sync entries with " (local)" or similar source labels.
         // The manifest key is just the bare name, so strip the suffix before
@@ -960,11 +973,15 @@ fn name_section_with_actions(
         let mut row = div()
             .flex()
             .flex_row()
+            .w_full()
+            .min_w_0()
             .items_center()
             .gap(px(styles::spacing::SM))
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .text_size(px(styles::font_size::BODY))
                     .child(name.clone()),
             );
@@ -1017,6 +1034,7 @@ fn name_section_with_actions(
         });
         let mut clickable = div()
             .id(SharedString::from(format!("manifest-row-{id_prefix}-{i}")))
+            .w_full()
             .py(px(styles::spacing::SM))
             .cursor_pointer()
             .on_click(select_listener)
@@ -1026,7 +1044,12 @@ fn name_section_with_actions(
         }
         body = body.child(clickable);
     }
-    card.child(div().px(px(styles::spacing::LG)).child(body))
+    card.child(
+        div()
+            .w_full()
+            .px(px(styles::spacing::LG))
+            .child(body),
+    )
 }
 
 fn summary_chip(label: &str, count: usize, color: Hsla, theme: &theme::Theme) -> Div {
@@ -1185,7 +1208,9 @@ fn render_manifest_detail(
 
     div()
         .id("manifest-detail")
+        .flex_shrink()
         .w(px(360.0))
+        .min_w(px(220.0))
         .min_h_0()
         .border_l_1()
         .border_color(border)

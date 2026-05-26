@@ -228,6 +228,7 @@ impl App {
             .id("settings-scroll")
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .w_full()
             .overflow_y_scroll()
             .child(
@@ -237,6 +238,7 @@ impl App {
                     .flex_col()
                     .gap(px(styles::spacing::XL))
                     .w_full()
+                    .min_w_0()
                     .child(header)
                     .child(aeris_section)
                     .child(div().w_full().h(px(1.0)).bg(border))

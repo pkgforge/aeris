@@ -2330,6 +2330,7 @@ impl Render for App {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .child(self.render_header(&theme, cx))
@@ -3443,7 +3444,7 @@ impl App {
     }
 
     fn render_content(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> Div {
-        let wrapper = div().flex_1().min_h_0().flex().flex_col();
+        let wrapper = div().flex_1().min_h_0().min_w_0().flex().flex_col();
 
         match self.current_view {
             View::Dashboard => wrapper.child(self.render_dashboard(theme, cx)),
