@@ -587,13 +587,16 @@ impl App {
 
         let adapter = self.adapter.clone();
         let mode = self.current_mode;
-        let prune = self.manifest_state.prune;
+        // Always compute the undeclared set so the user can see it. Whether
+        // we act on it during apply is governed by the Prune toggle later.
+        let compute_prune = true;
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let result =
-                    crate::tokio_spawn(async move { adapter.manifest_diff(mode, prune).await })
-                        .await;
+                let result = crate::tokio_spawn(async move {
+                    adapter.manifest_diff(mode, compute_prune).await
+                })
+                .await;
 
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {

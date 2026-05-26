@@ -310,7 +310,7 @@ impl App {
         let prune_state = self.manifest_state.prune;
         let prune_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.manifest_state.prune = !app.manifest_state.prune;
-            app.load_manifest_diff(cx);
+            cx.notify();
         });
         let prune_switch = switch_pill(prune_state, primary, border, Box::new(prune_listener));
 
@@ -375,7 +375,7 @@ impl App {
                                     .text_size(px(styles::font_size::CAPTION))
                                     .text_color(text_muted)
                                     .child(
-                                        "Remove installed packages that are not in the manifest.",
+                                        "When on, Apply removes undeclared packages from the system.",
                                     ),
                             ),
                     )
