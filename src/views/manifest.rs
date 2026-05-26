@@ -172,7 +172,7 @@ impl App {
                 div()
                     .text_size(px(styles::font_size::SMALL))
                     .text_color(text_muted)
-                    .child("Declared packages from your soar manifest, compared against what is installed."),
+                    .child("Reconciles your soar manifest with what is installed. For new upstream releases, see the Updates view."),
             );
 
         let is_loading = matches!(self.manifest_state.status, ManifestStatus::Loading);
@@ -532,21 +532,21 @@ fn render_diff_sections(
         .gap(px(styles::spacing::SM))
         .flex_wrap()
         .child(summary_chip(
-            "install",
+            "missing",
             diff.to_install.len(),
             primary,
             theme,
         ))
         .child(summary_chip(
-            "update",
+            "drifted",
             diff.to_update.len(),
             warning,
             theme,
         ))
-        .child(summary_chip("remove", diff.to_remove.len(), danger, theme))
+        .child(summary_chip("undeclared", diff.to_remove.len(), danger, theme))
         .child(summary_chip("in sync", diff.in_sync.len(), success, theme))
         .child(summary_chip(
-            "not found",
+            "unresolved",
             diff.not_found.len(),
             theme.text_muted,
             theme,
@@ -562,7 +562,7 @@ fn render_diff_sections(
     col = col.child(summary);
 
     col = col.child(diff_section(
-        "To install",
+        "Declared but not installed",
         primary,
         &diff.to_install,
         DiffKind::Install,
@@ -571,7 +571,7 @@ fn render_diff_sections(
         cx,
     ));
     col = col.child(diff_section(
-        "To update",
+        "Installed version drifted from manifest",
         warning,
         &diff.to_update,
         DiffKind::Update,
@@ -581,7 +581,7 @@ fn render_diff_sections(
     ));
     if !diff.to_remove.is_empty() {
         col = col.child(diff_section(
-            "To remove",
+            "Installed but not declared",
             danger,
             &diff.to_remove,
             DiffKind::Remove,
@@ -860,7 +860,7 @@ fn not_found_section(
     cx: &mut Context<App>,
 ) -> Div {
     name_section_with_actions(
-        "Not found",
+        "Unresolved by any repo",
         accent,
         names,
         theme,

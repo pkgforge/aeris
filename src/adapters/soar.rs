@@ -419,7 +419,7 @@ impl SoarAdapter {
             }
         }
 
-        let to_install = diff
+        let mut to_install: Vec<crate::views::manifest::ManifestEntry> = diff
             .to_install
             .into_iter()
             .map(|(pkg, target)| crate::views::manifest::ManifestEntry {
@@ -430,7 +430,7 @@ impl SoarAdapter {
             })
             .collect();
 
-        let to_update = diff
+        let mut to_update: Vec<crate::views::manifest::ManifestEntry> = diff
             .to_update
             .into_iter()
             .map(|(pkg, target)| crate::views::manifest::ManifestEntry {
@@ -441,7 +441,7 @@ impl SoarAdapter {
             })
             .collect();
 
-        let to_remove = diff
+        let mut to_remove: Vec<crate::views::manifest::ManifestEntry> = diff
             .to_remove
             .into_iter()
             .map(|installed| crate::views::manifest::ManifestEntry {
@@ -452,12 +452,25 @@ impl SoarAdapter {
             })
             .collect();
 
+        let sort_by_name = |a: &crate::views::manifest::ManifestEntry,
+                            b: &crate::views::manifest::ManifestEntry| {
+            a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase())
+        };
+        to_install.sort_by(sort_by_name);
+        to_update.sort_by(sort_by_name);
+        to_remove.sort_by(sort_by_name);
+
+        let mut in_sync = diff.in_sync;
+        in_sync.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+        let mut not_found = diff.not_found;
+        not_found.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+
         Ok(crate::views::manifest::ManifestDiff {
             to_install,
             to_update,
             to_remove,
-            in_sync: diff.in_sync,
-            not_found: diff.not_found,
+            in_sync,
+            not_found,
             invalid_profiles,
         })
     }
