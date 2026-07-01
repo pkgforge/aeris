@@ -1,0 +1,20 @@
+# onelf recipe for packing aeris into a single portable binary.
+# CI copies the release binary to AppDir/bin/aeris, drops this file
+# alongside it, and runs `onelf build AppDir`.
+[package]
+name = "aeris"
+command = "bin/aeris"
+output = "aeris.onelf"
+version = "0.0.0"
+description = "Unbounded package management"
+license = "MIT"
+homepage = "https://github.com/QaidVoid/aeris"
+
+[compression]
+level = 12
+
+[bundle]
+strip = true
+scan-dlopen = true
+vulkan = true
+include = ["libvulkan.so.1", "libvulkan_lvp.so"]

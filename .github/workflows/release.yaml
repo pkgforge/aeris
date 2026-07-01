@@ -1,0 +1,100 @@
+name: aeris release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+jobs:
+  publish-onelf:
+    name: Publish portable onelf binary
+    runs-on: ${{ matrix.build.RUNNER }}
+    # Built inside Arch so the bundled glibc/loader are broadly portable.
+    # Binaries bundled from Ubuntu's glibc did not run on other systems.
+    # Official archlinux is x86_64 only, so aarch64 uses Arch Linux ARM.
+    container:
+      image: ${{ matrix.build.IMAGE }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - {
+              NAME: x86_64-linux,
+              RUNNER: ubuntu-latest,
+              IMAGE: "archlinux:latest",
+              ONELF: onelf-x86_64-linux,
+              VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-intel vulkan-nouveau",
+            }
+          - {
+              NAME: aarch64-linux,
+              RUNNER: ubuntu-24.04-arm,
+              IMAGE: "menci/archlinuxarm:latest",
+              ONELF: onelf-aarch64-linux,
+              VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-nouveau vulkan-panfrost vulkan-broadcom",
+            }
+    steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git curl tar xz b3sum rust patchelf \
+            pkgconf fontconfig freetype2 \
+            libxcb libxkbcommon libxkbcommon-x11 \
+            wayland mesa vulkan-icd-loader vulkan-headers \
+            ${{ matrix.build.VULKAN_DRIVERS }} \
+            alsa-lib
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build
+        run: cargo build --release --locked --jobs "$(($(nproc)+1))"
+
+      - name: Fetch onelf
+        shell: bash
+        run: |
+          curl -fsSL -o onelf \
+            "https://github.com/QaidVoid/onelf/releases/latest/download/${{ matrix.build.ONELF }}"
+          chmod +x onelf
+
+      - name: Pack with onelf
+        shell: bash
+        run: |
+          mkdir -p AppDir/bin
+          cp target/release/aeris AppDir/bin/aeris
+          cp onelf.toml AppDir/onelf.toml
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          sed -i "s/^version = .*/version = \"$version\"/" AppDir/onelf.toml
+          ./onelf build AppDir
+          mv AppDir/aeris.onelf "aeris-${{ matrix.build.NAME }}.onelf"
+          b3sum "aeris-${{ matrix.build.NAME }}.onelf" > "aeris-${{ matrix.build.NAME }}.onelf.b3sum"
+
+      - name: Verify pack
+        run: ./onelf verify "aeris-${{ matrix.build.NAME }}.onelf"
+
+      - name: Upload to release
+        if: ${{ !env.ACT }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: aeris-${{ matrix.build.NAME }}.onelf*
+          file_glob: true
+          overwrite: true
+          tag: ${{ github.ref }}
+
+      - name: Attest build provenance
+        if: ${{ !env.ACT }}
+        uses: actions/attest-build-provenance@v3.0.0
+        with:
+          subject-name: "aeris-${{ matrix.build.NAME }}.onelf"
+          subject-path: "aeris-${{ matrix.build.NAME }}.onelf"
+          show-summary: true
