@@ -4,6 +4,10 @@ version = "0.0.0"
 edition = "2024"
 description = "Unbounded package management"
 license = "MIT"
+repository = "https://github.com/QaidVoid/aeris"
+readme = "README.md"
+keywords = ["package-manager", "gui", "soar", "linux"]
+categories = ["gui"]
 
 [dependencies]
 async-trait = "0.1.89"
@@ -14,11 +18,11 @@ rfd = "0.15"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10"
 serde_json = "1.0"
-soar-config = { git = "https://github.com/pkgforge/soar" }
-soar-core = { git = "https://github.com/pkgforge/soar" }
-soar-events = { git = "https://github.com/pkgforge/soar" }
-soar-operations = { git = "https://github.com/pkgforge/soar" }
-soar-utils = { git = "https://github.com/pkgforge/soar" }
+soar-config = "0.10.0"
+soar-core = "0.16.3"
+soar-events = "0.1.0"
+soar-operations = "0.3.1"
+soar-utils = "0.4.2"
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["sync", "fs", "rt-multi-thread"] }
 unicode-segmentation = "1.12"
