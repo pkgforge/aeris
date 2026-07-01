@@ -1,10 +1,10 @@
 [package]
 name = "aeris"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 description = "Unbounded package management"
 license = "MIT"
-repository = "https://github.com/QaidVoid/aeris"
+repository = "https://github.com/pkgforge/aeris"
 readme = "README.md"
 keywords = ["package-manager", "gui", "soar", "linux"]
 categories = ["gui"]

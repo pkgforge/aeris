@@ -8,10 +8,10 @@ output = "aeris.onelf"
 version = "0.0.0"
 description = "Unbounded package management"
 license = "MIT"
-homepage = "https://github.com/QaidVoid/aeris"
+homepage = "https://github.com/pkgforge/aeris"
 
 [compression]
-level = 12
+level = 22
 
 [bundle]
 strip = true
