@@ -459,7 +459,7 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        let mut owned: String;
+        let owned: String;
         let inserted: &str = if !self.multiline && new_text.contains('\n') {
             owned = new_text.replace('\n', " ");
             owned.as_str()

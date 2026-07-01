@@ -184,7 +184,6 @@ impl App {
                 || !diff.to_remove.is_empty()
         );
         let apply_enabled = has_changes && !applying && !is_loading;
-        let file_missing = matches!(self.manifest_state.status, ManifestStatus::FileMissing);
 
         let reload_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.load_manifest_diff(cx);

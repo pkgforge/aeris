@@ -137,7 +137,7 @@ fn upsert_inline_fields(
             Some(toml_edit::Value::InlineTable(b)) => Some(b),
             _ => None,
         };
-        let mut owned;
+        let owned;
         let build_ref = if let Some(b) = existing_build {
             b
         } else {
