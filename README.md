@@ -31,7 +31,7 @@ Each release ships a single self-contained executable built with
 and runs on most Linux systems without installing anything.
 
 Download `aeris-x86_64-linux.onelf` from the
-[latest release](https://github.com/QaidVoid/aeris/releases/latest),
+[latest release](https://github.com/pkgforge/aeris/releases/latest),
 then:
 
 ```sh
@@ -40,7 +40,7 @@ chmod +x aeris-x86_64-linux.onelf
 ```
 
 Nightly builds are published on the rolling
-[`nightly`](https://github.com/QaidVoid/aeris/releases/tag/nightly) tag.
+[`nightly`](https://github.com/pkgforge/aeris/releases/tag/nightly) tag.
 
 ### From source
 
