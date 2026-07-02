@@ -59,6 +59,16 @@ jobs:
       - name: Build
         run: cargo build --release --locked --jobs "$(($(nproc)+1))"
 
+      - name: Create tarball
+        shell: bash
+        run: |
+          mkdir -p release
+          cp LICENSE README.md release/
+          cp target/release/aeris release/
+          tar -cJf "aeris-${{ matrix.build.NAME }}.tar.xz" release/
+          b3sum "aeris-${{ matrix.build.NAME }}.tar.xz" \
+            > "aeris-${{ matrix.build.NAME }}.tar.xz.b3sum"
+
       - name: Fetch onelf
         shell: bash
         run: |
@@ -86,7 +96,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: aeris-${{ matrix.build.NAME }}.onelf*
+          file: aeris-${{ matrix.build.NAME }}*
           file_glob: true
           overwrite: true
           tag: ${{ github.ref }}
@@ -95,6 +105,7 @@ jobs:
         if: ${{ !env.ACT }}
         uses: actions/attest-build-provenance@v3.0.0
         with:
-          subject-name: "aeris-${{ matrix.build.NAME }}.onelf"
-          subject-path: "aeris-${{ matrix.build.NAME }}.onelf"
+          subject-path: |
+            aeris-${{ matrix.build.NAME }}.tar.xz
+            aeris-${{ matrix.build.NAME }}.onelf
           show-summary: true

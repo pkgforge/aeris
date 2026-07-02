@@ -28,67 +28,88 @@ jobs:
           gh release delete nightly --cleanup-tag || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   publish-nightly:
     name: Publish nightly binaries
+    needs: remove-nightly-tag
     runs-on: ${{ matrix.build.RUNNER }}
+    container:
+      image: ${{ matrix.build.IMAGE }}
     strategy:
       fail-fast: false
       matrix:
         build:
           - {
-              NAME: aarch64-linux-gnu,
-              TARGET: aarch64-unknown-linux-gnu,
-              RUNNER: ubuntu-24.04-arm
+              NAME: x86_64-linux,
+              RUNNER: ubuntu-latest,
+              IMAGE: "archlinux:latest",
+              ONELF: onelf-x86_64-linux,
+              VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-intel vulkan-nouveau",
             }
           - {
-              NAME: x86_64-linux-gnu,
-              TARGET: x86_64-unknown-linux-gnu,
-              RUNNER: ubuntu-latest
+              NAME: aarch64-linux,
+              RUNNER: ubuntu-24.04-arm,
+              IMAGE: "menci/archlinuxarm:latest",
+              ONELF: onelf-aarch64-linux,
+              VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-nouveau vulkan-panfrost vulkan-broadcom",
             }
     steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git curl tar xz b3sum rust patchelf \
+            pkgconf fontconfig freetype2 \
+            libxcb libxkbcommon libxkbcommon-x11 \
+            wayland mesa vulkan-icd-loader vulkan-headers \
+            ${{ matrix.build.VULKAN_DRIVERS }} \
+            alsa-lib
+
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Get version info
         id: version
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "version=nightly-${SHORT_SHA}" >> $GITHUB_OUTPUT
-
-      - name: Install dependencies
         shell: bash
         run: |
-          sudo apt update -y
-          sudo apt install -y \
-            b3sum findutils file \
-            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig1-dev libwayland-dev libasound2-dev \
-            libssl-dev pkg-config
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.build.TARGET }}
+          echo "version=nightly-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: cargo build --release --locked --target "${{ matrix.build.TARGET }}" --jobs="$(($(nproc)+1))" --verbose
+        run: cargo build --release --locked --jobs "$(($(nproc)+1))"
 
-      - name: Prepare release assets
+      - name: Create tarball
         shell: bash
         run: |
           mkdir -p release
-          cp {LICENSE,README.md} release/
-          cp "target/${{ matrix.build.TARGET }}/release/aeris" release/
+          cp LICENSE README.md release/
+          cp target/release/aeris release/
+          tar -cJf "aeris-${{ matrix.build.NAME }}.tar.xz" release/
+          b3sum "aeris-${{ matrix.build.NAME }}.tar.xz" \
+            > "aeris-${{ matrix.build.NAME }}.tar.xz.b3sum"
 
-      - name: Create release artifacts
-        env:
-          ARTIFACT: "aeris-${{ matrix.build.NAME }}"
+      - name: Fetch onelf
         shell: bash
         run: |
-          tar -cJvf "${ARTIFACT}.tar.xz" release/
-          b3sum "${ARTIFACT}.tar.xz" > "${ARTIFACT}.tar.xz.b3sum"
+          curl -fsSL -o onelf \
+            "https://github.com/QaidVoid/onelf/releases/latest/download/${{ matrix.build.ONELF }}"
+          chmod +x onelf
+
+      - name: Pack with onelf
+        shell: bash
+        run: |
+          mkdir -p AppDir/bin
+          cp target/release/aeris AppDir/bin/aeris
+          cp onelf.toml AppDir/onelf.toml
+          sed -i "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" AppDir/onelf.toml
+          ./onelf build AppDir
+          mv AppDir/aeris.onelf "aeris-${{ matrix.build.NAME }}.onelf"
+          b3sum "aeris-${{ matrix.build.NAME }}.onelf" > "aeris-${{ matrix.build.NAME }}.onelf.b3sum"
+
+      - name: Verify pack
+        run: ./onelf verify "aeris-${{ matrix.build.NAME }}.onelf"
 
       - name: Publish to GitHub (nightly)
+        if: ${{ !env.ACT }}
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -99,10 +120,11 @@ jobs:
           release_name: "${{ steps.version.outputs.version }}"
           prerelease: true
 
-      - name: Attest Build Provenance
+      - name: Attest build provenance
+        if: ${{ !env.ACT }}
         uses: actions/attest-build-provenance@v3.0.0
         with:
-          subject-name: "aeris-nightly-${{ matrix.build.NAME }}"
           subject-path: |
-            aeris-${{ matrix.build.NAME }}*
+            aeris-${{ matrix.build.NAME }}.tar.xz
+            aeris-${{ matrix.build.NAME }}.onelf
           show-summary: true
