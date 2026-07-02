@@ -6,7 +6,7 @@ git_release_enable = false
 pr_labels = ["release"]
 publish = true
 semver_check = false
-release_always = false
+release_always = true
 git_release_body = """
 {{ changelog }}
 {% if remote.contributors %}
