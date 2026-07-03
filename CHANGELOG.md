@@ -1,4 +1,10 @@
 
+## [0.1.1](https://github.com/pkgforge/aeris/compare/v0.1.0...v0.1.1) - 2026-07-03
+
+### ⚙️ Miscellaneous Tasks
+
+- Publish both tar.xz and onelf on nightly and release - ([011fd01](https://github.com/pkgforge/aeris/commit/011fd015bfc0e86fa989c4efb1b5bd8c245e233b))
+
 ## [0.1.0](https://github.com/pkgforge/aeris/compare/v0.0.0...v0.1.0) - 2026-07-01
 
 ### ⛰️  Features
