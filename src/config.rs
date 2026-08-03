@@ -19,9 +19,7 @@ pub struct AerisConfig {
 
 impl AerisConfig {
     pub fn config_path() -> PathBuf {
-        soar_utils::path::xdg_config_home()
-            .join("aeris")
-            .join("config.toml")
+        crate::xdg::config_home().join("aeris").join("config.toml")
     }
 
     pub fn load() -> Self {

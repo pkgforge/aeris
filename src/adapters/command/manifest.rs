@@ -205,7 +205,7 @@ pub fn load(path: &Path) -> Result<CommandManifest, String> {
 /// Where a manifest written by hand is looked for.
 pub fn search_paths() -> Vec<PathBuf> {
     vec![
-        soar_utils::path::xdg_data_home().join("aeris/adapters"),
+        crate::xdg::data_home().join("aeris/adapters"),
         PathBuf::from("/usr/local/share/aeris/adapters"),
         PathBuf::from("./adapters"),
     ]

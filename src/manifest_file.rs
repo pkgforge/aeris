@@ -239,6 +239,24 @@ fn atomic_write(path: &Path, doc: &toml_edit::DocumentMut) -> std::result::Resul
     Ok(())
 }
 
+/// Whether the file is there and readable, which is worth knowing before
+/// asking the manager to work out what it would change.
+///
+/// A file the user has half-edited gets a clearer answer this way than the
+/// manager's own complaint about it.
+pub fn check_readable(path: &Path) -> std::result::Result<(), ManifestLoadError> {
+    if !path.exists() {
+        return Err(ManifestLoadError::FileMissing);
+    }
+
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| ManifestLoadError::Other(format!("could not read {}: {e}", path.display())))?;
+
+    toml::from_str::<toml::Value>(&text)
+        .map(|_| ())
+        .map_err(|e| ManifestLoadError::Parse(e.to_string()))
+}
+
 /// Read one declaration, or nothing when the file does not have it.
 pub fn read_entry(
     path: &Path,

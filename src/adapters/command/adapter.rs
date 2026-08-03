@@ -204,6 +204,27 @@ impl CommandAdapter {
         })
     }
 
+    /// Where the manager keeps its files, read without waiting.
+    ///
+    /// A frontend needs these while it is still starting up, before there is
+    /// an event loop to wait on.
+    pub fn file_paths(&self) -> Result<HashMap<String, String>> {
+        let op = self.op(OP_PATHS)?;
+        let printed = run(&self.program, &fill_args(op, &Values::new())?, false, None)?;
+
+        let records = output::records(op, &printed, self.manifest.strip_ansi)
+            .map_err(AdapterError::ParseError)?;
+        let record = records
+            .first()
+            .ok_or_else(|| AdapterError::Other("the manager reported no paths".into()))?;
+
+        Ok(op
+            .fields
+            .keys()
+            .filter_map(|key| Some((key.clone(), output::text(record, &op.fields, key)?)))
+            .collect())
+    }
+
     /// Where the manager keeps one of its files.
     async fn file(&self, what: &str) -> Result<String> {
         self.paths().await?.remove(what).ok_or_else(|| {
@@ -793,6 +814,16 @@ fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
     }
 }
 
+/// Read the name of a stage, which a manager may report as a word on its own
+/// or as something carrying detail under that word.
+fn stage_name(stage: &Value) -> Option<String> {
+    match stage {
+        Value::String(name) => Some(name.clone()),
+        Value::Object(carrying) => carrying.keys().next().cloned(),
+        _ => None,
+    }
+}
+
 /// Whether an operation names the package it acts on.
 fn takes_a_package(op: &Op) -> bool {
     op.args.iter().any(|arg| arg.contains('{'))
@@ -983,9 +1014,13 @@ impl<'a> Reporter<'a> {
                 total_bytes: total,
             }),
             _ => {
-                // Without a fraction to report, the stage name is all there is
-                // to say, so an event carrying no name is not worth sending.
-                let phase = text("event")?;
+                // Without a fraction to report, the name of what is happening
+                // is all there is to say, so an event carrying none is not
+                // worth sending. The stage says more than the event does, when
+                // the manager reports one.
+                let phase = named("stage")
+                    .and_then(stage_name)
+                    .or_else(|| text("event"))?;
                 Some(ProgressEvent::Phase {
                     adapter_id,
                     package_id,
@@ -1002,11 +1037,19 @@ fn detect_version(program: &Path, manifest: &CommandManifest) -> Option<String> 
         return None;
     }
 
-    let printed = Command::new(program)
+    let printed = match Command::new(program)
         .args(&manifest.detect.version)
         .stdin(Stdio::null())
         .output()
-        .ok()?;
+    {
+        Ok(printed) => printed,
+        Err(e) => {
+            // Worth saying out loud: this reads the same as a manager that ran
+            // and said nothing, and the two are fixed differently.
+            log::warn!("could not ask {} for its version: {e}", program.display());
+            return None;
+        }
+    };
 
     let text = String::from_utf8_lossy(&printed.stdout);
     let text = if text.trim().is_empty() {
@@ -1257,7 +1300,12 @@ output = { format = "ndjson" }
     fn fake_manager(name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = std::env::temp_dir().join(format!("aeris-fake-{name}"));
+        // A directory of its own per run, so a stale file from an earlier run
+        // and a file another test is still writing are both out of the way.
+        let dir = std::env::temp_dir().join(format!("aeris-fake-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("should make a scratch directory");
+
+        let path = dir.join("manager");
         std::fs::write(
             &path,
             r#"#!/bin/sh
