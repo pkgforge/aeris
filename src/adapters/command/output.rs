@@ -118,11 +118,27 @@ fn captures(pattern: &regex::Regex, line: &str) -> Option<Value> {
 }
 
 /// Read one field of a record, under the name the manifest maps it to.
+///
+/// A manager reporting several of something, such as more than one homepage,
+/// reads back as a list rather than as the JSON it was written in.
 pub fn text(record: &Value, fields: &HashMap<String, String>, key: &str) -> Option<String> {
     let name = fields.get(key)?;
     match record.get(name)? {
         Value::String(s) => Some(s.clone()),
         Value::Null => None,
+        Value::Array(items) => {
+            let joined = items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Null => None,
+                    other => Some(other.to_string()),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            (!joined.is_empty()).then_some(joined)
+        }
         other => Some(other.to_string()),
     }
 }
@@ -234,6 +250,27 @@ output = { format = "lines" }
 pattern = "^(?P<name>\\S+)$""#);
         let found = records(&op, "\u{1b}[32mfoo\u{1b}[0m\n", true).expect("should read");
         assert_eq!(found[0]["name"], "foo");
+    }
+
+    #[test]
+    fn several_of_something_reads_as_a_list() {
+        let record: Value = serde_json::from_str(
+            r#"{"homepages":["https://a.example","https://b.example"],"licenses":[],"one":["MIT"]}"#,
+        )
+        .unwrap();
+        let fields = HashMap::from([
+            ("homepage".to_string(), "homepages".to_string()),
+            ("license".to_string(), "licenses".to_string()),
+            ("single".to_string(), "one".to_string()),
+        ]);
+
+        assert_eq!(
+            text(&record, &fields, "homepage").as_deref(),
+            Some("https://a.example, https://b.example")
+        );
+        assert_eq!(text(&record, &fields, "single").as_deref(), Some("MIT"));
+        // Nothing to show is not the same as an empty list to show.
+        assert_eq!(text(&record, &fields, "license"), None);
     }
 
     #[test]

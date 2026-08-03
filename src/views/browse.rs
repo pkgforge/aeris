@@ -661,6 +661,23 @@ impl App {
                     .child(format!("Detail unavailable: {err}")),
             );
         } else if let Some(ref detail) = self.browse_state.selected_detail {
+            // What the search result carried is already shown above, so these
+            // fill in only what the detail lookup added.
+            if pkg.homepage.is_none()
+                && let Some(ref homepage) = detail.package.homepage
+            {
+                content = content.child(self.detail_row("Homepage", homepage, theme));
+            }
+            if pkg.license.is_none()
+                && let Some(ref license) = detail.package.license
+            {
+                content = content.child(self.detail_row("License", license, theme));
+            }
+            if pkg.category.is_none()
+                && let Some(ref category) = detail.package.category
+            {
+                content = content.child(self.detail_row("Category", category, theme));
+            }
             if !detail.maintainers.is_empty() {
                 content = content.child(self.detail_row(
                     "Maintainers",

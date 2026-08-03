@@ -2102,7 +2102,7 @@ impl App {
                     log::warn!("could not load details for {asked_for}: {e}");
                 }
 
-                let _ = cx.update(|cx| {
+                let updated = cx.update(|cx| {
                     this.update(cx, |app, cx| {
                         // Discard result if a newer request superseded this one
                         if request_id != app.browse_state.detail_request_id {
@@ -2120,6 +2120,10 @@ impl App {
                         cx.notify();
                     })
                 });
+
+                if let Err(e) = updated {
+                    log::warn!("could not show details for {asked_for}: {e}");
+                }
             },
         )
         .detach();
