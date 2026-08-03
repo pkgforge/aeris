@@ -681,6 +681,9 @@ impl App {
             if let Some(ref kind) = detail.pkg_type {
                 content = content.child(self.detail_row("Type", kind, theme));
             }
+            if let Some(ref source) = detail.source {
+                content = content.child(self.detail_row("Source", source, theme));
+            }
             if let Some(ref date) = detail.build_date {
                 content = content.child(self.detail_row("Build date", &on_day(date), theme));
             }

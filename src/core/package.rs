@@ -27,6 +27,8 @@ pub struct PackageDetail {
     pub package: Package,
     /// What the package is built as, in the manager's own words.
     pub pkg_type: Option<String>,
+    /// Where the package is built from.
+    pub source: Option<String>,
     pub build_date: Option<String>,
     pub download_url: Option<String>,
 }

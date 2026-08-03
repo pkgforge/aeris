@@ -374,6 +374,7 @@ impl Adapter for CommandAdapter {
         Ok(PackageDetail {
             package,
             pkg_type: output::text(record, fields, "pkg_type"),
+            source: output::text(record, fields, "source"),
             build_date: output::text(record, fields, "build_date"),
             download_url: output::text(record, fields, "download_url"),
         })
