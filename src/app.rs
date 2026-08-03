@@ -8,7 +8,10 @@ use gpui::*;
 use soar_events::SoarEvent;
 
 use crate::{
-    adapters::soar::SoarAdapter,
+    adapters::{
+        command::{self, CommandAdapter},
+        soar::SoarAdapter,
+    },
     config::AerisConfig,
     core::{
         adapter::Adapter, adapter_manager::AdapterManager, privilege::PackageMode,
@@ -370,6 +373,43 @@ fn spawn_manifest_watcher(
     (Some(rx), Some(Box::new(watcher) as Box<dyn std::any::Any + Send>))
 }
 
+/// Register an adapter unless one already answers to its id.
+///
+/// Ids decide where settings are kept, so the one registered first keeps the
+/// name rather than being replaced by whatever was discovered later.
+fn register_new(manager: &mut AdapterManager, adapter: Arc<dyn Adapter>) {
+    let id = adapter.info().id.clone();
+
+    if manager.get_adapter(&id).is_some() {
+        log::warn!("Ignoring a second adapter named {id}");
+        return;
+    }
+
+    manager.register(adapter);
+}
+
+/// Register soar, through the installed command where asked and through the
+/// linked library otherwise.
+///
+/// Driving the command is what keeps aeris in step with the soar the user
+/// actually runs, at the cost of the operations the manifest cannot describe.
+/// Settings and the declarative manifest are edited through the library either
+/// way, so those views are unaffected by the choice.
+fn register_soar(manager: &mut AdapterManager, config: &AerisConfig, linked: &Arc<SoarAdapter>) {
+    if config.get_adapter_setting("soar", "backend") == Some("cli") {
+        match CommandAdapter::from_command("soar", command::DESCRIBE_ARGS) {
+            Ok(cli) => {
+                log::info!("Driving soar {} as a command", cli.info().version);
+                manager.register(Arc::new(cli));
+                return;
+            }
+            Err(e) => log::warn!("Falling back to the linked soar: {e}"),
+        }
+    }
+
+    manager.register(linked.clone() as Arc<dyn Adapter>);
+}
+
 impl App {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let aeris_config = AerisConfig::load();
@@ -384,13 +424,23 @@ impl App {
         let adapter = Arc::new(adapter);
 
         let mut adapter_manager = AdapterManager::new();
-        adapter_manager.register(adapter.clone() as Arc<dyn Adapter>);
+        register_soar(&mut adapter_manager, &aeris_config, &adapter);
+
+        for result in crate::adapters::command::load_all() {
+            match result {
+                Ok(manifest_adapter) => {
+                    log::info!("Loaded adapter: {}", manifest_adapter.info().id);
+                    register_new(&mut adapter_manager, Arc::new(manifest_adapter));
+                }
+                Err(e) => log::warn!("Failed to load adapter: {e}"),
+            }
+        }
 
         for result in crate::adapters::wasm::load_all_plugins() {
             match result {
                 Ok(wasm_adapter) => {
                     log::info!("Loaded plugin: {}", wasm_adapter.info().id);
-                    adapter_manager.register(Arc::new(wasm_adapter));
+                    register_new(&mut adapter_manager, Arc::new(wasm_adapter));
                 }
                 Err(e) => log::warn!("Failed to load plugin: {e}"),
             }

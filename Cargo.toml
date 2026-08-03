@@ -14,6 +14,7 @@ async-trait = "0.1.89"
 env_logger = "0.11.8"
 gpui = "0.2"
 log = "0.4.29"
+regex = "1.12"
 rfd = "0.15"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10"

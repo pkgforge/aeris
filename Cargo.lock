@@ -26,6 +26,7 @@ dependencies = [
  "gpui",
  "log",
  "notify",
+ "regex",
  "rfd",
  "serde",
  "serde_json",

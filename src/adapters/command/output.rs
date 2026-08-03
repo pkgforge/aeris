@@ -1,0 +1,253 @@
+//! Turning what a manager printed into records.
+
+use std::collections::HashMap;
+
+use serde_json::{Map, Value};
+
+use super::manifest::{Format, Op};
+
+/// Drop the escape sequences a manager writing for a terminal leaves behind.
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // A control sequence opens with `[` and runs until a byte in the @ to
+        // ~ range ends it. Any other escape takes only the byte after it.
+        if chars.next() == Some('[') {
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Pick the records out of a JSON document.
+///
+/// Only what a manifest needs is understood: field access and a trailing
+/// `[*]`, so `$.items[*]` and `$[*]` both work and nothing else is promised.
+pub fn select<'a>(root: &'a Value, path: Option<&str>) -> Vec<&'a Value> {
+    let Some(path) = path else {
+        return match root {
+            Value::Array(items) => items.iter().collect(),
+            other => vec![other],
+        };
+    };
+
+    let trimmed = path.trim().trim_start_matches('$');
+    let wants_each = trimmed.ends_with("[*]");
+    let trimmed = trimmed.trim_end_matches("[*]");
+
+    let mut current = root;
+    for segment in trimmed.split('.').filter(|s| !s.is_empty()) {
+        match current.get(segment) {
+            Some(next) => current = next,
+            None => return Vec::new(),
+        }
+    }
+
+    match current {
+        Value::Array(items) if wants_each => items.iter().collect(),
+        other => vec![other],
+    }
+}
+
+/// Read everything a query operation printed.
+pub fn records(op: &Op, stdout: &str, strip: bool) -> Result<Vec<Value>, String> {
+    let cleaned;
+    let stdout = if strip {
+        cleaned = strip_ansi(stdout);
+        cleaned.as_str()
+    } else {
+        stdout
+    };
+
+    match op.output.format {
+        Format::Json => {
+            let root: Value = serde_json::from_str(stdout.trim())
+                .map_err(|e| format!("output was not json: {e}"))?;
+            Ok(select(&root, op.output.select.as_deref())
+                .into_iter()
+                .cloned()
+                .collect())
+        }
+        Format::Ndjson => Ok(stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()),
+        Format::Lines => {
+            let pattern = op
+                .pattern
+                .as_deref()
+                .ok_or_else(|| "the operation reads lines but has no pattern".to_string())?;
+            let pattern =
+                regex::Regex::new(pattern).map_err(|e| format!("unreadable pattern: {e}"))?;
+
+            Ok(stdout
+                .lines()
+                .skip(op.output.skip_header)
+                .filter_map(|line| captures(&pattern, line))
+                .collect())
+        }
+    }
+}
+
+fn captures(pattern: &regex::Regex, line: &str) -> Option<Value> {
+    let found = pattern.captures(line)?;
+    let mut record = Map::new();
+
+    for name in pattern.capture_names().flatten() {
+        if let Some(matched) = found.name(name) {
+            record.insert(
+                name.to_string(),
+                Value::String(matched.as_str().to_string()),
+            );
+        }
+    }
+
+    (!record.is_empty()).then_some(Value::Object(record))
+}
+
+/// Read one field of a record, under the name the manifest maps it to.
+pub fn text(record: &Value, fields: &HashMap<String, String>, key: &str) -> Option<String> {
+    let name = fields.get(key)?;
+    match record.get(name)? {
+        Value::String(s) => Some(s.clone()),
+        Value::Null => None,
+        other => Some(other.to_string()),
+    }
+}
+
+pub fn number(record: &Value, fields: &HashMap<String, String>, key: &str) -> Option<u64> {
+    let name = fields.get(key)?;
+    record.get(name)?.as_u64()
+}
+
+pub fn flag(record: &Value, fields: &HashMap<String, String>, key: &str) -> Option<bool> {
+    let name = fields.get(key)?;
+    record.get(name)?.as_bool()
+}
+
+/// Fill `{key}` placeholders, refusing a template it cannot complete.
+pub fn fill(template: &str, values: &HashMap<String, String>) -> Option<String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..].find('}')? + open;
+        out.push_str(&rest[..open]);
+
+        let value = values.get(&rest[open + 1..close])?;
+        if value.is_empty() {
+            return None;
+        }
+        out.push_str(value);
+
+        rest = &rest[close + 1..];
+    }
+
+    out.push_str(rest);
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::command::manifest;
+
+    fn op(body: &str) -> Op {
+        let text = format!(
+            r#"
+schema_version = 1
+id = "demo"
+name = "Demo"
+
+[detect]
+command = "demo"
+
+[ops.demo]
+{body}
+"#
+        );
+        manifest::parse(&text)
+            .expect("should read")
+            .op("demo")
+            .cloned()
+            .expect("should have the operation")
+    }
+
+    #[test]
+    fn a_json_document_is_read_through_its_path() {
+        let op = op(r#"args = ["x"]
+output = { format = "json", select = "$.items[*]" }"#);
+        let found = records(
+            &op,
+            r#"{"items":[{"name":"a"},{"name":"b"}],"total":2}"#,
+            false,
+        )
+        .expect("should read");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0]["name"], "a");
+    }
+
+    #[test]
+    fn a_path_that_matches_nothing_reads_as_empty() {
+        let op = op(r#"args = ["x"]
+output = { format = "json", select = "$.missing[*]" }"#);
+        let found = records(&op, r#"{"items":[]}"#, false).expect("should read");
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_stream_reads_a_record_a_line() {
+        let op = op(r#"args = ["x"]
+output = { format = "ndjson" }"#);
+        let found =
+            records(&op, "{\"type\":\"a\"}\n\n{\"type\":\"b\"}\n", false).expect("should read");
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn plain_text_is_read_through_its_pattern() {
+        let op = op(r#"args = ["x"]
+output = { format = "lines", skip_header = 1 }
+pattern = "^(?P<name>\\S+)\\s+(?P<version>\\S+)$""#);
+        let found = records(&op, "NAME VERSION\nfoo 1.0\nbar 2.0\n", false).expect("should read");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0]["name"], "foo");
+        assert_eq!(found[1]["version"], "2.0");
+    }
+
+    #[test]
+    fn colour_is_removed_before_a_pattern_runs() {
+        let op = op(r#"args = ["x"]
+output = { format = "lines" }
+pattern = "^(?P<name>\\S+)$""#);
+        let found = records(&op, "\u{1b}[32mfoo\u{1b}[0m\n", true).expect("should read");
+        assert_eq!(found[0]["name"], "foo");
+    }
+
+    #[test]
+    fn a_template_takes_the_first_form_it_can_complete() {
+        let values = HashMap::from([
+            ("name".to_string(), "cat".to_string()),
+            ("family".to_string(), String::new()),
+        ]);
+        assert_eq!(fill("{family}/{name}", &values), None);
+        assert_eq!(fill("{name}", &values).as_deref(), Some("cat"));
+        assert_eq!(fill("{repo}", &values), None);
+        assert_eq!(
+            fill("no placeholder", &values).as_deref(),
+            Some("no placeholder")
+        );
+    }
+}
