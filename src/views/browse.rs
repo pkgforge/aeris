@@ -686,7 +686,7 @@ impl App {
                 ));
             }
             if let Some(ref date) = detail.build_date {
-                content = content.child(self.detail_row("Build date", date, theme));
+                content = content.child(self.detail_row("Build date", &on_day(date), theme));
             }
             if !detail.dependencies.is_empty() {
                 let deps = detail
@@ -810,12 +810,17 @@ impl App {
             .gap(px(styles::spacing::SM))
             .child(
                 div()
+                    .flex_shrink_0()
                     .text_size(px(styles::font_size::SMALL))
                     .w(px(100.0))
                     .child(label.to_string()),
             )
             .child(
+                // Takes what is left and no more, so a long value wraps inside
+                // the panel rather than running off the edge of it.
                 div()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .text_size(px(styles::font_size::SMALL))
                     .child(value.to_string()),
             )
@@ -935,5 +940,25 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / 1_048_576.0)
     } else {
         format!("{:.2} GB", bytes as f64 / 1_073_741_824.0)
+    }
+}
+
+/// The day part of a timestamp, which is as much of it as is worth showing.
+fn on_day(timestamp: &str) -> String {
+    timestamp
+        .split_once('T')
+        .map_or(timestamp, |(day, _)| day)
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::on_day;
+
+    #[test]
+    fn a_timestamp_is_shown_as_the_day_it_names() {
+        assert_eq!(on_day("2026-04-05T06:37:57.756197230+00:00"), "2026-04-05");
+        assert_eq!(on_day("2026-04-05"), "2026-04-05");
+        assert_eq!(on_day(""), "");
     }
 }
