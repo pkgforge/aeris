@@ -18,6 +18,8 @@ use soar_operations::{
     update,
 };
 
+use crate::manifest_file::{self, ManifestLoadError};
+
 use crate::core::{
     adapter::{Adapter, AdapterError, AdapterInfo, ProgressSender, Result},
     capabilities::Capabilities,
@@ -40,238 +42,6 @@ pub struct SoarAdapter {
 /// Window during which manifest change events arriving after a self-write are
 /// treated as our own and ignored by the file watcher.
 const SELF_WRITE_DEBOUNCE: Duration = Duration::from_millis(750);
-
-#[derive(Debug, Clone)]
-pub enum ManifestLoadError {
-    FileMissing,
-    Parse(String),
-    Other(String),
-}
-
-impl std::fmt::Display for ManifestLoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FileMissing => write!(f, "Manifest file is missing"),
-            Self::Parse(e) => write!(f, "{e}"),
-            Self::Other(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-fn split_list(s: &str, sep: char) -> Vec<String> {
-    s.split(sep)
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect()
-}
-
-fn upsert_str_inline(t: &mut toml_edit::InlineTable, key: &str, value: &str) {
-    if value.is_empty() {
-        t.remove(key);
-    } else {
-        t.insert(key, value.into());
-    }
-}
-
-fn upsert_bool_inline(t: &mut toml_edit::InlineTable, key: &str, value: bool) {
-    if value {
-        t.insert(key, true.into());
-    } else {
-        t.remove(key);
-    }
-}
-
-fn upsert_str_table(t: &mut toml_edit::Table, key: &str, value: &str) {
-    if value.is_empty() {
-        t.remove(key);
-    } else {
-        t.insert(key, toml_edit::value(value.to_string()));
-    }
-}
-
-fn upsert_bool_table(t: &mut toml_edit::Table, key: &str, value: bool) {
-    if value {
-        t.insert(key, toml_edit::value(true));
-    } else {
-        t.remove(key);
-    }
-}
-
-fn upsert_inline_fields(
-    t: &mut toml_edit::InlineTable,
-    snap: &crate::views::manifest::ManifestEntrySnapshot,
-) {
-    let v = if snap.version.is_empty() {
-        "*".to_string()
-    } else {
-        snap.version.clone()
-    };
-    t.insert("version", v.into());
-
-    upsert_str_inline(t, "pkg_id", &snap.pkg_id);
-    upsert_str_inline(t, "repo", &snap.repo);
-    upsert_str_inline(t, "url", &snap.url);
-    upsert_str_inline(t, "github", &snap.github);
-    upsert_str_inline(t, "gitlab", &snap.gitlab);
-    upsert_str_inline(t, "asset_pattern", &snap.asset_pattern);
-    upsert_str_inline(t, "tag_pattern", &snap.tag_pattern);
-    upsert_str_inline(t, "profile", &snap.profile);
-    upsert_bool_inline(t, "include_prerelease", snap.include_prerelease);
-    upsert_bool_inline(t, "pinned", snap.pinned);
-    upsert_bool_inline(t, "binary_only", snap.binary_only);
-
-    if snap.install_patterns.is_empty() {
-        t.remove("install_patterns");
-    } else {
-        let mut arr = toml_edit::Array::new();
-        for p in split_list(&snap.install_patterns, ',') {
-            arr.push(p);
-        }
-        t.insert("install_patterns", toml_edit::Value::Array(arr));
-    }
-
-    let want_commands = !snap.build_commands.is_empty();
-    let want_deps = !snap.build_dependencies.is_empty();
-    if want_commands || want_deps {
-        let existing_build = match t.get_mut("build") {
-            Some(toml_edit::Value::InlineTable(b)) => Some(b),
-            _ => None,
-        };
-        let owned;
-        let build_ref = if let Some(b) = existing_build {
-            b
-        } else {
-            owned = toml_edit::InlineTable::new();
-            t.insert("build", toml_edit::Value::InlineTable(owned.clone()));
-            match t.get_mut("build").unwrap() {
-                toml_edit::Value::InlineTable(b) => b,
-                _ => unreachable!(),
-            }
-        };
-        if want_commands {
-            let mut arr = toml_edit::Array::new();
-            for c in split_list(&snap.build_commands, ';') {
-                arr.push(c);
-            }
-            build_ref.insert("commands", toml_edit::Value::Array(arr));
-        } else {
-            build_ref.remove("commands");
-        }
-        if want_deps {
-            let mut arr = toml_edit::Array::new();
-            for d in split_list(&snap.build_dependencies, ',') {
-                arr.push(d);
-            }
-            build_ref.insert("dependencies", toml_edit::Value::Array(arr));
-        } else {
-            build_ref.remove("dependencies");
-        }
-    } else if let Some(toml_edit::Value::InlineTable(b)) = t.get_mut("build") {
-        b.remove("commands");
-        b.remove("dependencies");
-        if b.is_empty() {
-            t.remove("build");
-        }
-    }
-}
-
-fn upsert_table_fields(
-    t: &mut toml_edit::Table,
-    snap: &crate::views::manifest::ManifestEntrySnapshot,
-) {
-    let v = if snap.version.is_empty() {
-        "*".to_string()
-    } else {
-        snap.version.clone()
-    };
-    t.insert("version", toml_edit::value(v));
-
-    upsert_str_table(t, "pkg_id", &snap.pkg_id);
-    upsert_str_table(t, "repo", &snap.repo);
-    upsert_str_table(t, "url", &snap.url);
-    upsert_str_table(t, "github", &snap.github);
-    upsert_str_table(t, "gitlab", &snap.gitlab);
-    upsert_str_table(t, "asset_pattern", &snap.asset_pattern);
-    upsert_str_table(t, "tag_pattern", &snap.tag_pattern);
-    upsert_str_table(t, "profile", &snap.profile);
-    upsert_bool_table(t, "include_prerelease", snap.include_prerelease);
-    upsert_bool_table(t, "pinned", snap.pinned);
-    upsert_bool_table(t, "binary_only", snap.binary_only);
-
-    if snap.install_patterns.is_empty() {
-        t.remove("install_patterns");
-    } else {
-        let mut arr = toml_edit::Array::new();
-        for p in split_list(&snap.install_patterns, ',') {
-            arr.push(p);
-        }
-        t.insert("install_patterns", toml_edit::value(arr));
-    }
-
-    let want_commands = !snap.build_commands.is_empty();
-    let want_deps = !snap.build_dependencies.is_empty();
-    if want_commands || want_deps {
-        let build_item = t
-            .entry("build")
-            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        if let toml_edit::Item::Table(build) = build_item {
-            build.set_implicit(false);
-            if want_commands {
-                let mut arr = toml_edit::Array::new();
-                for c in split_list(&snap.build_commands, ';') {
-                    arr.push(c);
-                }
-                build.insert("commands", toml_edit::value(arr));
-            } else {
-                build.remove("commands");
-            }
-            if want_deps {
-                let mut arr = toml_edit::Array::new();
-                for d in split_list(&snap.build_dependencies, ',') {
-                    arr.push(d);
-                }
-                build.insert("dependencies", toml_edit::value(arr));
-            } else {
-                build.remove("dependencies");
-            }
-        }
-    } else if let Some(toml_edit::Item::Table(b)) = t.get_mut("build") {
-        b.remove("commands");
-        b.remove("dependencies");
-        if b.is_empty() {
-            t.remove("build");
-        }
-    }
-}
-
-fn read_or_new_manifest(path: &PathBuf) -> std::result::Result<toml_edit::DocumentMut, String> {
-    if path.exists() {
-        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        content.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())
-    } else {
-        Ok("[packages]\n"
-            .parse::<toml_edit::DocumentMut>()
-            .expect("static template parses"))
-    }
-}
-
-fn atomic_write_manifest(
-    path: &PathBuf,
-    doc: &toml_edit::DocumentMut,
-) -> std::result::Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut tmp = path.clone();
-    let file_name = tmp
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "packages.toml".to_string());
-    tmp.set_file_name(format!("{file_name}.tmp"));
-    std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 impl SoarAdapter {
     fn mark_self_write(&self) {
@@ -479,141 +249,28 @@ impl SoarAdapter {
         &self,
         name: &str,
     ) -> std::result::Result<Option<crate::views::manifest::ManifestEntrySnapshot>, String> {
-        use soar_config::packages::PackageSpec;
-        let path = self.manifest_path();
-        if !path.exists() {
-            return Ok(None);
-        }
-        let cfg = PackagesConfig::load(None).map_err(|e| e.to_string())?;
-        let spec = match cfg.packages.get(name) {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-        let mut snap = crate::views::manifest::ManifestEntrySnapshot {
-            name: name.to_string(),
-            ..Default::default()
-        };
-        match spec {
-            PackageSpec::Simple(version) => {
-                snap.version = if version == "*" {
-                    String::new()
-                } else {
-                    version.clone()
-                };
-            }
-            PackageSpec::Detailed(opts) => {
-                snap.version = opts
-                    .version
-                    .clone()
-                    .filter(|v| v != "*")
-                    .unwrap_or_default();
-                snap.pkg_id = opts.pkg_id.clone().unwrap_or_default();
-                snap.repo = opts.repo.clone().unwrap_or_default();
-                snap.url = opts.url.clone().unwrap_or_default();
-                snap.github = opts.github.clone().unwrap_or_default();
-                snap.gitlab = opts.gitlab.clone().unwrap_or_default();
-                snap.asset_pattern = opts.asset_pattern.clone().unwrap_or_default();
-                snap.tag_pattern = opts.tag_pattern.clone().unwrap_or_default();
-                snap.include_prerelease = opts.include_prerelease.unwrap_or(false);
-                snap.profile = opts.profile.clone().unwrap_or_default();
-                snap.pinned = opts.pinned;
-                snap.binary_only = opts.binary_only.unwrap_or(false);
-                if let Some(ref build) = opts.build {
-                    snap.build_commands = build.commands.join("; ");
-                    snap.build_dependencies = build.dependencies.join(", ");
-                }
-                if let Some(ref pats) = opts.install_patterns {
-                    snap.install_patterns = pats.join(", ");
-                }
-            }
-        }
-        Ok(Some(snap))
+        manifest_file::read_entry(&self.manifest_path(), name)
     }
 
     pub fn write_manifest_entry(
         &self,
         snap: &crate::views::manifest::ManifestEntrySnapshot,
     ) -> std::result::Result<(), String> {
-        let path = self.manifest_path();
-        let mut doc = read_or_new_manifest(&path)?;
-        let pkgs = doc
-            .entry("packages")
-            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
-        let pkgs_tbl = pkgs
-            .as_table_mut()
-            .ok_or_else(|| "packages entry is not a table".to_string())?;
-
-        let existing = pkgs_tbl.get(&snap.name);
-        let was_simple = matches!(
-            existing,
-            Some(toml_edit::Item::Value(toml_edit::Value::String(_)))
-        );
-        let was_inline = matches!(
-            existing,
-            Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(_)))
-        );
-        let was_table = matches!(existing, Some(toml_edit::Item::Table(_)));
-        let did_exist = was_simple || was_inline || was_table;
-
-        if !snap.needs_detailed() && (was_simple || !did_exist) {
-            let v = if snap.version.is_empty() {
-                "*".to_string()
-            } else {
-                snap.version.clone()
-            };
-            pkgs_tbl.insert(&snap.name, toml_edit::value(v));
-            self.mark_self_write();
-            return atomic_write_manifest(&path, &doc);
-        }
-
-        if was_inline {
-            if let Some(toml_edit::Item::Value(toml_edit::Value::InlineTable(t))) =
-                pkgs_tbl.get_mut(&snap.name)
-            {
-                upsert_inline_fields(t, snap);
-            }
-        } else if was_table {
-            if let Some(toml_edit::Item::Table(t)) = pkgs_tbl.get_mut(&snap.name) {
-                upsert_table_fields(t, snap);
-            }
-        } else {
-            let mut t = toml_edit::Table::new();
-            upsert_table_fields(&mut t, snap);
-            pkgs_tbl.insert(&snap.name, toml_edit::Item::Table(t));
-        }
-
         self.mark_self_write();
-        atomic_write_manifest(&path, &doc)
+        manifest_file::write_entry(&self.manifest_path(), snap)
     }
 
     pub fn write_manifest_remove(&self, name: &str) -> std::result::Result<(), String> {
-        let path = self.manifest_path();
-        let mut doc = read_or_new_manifest(&path)?;
-        if let Some(pkgs) = doc.get_mut("packages").and_then(|i| i.as_table_mut()) {
-            pkgs.remove(name);
-        }
         self.mark_self_write();
-        atomic_write_manifest(&path, &doc)
+        manifest_file::remove_entry(&self.manifest_path(), name)
     }
 
     pub fn write_manifest_replace_packages(
         &self,
         entries: &[(String, String)],
     ) -> std::result::Result<(), String> {
-        let path = self.manifest_path();
-        let mut doc = read_or_new_manifest(&path)?;
-        let mut tbl = toml_edit::Table::new();
-        for (name, version) in entries {
-            let v = if version.is_empty() {
-                "*".to_string()
-            } else {
-                version.clone()
-            };
-            tbl.insert(name, toml_edit::value(v));
-        }
-        doc.insert("packages", toml_edit::Item::Table(tbl));
         self.mark_self_write();
-        atomic_write_manifest(&path, &doc)
+        manifest_file::replace_packages(&self.manifest_path(), entries)
     }
 
     pub async fn apply_manifest(

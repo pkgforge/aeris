@@ -15,8 +15,10 @@ use crate::core::{
         Adapter, AdapterError, AdapterInfo, HealthStatus, ProgressEvent, ProgressSender, Result,
     },
     capabilities::Capabilities,
+    config::{AdapterConfig, ConfigField, ConfigFieldType, ConfigSchema, ConfigValue},
     package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
     privilege::PackageMode,
+    profile::Profile,
     repository::Repository,
 };
 use crate::views::manifest::{ManifestApplyReport, ManifestDiff, ManifestEntry};
@@ -24,8 +26,9 @@ use crate::views::manifest::{ManifestApplyReport, ManifestDiff, ManifestEntry};
 use super::{
     manifest::{
         self, CommandManifest, Format, OP_ADD_REPO, OP_APPLY, OP_APPLY_CHECK, OP_APPLY_PRUNE,
-        OP_INFO, OP_INSTALL, OP_LIST, OP_LIST_INSTALLED, OP_LIST_REPOS, OP_LIST_UPDATES, OP_PATHS,
-        OP_REMOVE, OP_REMOVE_REPO, OP_SEARCH, OP_SET_REPO_ENABLED, OP_SYNC, OP_UPDATE, Op,
+        OP_DEFAULT_CONFIG, OP_INFO, OP_INSTALL, OP_LIST, OP_LIST_INSTALLED, OP_LIST_REPOS,
+        OP_LIST_UPDATES, OP_PATHS, OP_REMOVE, OP_REMOVE_REPO, OP_SEARCH, OP_SET_REPO_ENABLED,
+        OP_SYNC, OP_UPDATE, Op, Setting, SettingKind,
     },
     output, version,
 };
@@ -199,6 +202,25 @@ impl CommandAdapter {
             tags: Vec::new(),
             icon_url: None,
         })
+    }
+
+    /// Where the manager keeps one of its files.
+    async fn file(&self, what: &str) -> Result<String> {
+        self.paths().await?.remove(what).ok_or_else(|| {
+            AdapterError::Other(format!("{} does not say where its {what} is", self.info.id))
+        })
+    }
+
+    /// Read the manager's configuration file, which is empty until it is
+    /// written for the first time.
+    async fn read_config(&self) -> Result<toml::Value> {
+        let path = self.file("config").await?;
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(toml::Value::Table(toml::Table::new()));
+        };
+
+        toml::from_str(&text)
+            .map_err(|e| AdapterError::ParseError(format!("could not read {path}: {e}")))
     }
 
     /// The values an operation's arguments are filled from for one package.
@@ -501,6 +523,94 @@ impl Adapter for CommandAdapter {
             .collect())
     }
 
+    fn config_schema(&self) -> Option<ConfigSchema> {
+        if self.manifest.config.is_empty() {
+            return None;
+        }
+
+        Some(ConfigSchema {
+            adapter_id: self.info.id.clone(),
+            fields: self.manifest.config.iter().map(to_field).collect(),
+        })
+    }
+
+    async fn get_config(&self) -> Result<AdapterConfig> {
+        let document = self.read_config().await?;
+
+        let values = self
+            .manifest
+            .config
+            .iter()
+            .filter_map(|setting| {
+                let value = document
+                    .get(&setting.key)
+                    .or(setting.default.as_ref())
+                    .and_then(to_value)?;
+
+                Some((setting.key.clone(), value))
+            })
+            .collect();
+
+        Ok(AdapterConfig { values })
+    }
+
+    async fn set_config(&self, config: &AdapterConfig) -> Result<()> {
+        use toml_edit::DocumentMut;
+
+        let path = self.file("config").await?;
+
+        // Only some of what a configuration file holds is described here, so
+        // writing one from nothing would leave out whatever the manager needs
+        // but never offered. Ask it for a whole one first.
+        if !Path::new(&path).exists() && self.op(OP_DEFAULT_CONFIG).is_ok() {
+            self.run(OP_DEFAULT_CONFIG, Values::new(), None, String::new())
+                .await?;
+        }
+
+        let mut document = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| text.parse::<DocumentMut>().ok())
+            .unwrap_or_default();
+
+        // Only what the manifest declares, so a setting soar has and this
+        // frontend does not know about is left as the user wrote it.
+        for setting in &self.manifest.config {
+            let Some(value) = config.values.get(&setting.key) else {
+                continue;
+            };
+            write_setting(&mut document, &setting.key, value);
+        }
+
+        if let Some(parent) = Path::new(&path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| AdapterError::Other(e.to_string()))?;
+        }
+
+        std::fs::write(&path, document.to_string()).map_err(|e| AdapterError::Other(e.to_string()))
+    }
+
+    async fn list_profiles(&self) -> Result<Vec<Profile>> {
+        let document = self.read_config().await?;
+
+        let Some(profiles) = document.get("profile").and_then(toml::Value::as_table) else {
+            return Ok(Vec::new());
+        };
+
+        let active = document
+            .get("default_profile")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("default");
+
+        Ok(profiles
+            .keys()
+            .map(|name| Profile {
+                id: name.clone(),
+                name: name.clone(),
+                is_active: name == active,
+                package_count: 0,
+            })
+            .collect())
+    }
+
     async fn declarative_diff(&self) -> Result<ManifestDiff> {
         let records = self.query(OP_APPLY_CHECK, Values::new()).await?;
         let record = records
@@ -535,6 +645,62 @@ impl Adapter for CommandAdapter {
             .unwrap_or_else(|| "type".to_string());
 
         Ok(apply_report(&printed, &event_key))
+    }
+}
+
+fn to_field(setting: &Setting) -> ConfigField {
+    ConfigField {
+        key: setting.key.clone(),
+        label: setting.label.clone(),
+        description: setting.description.clone(),
+        field_type: match setting.kind {
+            SettingKind::Text => ConfigFieldType::Text,
+            SettingKind::Toggle => ConfigFieldType::Toggle,
+            SettingKind::Number => ConfigFieldType::Number,
+            SettingKind::Select => ConfigFieldType::Select(setting.options.clone()),
+            SettingKind::PathList => ConfigFieldType::PathList,
+        },
+        default: setting.default.as_ref().and_then(to_value),
+        section: setting.section.clone(),
+        aeris_managed: false,
+    }
+}
+
+fn to_value(value: &toml::Value) -> Option<ConfigValue> {
+    match value {
+        toml::Value::String(s) => Some(ConfigValue::String(s.clone())),
+        toml::Value::Boolean(b) => Some(ConfigValue::Bool(*b)),
+        toml::Value::Integer(n) => Some(ConfigValue::Integer(*n)),
+        toml::Value::Array(items) => Some(ConfigValue::StringList(
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect(),
+        )),
+        _ => None,
+    }
+}
+
+fn write_setting(document: &mut toml_edit::DocumentMut, key: &str, value: &ConfigValue) {
+    match value {
+        ConfigValue::Bool(v) => document[key] = toml_edit::value(*v),
+        ConfigValue::Integer(v) => document[key] = toml_edit::value(*v),
+        ConfigValue::StringList(list) => {
+            let mut array = toml_edit::Array::new();
+            for item in list {
+                array.push(item.as_str());
+            }
+            document[key] = toml_edit::value(array);
+        }
+        // A field cleared in the form means "unset", which is not the same as
+        // an empty string: the manager should fall back to its own default.
+        ConfigValue::String(s) if s.trim().is_empty() => {
+            document.remove(key);
+        }
+        ConfigValue::String(s) => match s.trim().parse::<i64>() {
+            Ok(n) => document[key] = toml_edit::value(n),
+            Err(_) => document[key] = toml_edit::value(s.as_str()),
+        },
     }
 }
 
@@ -1112,7 +1278,7 @@ case "$1" in
     echo '{"items":[{"name":"main","url":"https://example.invalid/main","enabled":true}],"total":1}'
     ;;
   paths)
-    echo '{"config":"/tmp/demo/config.toml","packages_config":"/tmp/demo/packages.toml"}'
+    printf '{"config":"%s.config.toml","packages_config":"%s.packages.toml"}\n' "$0" "$0"
     ;;
   boom)
     echo "it went wrong" >&2
@@ -1154,6 +1320,19 @@ progress = {{ event = "type", current = "current", total = "total", message = "p
 [ops.remove]
 args = ["boom", "{{selector}}"]
 output = {{ format = "ndjson" }}
+
+[[config]]
+key = "parallel"
+label = "Parallel downloads"
+type = "toggle"
+default = true
+
+[[config]]
+key = "limit"
+label = "Limit"
+type = "number"
+default = 4
+section = "Advanced"
 
 [ops.list_repos]
 args = ["repos"]
@@ -1238,8 +1417,65 @@ fields = {{ config = "config", packages_config = "packages_config" }}
         let paths = block_on(adapter.paths()).expect("should report paths");
         assert_eq!(
             paths.get("packages_config").map(String::as_str),
-            Some("/tmp/demo/packages.toml")
+            Some(format!("{}.packages.toml", program.display()).as_str())
         );
+    }
+
+    #[test]
+    fn settings_are_offered_as_the_manifest_declares_them() {
+        let program = fake_manager("settings");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+        let _ = std::fs::remove_file(format!("{}.config.toml", program.display()));
+
+        let schema = adapter.config_schema().expect("should describe settings");
+        assert_eq!(schema.fields.len(), 2);
+        assert!(matches!(
+            schema.fields[0].field_type,
+            ConfigFieldType::Toggle
+        ));
+        assert_eq!(schema.fields[1].section.as_deref(), Some("Advanced"));
+
+        // Nothing written yet, so what is offered is what the manifest says.
+        let config = block_on(adapter.get_config()).expect("should read");
+        assert_eq!(config.values.get("limit"), Some(&ConfigValue::Integer(4)));
+
+        let mut changed = config.clone();
+        changed
+            .values
+            .insert("limit".into(), ConfigValue::Integer(9));
+        block_on(adapter.set_config(&changed)).expect("should write");
+
+        let after = block_on(adapter.get_config()).expect("should read back");
+        assert_eq!(after.values.get("limit"), Some(&ConfigValue::Integer(9)));
+    }
+
+    #[test]
+    fn a_setting_the_manifest_does_not_declare_is_left_as_it_was() {
+        let program = fake_manager("untouched-settings");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        let path = format!("{}.config.toml", program.display());
+        std::fs::write(
+            &path,
+            "# hand written\nsomething_else = \"keep me\"\nlimit = 1\n",
+        )
+        .expect("should write");
+
+        let mut config = AdapterConfig::default();
+        config
+            .values
+            .insert("limit".into(), ConfigValue::Integer(7));
+        block_on(adapter.set_config(&config)).expect("should write");
+
+        let written = std::fs::read_to_string(&path).expect("should read");
+        assert!(
+            written.contains(r#"something_else = "keep me""#),
+            "{written}"
+        );
+        assert!(written.contains("# hand written"), "{written}");
+        assert!(written.contains("limit = 7"), "{written}");
     }
 
     #[test]

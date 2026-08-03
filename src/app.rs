@@ -629,7 +629,7 @@ impl App {
     }
 
     pub fn load_manifest_diff(&mut self, cx: &mut Context<Self>) {
-        use crate::adapters::soar::ManifestLoadError;
+        use crate::manifest_file::ManifestLoadError;
         use views::manifest::ManifestStatus;
 
         self.manifest_state.path = Some(self.adapter.manifest_path());
@@ -697,7 +697,7 @@ impl App {
     }
 
     pub fn apply_manifest(&mut self, prune: bool, cx: &mut Context<Self>) {
-        use crate::adapters::soar::ManifestLoadError;
+        use crate::manifest_file::ManifestLoadError;
         use views::manifest::ManifestStatus;
 
         let adapter_id = self.adapter.info().id.clone();

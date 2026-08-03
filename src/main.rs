@@ -3,6 +3,7 @@ mod app;
 mod components;
 mod config;
 mod core;
+mod manifest_file;
 mod styles;
 mod theme;
 mod views;

@@ -32,6 +32,7 @@ pub const OP_ADD_REPO: &str = "add_repo";
 pub const OP_REMOVE_REPO: &str = "remove_repo";
 pub const OP_SET_REPO_ENABLED: &str = "set_repo_enabled";
 pub const OP_PATHS: &str = "paths";
+pub const OP_DEFAULT_CONFIG: &str = "default_config";
 pub const OP_APPLY: &str = "apply";
 pub const OP_APPLY_PRUNE: &str = "apply_prune";
 pub const OP_APPLY_CHECK: &str = "apply_check";
@@ -58,8 +59,42 @@ pub struct CommandManifest {
     #[serde(default)]
     pub selector: Vec<String>,
     pub detect: Detect,
+    /// The settings the manager can be configured with, named as they appear
+    /// in its own configuration file.
+    #[serde(default)]
+    pub config: Vec<Setting>,
     #[serde(default)]
     pub ops: HashMap<String, Op>,
+}
+
+/// One setting, described well enough to offer and to write back.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Setting {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub kind: SettingKind,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// What to group this under, for a manager with more settings than fit
+    /// on one screen.
+    #[serde(default)]
+    pub section: Option<String>,
+    #[serde(default)]
+    pub default: Option<toml::Value>,
+    /// The choices, for a setting that only accepts some.
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKind {
+    Text,
+    Toggle,
+    Number,
+    Select,
+    PathList,
 }
 
 /// What decides whether the manager is usable at all.
