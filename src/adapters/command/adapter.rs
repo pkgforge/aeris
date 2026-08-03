@@ -138,7 +138,7 @@ impl CommandAdapter {
         values: Values,
         progress: Option<ProgressSender>,
         package_id: String,
-    ) -> Result<String> {
+    ) -> Result<Ran> {
         let op = self.op(op_name)?.clone();
         let manifest = self.manifest.clone();
         let program = self.program.clone();
@@ -163,9 +163,21 @@ impl CommandAdapter {
 
     /// Read the records a query operation printed.
     async fn query(&self, op_name: &str, values: Values) -> Result<Vec<Value>> {
-        let printed = self.run(op_name, values, None, String::new()).await?;
+        let ran = self.run(op_name, values, None, String::new()).await?;
+
+        // A question that goes unanswered is a failure however the manager
+        // exited, and what it complained about says more than the empty
+        // answer does.
+        if ran.printed.trim().is_empty() {
+            return Err(AdapterError::Other(format!(
+                "{} answered nothing: {}",
+                self.manifest.detect.command, ran.complained
+            )));
+        }
+
         let op = self.op(op_name)?;
-        output::records(op, &printed, self.manifest.strip_ansi).map_err(AdapterError::ParseError)
+        output::records(op, &ran.printed, self.manifest.strip_ansi)
+            .map_err(AdapterError::ParseError)
     }
 
     /// Name a package the way its manager expects to hear it back.
@@ -210,7 +222,7 @@ impl CommandAdapter {
     /// an event loop to wait on.
     pub fn file_paths(&self) -> Result<HashMap<String, String>> {
         let op = self.op(OP_PATHS)?;
-        let printed = run(&self.program, &fill_args(op, &Values::new())?, false, None)?;
+        let printed = run(&self.program, &fill_args(op, &Values::new())?, false, None)?.printed;
 
         let records = output::records(op, &printed, self.manifest.strip_ansi)
             .map_err(AdapterError::ParseError)?;
@@ -656,7 +668,8 @@ impl Adapter for CommandAdapter {
         let op_name = if prune { OP_APPLY_PRUNE } else { OP_APPLY };
         let printed = self
             .run(op_name, Values::new(), progress, String::new())
-            .await?;
+            .await?
+            .printed;
 
         let event_key = self
             .op(op_name)?
@@ -849,12 +862,18 @@ struct Progress {
     pattern: Option<String>,
 }
 
+/// What a run left behind: its answer, and whatever it said beside it.
+struct Ran {
+    printed: String,
+    complained: String,
+}
+
 fn run(
     program: &Path,
     args: &[String],
     strip_ansi: bool,
     progress: Option<&Progress>,
-) -> Result<String> {
+) -> Result<Ran> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -911,7 +930,10 @@ fn run(
         )));
     }
 
-    Ok(printed)
+    Ok(Ran {
+        printed,
+        complained: last_lines(&errors),
+    })
 }
 
 /// Keeps the tail of what a failed run complained about.
@@ -1540,6 +1562,30 @@ fields = {{ config = "config", packages_config = "packages_config" }}
             block_on(adapter.list_updates(PackageMode::User)),
             Err(AdapterError::NotSupported)
         ));
+    }
+
+    #[test]
+    fn a_question_that_goes_unanswered_says_what_the_manager_complained_about() {
+        let program = fake_manager("silent");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        // `quiet` is not a case the fake handles, so it says nothing at all.
+        let op = adapter.manifest.op(OP_SEARCH).unwrap().clone();
+        let mut manifest = (*adapter.manifest).clone();
+        manifest.ops.insert(
+            OP_SEARCH.to_string(),
+            Op {
+                args: vec!["quiet".into()],
+                ..op
+            },
+        );
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        let Err(err) = block_on(adapter.search("anything", None, PackageMode::User)) else {
+            panic!("should refuse an empty answer");
+        };
+        assert!(err.to_string().contains("answered nothing"), "{err}");
     }
 
     #[test]

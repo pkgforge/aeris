@@ -2086,14 +2086,21 @@ impl App {
         self.browse_state.detail_error = None;
 
         let pkg_id = pkg.id.clone();
+        log::debug!("loading details for {pkg_id}");
+
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let asked_for = pkg_id.clone();
                 let result =
                     crate::tokio_spawn(async move { adapter.package_detail(&pkg_id).await })
                         .await
                         .unwrap_or_else(|e| {
                             Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
                         });
+
+                if let Err(ref e) = result {
+                    log::warn!("could not load details for {asked_for}: {e}");
+                }
 
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
