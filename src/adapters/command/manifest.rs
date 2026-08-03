@@ -27,6 +27,14 @@ pub const OP_INSTALL: &str = "install";
 pub const OP_REMOVE: &str = "remove";
 pub const OP_UPDATE: &str = "update";
 pub const OP_SYNC: &str = "sync";
+pub const OP_LIST_REPOS: &str = "list_repos";
+pub const OP_ADD_REPO: &str = "add_repo";
+pub const OP_REMOVE_REPO: &str = "remove_repo";
+pub const OP_SET_REPO_ENABLED: &str = "set_repo_enabled";
+pub const OP_PATHS: &str = "paths";
+pub const OP_APPLY: &str = "apply";
+pub const OP_APPLY_PRUNE: &str = "apply_prune";
+pub const OP_APPLY_CHECK: &str = "apply_check";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommandManifest {

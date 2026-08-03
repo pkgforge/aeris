@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
+
+use crate::views::manifest::{ManifestApplyReport, ManifestDiff};
 
 use super::{
     capabilities::Capabilities,
@@ -202,5 +204,30 @@ pub trait Adapter: Send + Sync {
 
     async fn health_check(&self) -> Result<HealthStatus> {
         Ok(HealthStatus::default())
+    }
+
+    /// Where this manager keeps the files a frontend may read or edit, keyed
+    /// by what each one is. A file soar owns is soar's to define, so this
+    /// reports the locations rather than trying to describe the contents.
+    async fn paths(&self) -> Result<HashMap<String, String>> {
+        Err(AdapterError::NotSupported)
+    }
+
+    /// What applying the declarative configuration would change.
+    ///
+    /// Packages installed but not declared are always reported, so the view
+    /// can show them; whether they are removed is decided when applying.
+    async fn declarative_diff(&self) -> Result<ManifestDiff> {
+        Err(AdapterError::NotSupported)
+    }
+
+    /// Apply the declarative configuration, removing undeclared packages only
+    /// when asked to prune.
+    async fn declarative_apply(
+        &self,
+        _prune: bool,
+        _progress: Option<ProgressSender>,
+    ) -> Result<ManifestApplyReport> {
+        Err(AdapterError::NotSupported)
     }
 }

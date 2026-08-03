@@ -17,12 +17,15 @@ use crate::core::{
     capabilities::Capabilities,
     package::{InstallResult, InstalledPackage, Package, PackageDetail, Update},
     privilege::PackageMode,
+    repository::Repository,
 };
+use crate::views::manifest::{ManifestApplyReport, ManifestDiff, ManifestEntry};
 
 use super::{
     manifest::{
-        self, CommandManifest, Format, OP_INFO, OP_INSTALL, OP_LIST, OP_LIST_INSTALLED,
-        OP_LIST_UPDATES, OP_REMOVE, OP_SEARCH, OP_SYNC, OP_UPDATE, Op,
+        self, CommandManifest, Format, OP_ADD_REPO, OP_APPLY, OP_APPLY_CHECK, OP_APPLY_PRUNE,
+        OP_INFO, OP_INSTALL, OP_LIST, OP_LIST_INSTALLED, OP_LIST_REPOS, OP_LIST_UPDATES, OP_PATHS,
+        OP_REMOVE, OP_REMOVE_REPO, OP_SEARCH, OP_SET_REPO_ENABLED, OP_SYNC, OP_UPDATE, Op,
     },
     output, version,
 };
@@ -437,6 +440,166 @@ impl Adapter for CommandAdapter {
             cache_size: None,
         })
     }
+
+    async fn list_repositories(&self) -> Result<Vec<Repository>> {
+        let records = self.query(OP_LIST_REPOS, Values::new()).await?;
+        let fields = &self.op(OP_LIST_REPOS)?.fields;
+
+        Ok(records
+            .iter()
+            .filter_map(|record| {
+                Some(Repository {
+                    name: output::text(record, fields, "name")?,
+                    url: output::text(record, fields, "url").unwrap_or_default(),
+                    enabled: output::flag(record, fields, "enabled").unwrap_or(true),
+                    description: output::text(record, fields, "description"),
+                })
+            })
+            .collect())
+    }
+
+    async fn add_repository(&self, repo: &Repository) -> Result<()> {
+        let values = Values::from([
+            ("name".into(), repo.name.clone()),
+            ("url".into(), repo.url.clone()),
+        ]);
+        self.run(OP_ADD_REPO, values, None, repo.name.clone())
+            .await?;
+
+        Ok(())
+    }
+
+    async fn remove_repository(&self, repo_name: &str) -> Result<()> {
+        let values = Values::from([("name".into(), repo_name.to_string())]);
+        self.run(OP_REMOVE_REPO, values, None, repo_name.to_string())
+            .await?;
+
+        Ok(())
+    }
+
+    async fn set_repo_enabled(&self, name: &str, enabled: bool, _mode: PackageMode) -> Result<()> {
+        let values = Values::from([
+            ("name".into(), name.to_string()),
+            ("enabled".into(), enabled.to_string()),
+        ]);
+        self.run(OP_SET_REPO_ENABLED, values, None, name.to_string())
+            .await?;
+
+        Ok(())
+    }
+
+    async fn paths(&self) -> Result<HashMap<String, String>> {
+        let records = self.query(OP_PATHS, Values::new()).await?;
+        let fields = &self.op(OP_PATHS)?.fields;
+        let record = records
+            .first()
+            .ok_or_else(|| AdapterError::Other("the manager reported no paths".into()))?;
+
+        Ok(fields
+            .keys()
+            .filter_map(|key| Some((key.clone(), output::text(record, fields, key)?)))
+            .collect())
+    }
+
+    async fn declarative_diff(&self) -> Result<ManifestDiff> {
+        let records = self.query(OP_APPLY_CHECK, Values::new()).await?;
+        let record = records
+            .first()
+            .ok_or_else(|| AdapterError::Other("the manager reported no diff".into()))?;
+
+        Ok(ManifestDiff {
+            to_install: changes(record, "to_install", false),
+            to_update: changes(record, "to_update", false),
+            to_remove: changes(record, "to_remove", true),
+            in_sync: names(record, "in_sync"),
+            not_found: names(record, "not_found"),
+            invalid_profiles: HashMap::new(),
+        })
+    }
+
+    async fn declarative_apply(
+        &self,
+        prune: bool,
+        progress: Option<ProgressSender>,
+    ) -> Result<ManifestApplyReport> {
+        let op_name = if prune { OP_APPLY_PRUNE } else { OP_APPLY };
+        let printed = self
+            .run(op_name, Values::new(), progress, String::new())
+            .await?;
+
+        let event_key = self
+            .op(op_name)?
+            .progress
+            .get("event")
+            .cloned()
+            .unwrap_or_else(|| "type".to_string());
+
+        Ok(apply_report(&printed, &event_key))
+    }
+}
+
+/// The name a stream uses for the event that says what an apply did.
+const APPLY_COMPLETE: &str = "apply_complete";
+
+/// Read the counts out of the event an apply ends with.
+///
+/// The stream is what says how it went, so a run that ends without saying
+/// reports nothing rather than a guess.
+fn apply_report(printed: &str, event_key: &str) -> ManifestApplyReport {
+    let count =
+        |record: &Value, key: &str| record.get(key).and_then(Value::as_u64).unwrap_or(0) as usize;
+
+    printed
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| record.get(event_key).and_then(Value::as_str) == Some(APPLY_COMPLETE))
+        .map(|record| ManifestApplyReport {
+            installed: count(&record, "installed"),
+            updated: count(&record, "updated"),
+            removed: count(&record, "removed"),
+            failed: count(&record, "failed"),
+        })
+        .next_back()
+        .unwrap_or_default()
+}
+
+/// Read one side of a declarative diff.
+fn changes(record: &Value, key: &str, removing: bool) -> Vec<ManifestEntry> {
+    let text =
+        |value: &Value, field: &str| value.get(field).and_then(Value::as_str).map(str::to_string);
+
+    record
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let version = text(item, "version");
+                    Some(ManifestEntry {
+                        name: text(item, "name")?,
+                        pkg_id: text(item, "pkg_id"),
+                        current_version: text(item, "current_version"),
+                        // A package on its way out has no version to move to.
+                        new_version: (!removing).then_some(version).flatten(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn names(record: &Value, key: &str) -> Vec<String> {
+    record
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
@@ -450,6 +613,10 @@ fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
         can_list: has(OP_LIST) || has(OP_LIST_INSTALLED),
         can_list_updates: has(OP_LIST_UPDATES),
         can_sync: has(OP_SYNC),
+        can_add_repo: has(OP_ADD_REPO),
+        can_remove_repo: has(OP_REMOVE_REPO),
+        can_list_repos: has(OP_LIST_REPOS),
+        supports_declarative: has(OP_APPLY),
         has_package_detail: has(OP_INFO),
         has_size_info: manifest
             .ops
@@ -862,6 +1029,47 @@ output = { format = "ndjson" }
     }
 
     #[test]
+    fn an_apply_is_reported_by_the_event_it_ends_with() {
+        let printed = concat!(
+            "{\"type\":\"installing\",\"pkg_name\":\"cat\"}\n",
+            "{\"type\":\"apply_complete\",\"installed\":2,\"updated\":1,\"removed\":0,\"failed\":3}\n"
+        );
+
+        let report = apply_report(printed, "type");
+        assert_eq!(report.installed, 2);
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.failed, 3);
+    }
+
+    #[test]
+    fn an_apply_that_never_says_how_it_went_reports_nothing() {
+        let report = apply_report("{\"type\":\"installing\",\"pkg_name\":\"cat\"}\n", "type");
+        assert_eq!(report.installed, 0);
+        assert_eq!(report.failed, 0);
+    }
+
+    #[test]
+    fn a_package_on_its_way_out_has_no_version_to_move_to() {
+        let diff: Value = serde_json::from_str(
+            r#"{"to_install":[{"name":"rg","version":"15.2.0","current_version":null}],
+                "to_remove":[{"name":"eza","version":"0.23.3","current_version":"0.23.3"}],
+                "not_found":["nope"]}"#,
+        )
+        .unwrap();
+
+        let installing = changes(&diff, "to_install", false);
+        assert_eq!(installing[0].new_version.as_deref(), Some("15.2.0"));
+        assert_eq!(installing[0].current_version, None);
+
+        let removing = changes(&diff, "to_remove", true);
+        assert_eq!(removing[0].current_version.as_deref(), Some("0.23.3"));
+        assert_eq!(removing[0].new_version, None);
+
+        assert_eq!(names(&diff, "not_found"), ["nope"]);
+        assert!(changes(&diff, "to_update", false).is_empty());
+    }
+
+    #[test]
     fn a_line_that_is_not_an_event_reports_nothing() {
         let (progress, mut receiver) = progress(Format::Ndjson);
         let reporter = reporter_for(&progress);
@@ -899,6 +1107,12 @@ case "$1" in
     while [ $i -lt 10000 ]; do echo "diagnostic line $i" >&2; i=$((i + 1)); done
     echo '{"type":"download_progress","pkg_name":"cat","current":5,"total":10}'
     echo '{"type":"installing","pkg_name":"cat"}'
+    ;;
+  repos)
+    echo '{"items":[{"name":"main","url":"https://example.invalid/main","enabled":true}],"total":1}'
+    ;;
+  paths)
+    echo '{"config":"/tmp/demo/config.toml","packages_config":"/tmp/demo/packages.toml"}'
     ;;
   boom)
     echo "it went wrong" >&2
@@ -940,6 +1154,16 @@ progress = {{ event = "type", current = "current", total = "total", message = "p
 [ops.remove]
 args = ["boom", "{{selector}}"]
 output = {{ format = "ndjson" }}
+
+[ops.list_repos]
+args = ["repos"]
+output = {{ format = "json", select = "$.items[*]" }}
+fields = {{ name = "name", url = "url", enabled = "enabled" }}
+
+[ops.paths]
+args = ["paths"]
+output = {{ format = "json" }}
+fields = {{ config = "config", packages_config = "packages_config" }}
 "#,
             program.display()
         )
@@ -995,6 +1219,43 @@ output = {{ format = "ndjson" }}
             matches!(reported.last(), Some(ProgressEvent::Completed { .. })),
             "reported {reported:?}"
         );
+    }
+
+    #[test]
+    fn repositories_and_file_locations_are_read_from_the_manager() {
+        let program = fake_manager("repos-and-paths");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        assert!(adapter.capabilities().can_list_repos);
+        assert!(!adapter.capabilities().supports_declarative);
+
+        let repos = block_on(adapter.list_repositories()).expect("should list");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "main");
+        assert!(repos[0].enabled);
+
+        let paths = block_on(adapter.paths()).expect("should report paths");
+        assert_eq!(
+            paths.get("packages_config").map(String::as_str),
+            Some("/tmp/demo/packages.toml")
+        );
+    }
+
+    #[test]
+    fn an_operation_a_manifest_does_not_declare_is_not_supported() {
+        let program = fake_manager("undeclared");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        assert!(matches!(
+            block_on(adapter.declarative_diff()),
+            Err(AdapterError::NotSupported)
+        ));
+        assert!(matches!(
+            block_on(adapter.list_updates(PackageMode::User)),
+            Err(AdapterError::NotSupported)
+        ));
     }
 
     #[test]
