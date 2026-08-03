@@ -372,15 +372,10 @@ impl Adapter for CommandAdapter {
             .ok_or_else(|| AdapterError::PackageNotFound(package_id.to_string()))?;
 
         Ok(PackageDetail {
-            download_url: output::text(record, fields, "download_url"),
             package,
-            dependencies: Vec::new(),
-            screenshots: Vec::new(),
-            readme: None,
-            maintainers: Vec::new(),
+            pkg_type: output::text(record, fields, "pkg_type"),
             build_date: output::text(record, fields, "build_date"),
-            variants: Vec::new(),
-            snapshots: Vec::new(),
+            download_url: output::text(record, fields, "download_url"),
         })
     }
 

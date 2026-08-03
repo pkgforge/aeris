@@ -4,28 +4,6 @@ use super::adapter::AdapterId;
 
 pub type PackageId = String;
 
-impl Package {
-    /// Extract (repo_name, pkg_id) from the package id format "repo_name.pkg_id"
-    pub fn soar_query_parts(&self) -> Option<(&str, &str)> {
-        self.id.split_once('.')
-    }
-
-    /// Build a soar query string "name#pkg_id:repo_name"
-    pub fn soar_query(&self) -> Option<String> {
-        let (repo_name, pkg_id) = self.soar_query_parts()?;
-        Some(format!("{}#{}:{}", self.name, pkg_id, repo_name))
-    }
-
-    /// Build a soar query string with version "name#pkg_id@version:repo_name"
-    pub fn soar_query_versioned(&self) -> Option<String> {
-        let (repo_name, pkg_id) = self.soar_query_parts()?;
-        Some(format!(
-            "{}#{}@{}:{}",
-            self.name, pkg_id, self.version, repo_name
-        ))
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub id: PackageId,
@@ -43,37 +21,14 @@ pub struct Package {
     pub icon_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Dependency {
-    pub name: String,
-    pub version_req: Option<String>,
-    pub optional: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackageVariant {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub version: String,
-    pub created_at: String,
-}
-
+/// What a manager knows about one package beyond what a listing carries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageDetail {
     pub package: Package,
-    pub dependencies: Vec<Dependency>,
-    pub screenshots: Vec<String>,
-    pub readme: Option<String>,
-    pub maintainers: Vec<String>,
+    /// What the package is built as, in the manager's own words.
+    pub pkg_type: Option<String>,
     pub build_date: Option<String>,
     pub download_url: Option<String>,
-    pub variants: Vec<PackageVariant>,
-    pub snapshots: Vec<Snapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

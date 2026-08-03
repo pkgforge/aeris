@@ -678,44 +678,11 @@ impl App {
             {
                 content = content.child(self.detail_row("Category", category, theme));
             }
-            if !detail.maintainers.is_empty() {
-                content = content.child(self.detail_row(
-                    "Maintainers",
-                    &detail.maintainers.join(", "),
-                    theme,
-                ));
+            if let Some(ref kind) = detail.pkg_type {
+                content = content.child(self.detail_row("Type", kind, theme));
             }
             if let Some(ref date) = detail.build_date {
                 content = content.child(self.detail_row("Build date", &on_day(date), theme));
-            }
-            if !detail.dependencies.is_empty() {
-                let deps = detail
-                    .dependencies
-                    .iter()
-                    .map(|d| {
-                        if let Some(ref req) = d.version_req {
-                            format!("{} ({req})", d.name)
-                        } else {
-                            d.name.clone()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                content = content.child(self.detail_row("Dependencies", &deps, theme));
-            }
-            if let Some(ref readme) = detail.readme {
-                content = content.child(div().w_full().h(px(1.0)).bg(border));
-                content = content.child(
-                    div()
-                        .text_size(px(styles::font_size::SMALL))
-                        .text_color(text_muted)
-                        .child("Readme"),
-                );
-                content = content.child(
-                    div()
-                        .text_size(px(styles::font_size::CAPTION))
-                        .child(readme.clone()),
-                );
             }
         }
 
