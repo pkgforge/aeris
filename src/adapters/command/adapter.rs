@@ -1020,9 +1020,13 @@ impl<'a> Reporter<'a> {
             }
         };
 
-        let package_id = text("message")
+        // The package aeris asked about, which is how it tracks the work.
+        // A manager names packages its own way, so its name only stands in
+        // where the operation covered no particular package.
+        let package_id = Some(self.progress.package_id.clone())
             .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| self.progress.package_id.clone());
+            .or_else(|| text("message"))
+            .unwrap_or_default();
 
         match (count("current"), count("total")) {
             (Some(current), Some(total)) => Some(ProgressEvent::Download {
@@ -1210,7 +1214,7 @@ output = { format = "ndjson" }
             Progress {
                 sender,
                 adapter_id: "demo".into(),
-                package_id: "cat".into(),
+                package_id: "busybox/cat".into(),
                 map: HashMap::from([
                     ("event".to_string(), "type".to_string()),
                     ("current".to_string(), "current".to_string()),
@@ -1237,9 +1241,39 @@ output = { format = "ndjson" }
                 total_bytes,
                 ..
             } => {
-                assert_eq!(package_id, "cat");
+                assert_eq!(package_id, "busybox/cat");
                 assert_eq!((current_bytes, total_bytes), (50, 100));
             }
+            other => panic!("reported {other:?}"),
+        }
+    }
+
+    #[test]
+    fn progress_is_reported_against_the_package_aeris_asked_about() {
+        // The manager calls this package `cat`; aeris knows it as
+        // `busybox/cat`, and that is what the rest of the app watches for.
+        let (progress, mut receiver) = progress(Format::Ndjson);
+        reporter_for(&progress)
+            .report(r#"{"type":"installing","pkg_name":"cat","stage":"extracting"}"#);
+
+        match receiver.try_recv().expect("should have reported") {
+            ProgressEvent::Phase { package_id, .. } => assert_eq!(package_id, "busybox/cat"),
+            other => panic!("reported {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_operation_naming_no_package_reports_the_one_the_manager_names() {
+        let (mut progress, mut receiver) = progress(Format::Ndjson);
+        // Updating everything at once names no package up front, so the only
+        // name available is the one the manager reports as it goes.
+        progress.package_id = String::new();
+
+        reporter_for(&progress)
+            .report(r#"{"type":"installing","pkg_name":"cat","stage":"extracting"}"#);
+
+        match receiver.try_recv().expect("should have reported") {
+            ProgressEvent::Phase { package_id, .. } => assert_eq!(package_id, "cat"),
             other => panic!("reported {other:?}"),
         }
     }
