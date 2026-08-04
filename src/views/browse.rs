@@ -715,14 +715,18 @@ impl App {
                 .contains_key(&detail_pkey)
                 || self.browse_state.installing.as_deref() == Some(&pkg.id);
             if is_installing {
+                // The panel is narrow and shares its width with Close, so the
+                // status says the least that still means something.
                 let status_label = self
                     .browse_state
                     .package_progress
                     .get(&detail_pkey)
-                    .map(|s| s.label())
+                    .map(|s| s.short_label())
                     .unwrap_or_else(|| "Installing...".into());
                 buttons = buttons.child(
                     div()
+                        .flex_shrink()
+                        .min_w(px(0.0))
                         .px(px(styles::spacing::LG))
                         .py(px(styles::spacing::XS))
                         .rounded(px(styles::radius::MD))

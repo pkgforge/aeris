@@ -138,6 +138,20 @@ impl OperationStatus {
         }
     }
 
+    /// The same thing said in as few characters as it takes, for somewhere
+    /// too narrow to spell it out.
+    pub fn short_label(&self) -> String {
+        match self {
+            OperationStatus::Downloading { current, total } if *total > 0 => {
+                let percent = (*current as f64 / *total as f64 * 100.0) as u64;
+                format!("Downloading {percent}%")
+            }
+            OperationStatus::Installing(phase) => phase.clone(),
+            OperationStatus::Failed(_) => "Failed".into(),
+            other => other.label(),
+        }
+    }
+
     pub fn progress(&self) -> Option<f32> {
         match self {
             OperationStatus::Downloading { current, total } if *total > 0 => {
@@ -2248,11 +2262,6 @@ impl App {
                 } => {
                     let key = progress_key(&adapter_id, &package_id);
                     self.record_progress(key, OperationStatus::Completed);
-                    for pkg in &mut self.browse_state.search_results {
-                        if pkg.id == package_id && pkg.adapter_id == adapter_id {
-                            pkg.installed = true;
-                        }
-                    }
                 }
                 ProgressEvent::Failed {
                     adapter_id,
@@ -3583,6 +3592,25 @@ impl App {
         }
     }
 
+    /// Record what a package's state became, everywhere browse shows it.
+    ///
+    /// The operation that ran is what knows this. A completion event only
+    /// says the work finished, not which way it left the package.
+    fn mark_installed(&mut self, adapter_id: &str, package_id: &str, installed: bool) {
+        for package in &mut self.browse_state.search_results {
+            if package.id == package_id && package.adapter_id == adapter_id {
+                package.installed = installed;
+            }
+        }
+
+        if let Some(selected) = &mut self.browse_state.selected_package
+            && selected.id == package_id
+            && selected.adapter_id == adapter_id
+        {
+            selected.installed = installed;
+        }
+    }
+
     pub(crate) fn install_package(
         &mut self,
         pkg: crate::core::package::Package,
@@ -3591,6 +3619,7 @@ impl App {
     ) {
         let pkg_id = pkg.id.clone();
         let pkg_name = pkg.name.clone();
+        let adapter_id = pkg.adapter_id.clone();
         let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
         self.browse_state.installing = Some(pkg_id.clone());
         self.browse_state
@@ -3612,12 +3641,7 @@ impl App {
                             app.browse_state.installing = None;
                             match result {
                                 Ok(Ok(_)) => {
-                                    // Mark as installed in search results
-                                    for p in &mut app.browse_state.search_results {
-                                        if p.id == pkg_id {
-                                            p.installed = true;
-                                        }
-                                    }
+                                    app.mark_installed(&adapter_id, &pkg_id, true);
                                     app.browse_state.package_progress.remove(&progress_key);
                                     app.add_toast(
                                         ToastLevel::Success,
@@ -3672,6 +3696,8 @@ impl App {
         cx: &mut Context<Self>,
     ) {
         let pkg_name = pkg.name.clone();
+        let pkg_id = pkg.id.clone();
+        let adapter_id = pkg.adapter_id.clone();
         let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
         self.installed_state.removing = Some(unique_key);
         self.installed_state
@@ -3694,6 +3720,7 @@ impl App {
                             app.installed_state.package_progress.remove(&progress_key);
                             match result {
                                 Ok(Ok(_)) => {
+                                    app.mark_installed(&adapter_id, &pkg_id, false);
                                     app.add_toast(
                                         ToastLevel::Success,
                                         format!("Removed {pkg_name}"),
