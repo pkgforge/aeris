@@ -454,7 +454,9 @@ impl App {
         // Soar describes itself, so aeris drives whichever one is installed
         // rather than the one it was built against.
         let adapter: Option<Arc<dyn Adapter>> =
-            match CommandAdapter::from_command("soar", command::DESCRIBE_ARGS) {
+            match CommandAdapter::from_command("soar", command::DESCRIBE_ARGS)
+                .map(CommandAdapter::as_builtin)
+            {
                 Ok(soar) => {
                     log::info!("Driving soar {}", soar.info().version);
                     paths = soar.file_paths().unwrap_or_else(|e| {
@@ -480,16 +482,6 @@ impl App {
                     register_new(&mut adapter_manager, Arc::new(manifest_adapter));
                 }
                 Err(e) => log::warn!("Failed to load adapter: {e}"),
-            }
-        }
-
-        for result in crate::adapters::wasm::load_all_plugins() {
-            match result {
-                Ok(wasm_adapter) => {
-                    log::info!("Loaded plugin: {}", wasm_adapter.info().id);
-                    register_new(&mut adapter_manager, Arc::new(wasm_adapter));
-                }
-                Err(e) => log::warn!("Failed to load plugin: {e}"),
             }
         }
 
@@ -1676,6 +1668,54 @@ impl App {
                             }
                         }
                         app.adapter_view.registry_loading = false;
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
+    }
+
+    /// Fetch an adapter's manifest from the registry and start using it.
+    ///
+    /// The manifest is kept whether or not the manager it describes is
+    /// installed, so installing the manager later is all it takes.
+    pub fn install_plugin(&mut self, entry: PluginEntry, cx: &mut Context<Self>) {
+        let id = entry.id.clone();
+        let name = entry.name.clone();
+        self.adapter_view.installing_plugin = Some(id.clone());
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let fetched = crate::core::registry::download_plugin(&entry).and_then(|path| {
+                    let manifest = crate::adapters::command::manifest::load(&path)?;
+                    Ok((path, manifest))
+                });
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.adapter_view.installing_plugin = None;
+
+                        match fetched {
+                            Ok((path, manifest)) => {
+                                match CommandAdapter::new(manifest, Some(path)) {
+                                    Ok(adapter) => {
+                                        register_new(&mut app.adapter_manager, Arc::new(adapter));
+                                        app.add_toast(ToastLevel::Success, format!("Added {name}"));
+                                    }
+                                    // The manifest is sound but the manager it
+                                    // describes is missing or too old. Keeping
+                                    // it means installing that is enough.
+                                    Err(e) => app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Kept the manifest for {name}, but {e}"),
+                                    ),
+                                }
+                            }
+                            Err(e) => app
+                                .add_toast(ToastLevel::Error, format!("Could not add {name}: {e}")),
+                        }
+
                         cx.notify();
                     })
                 });

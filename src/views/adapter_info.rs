@@ -126,7 +126,8 @@ impl App {
                 has_available = true;
                 let is_installing =
                     self.adapter_view.installing_plugin.as_deref() == Some(&entry.id);
-                content = content.child(self.render_registry_card(&entry, is_installing, theme));
+                content =
+                    content.child(self.render_registry_card(&entry, is_installing, theme, cx));
             }
 
             if !has_available {
@@ -167,11 +168,19 @@ impl App {
         }
 
         div()
-            .p(px(styles::spacing::XL))
+            .id("adapters-scroll")
             .flex_1()
-            .flex()
-            .flex_col()
-            .child(content)
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .p(px(styles::spacing::XL))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .child(content),
+            )
     }
 
     fn render_adapter_card(
@@ -820,6 +829,7 @@ impl App {
         entry: &PluginEntry,
         installing: bool,
         theme: &theme::Theme,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let surface = theme.surface;
         let border = theme.border;
@@ -850,10 +860,20 @@ impl App {
 
         let action = if installing {
             div()
+                .id(SharedString::from(format!(
+                    "installing-plugin-{}",
+                    entry.id
+                )))
                 .text_size(px(styles::font_size::SMALL))
                 .child("Installing...")
         } else {
+            let wanted = entry.clone();
+            let install_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                app.install_plugin(wanted.clone(), cx);
+            });
+
             div()
+                .id(SharedString::from(format!("install-plugin-{}", entry.id)))
                 .px(px(styles::spacing::SM))
                 .py(px(styles::spacing::XS))
                 .rounded(px(styles::radius::MD))
@@ -861,6 +881,7 @@ impl App {
                 .text_color(gpui::white())
                 .text_size(px(styles::font_size::SMALL))
                 .cursor_pointer()
+                .on_click(install_listener)
                 .child("Install")
         };
 

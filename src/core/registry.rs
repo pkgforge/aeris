@@ -19,35 +19,28 @@ pub struct RegistryMeta {
     pub updated: String,
 }
 
+/// One adapter the registry offers, which is a manifest and nothing more.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginEntry {
     pub id: String,
     pub name: String,
     pub version: String,
     pub description: String,
-    pub download_url: String,
-    #[serde(default)]
-    pub checksum_sha256: String,
-    #[serde(default)]
     pub manifest_url: String,
     #[serde(default)]
     pub manifest_checksum_sha256: String,
     #[serde(default)]
     pub repo_url: String,
-    #[serde(default)]
-    pub architectures: Vec<String>,
-    #[serde(default)]
-    pub min_host_version: Option<String>,
 }
 
-fn plugins_dir() -> PathBuf {
-    dirs_home()
-        .map(|h| h.join(".local/share/aeris/plugins"))
-        .unwrap_or_else(|| PathBuf::from("./plugins"))
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// Where a manifest fetched from the registry is kept, which is the same
+/// place a hand-written one goes.
+fn adapter_path(id: &str) -> PathBuf {
+    crate::adapters::command::manifest::search_paths()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from("./adapters"))
+        .join(format!("{id}.toml"))
 }
 
 pub fn fetch_registry(url: Option<&str>) -> Result<Registry, String> {
@@ -68,46 +61,56 @@ pub fn fetch_registry(url: Option<&str>) -> Result<Registry, String> {
     Ok(registry)
 }
 
+/// Fetch an adapter's manifest and put it where aeris looks for one.
+///
+/// A manifest is read before it is kept, so a broken one is refused here
+/// rather than at the next start.
 pub fn download_plugin(entry: &PluginEntry) -> Result<PathBuf, String> {
-    let plugin_dir = plugins_dir().join(&entry.id);
-    std::fs::create_dir_all(&plugin_dir)
-        .map_err(|e| format!("Failed to create plugin dir: {e}"))?;
-
-    // Download manifest.toml
-    if !entry.manifest_url.is_empty() {
-        let manifest_bytes = download_bytes(&entry.manifest_url)?;
-        if !entry.manifest_checksum_sha256.is_empty() {
-            verify_checksum(&manifest_bytes, &entry.manifest_checksum_sha256)?;
-        }
-        std::fs::write(plugin_dir.join("manifest.toml"), &manifest_bytes)
-            .map_err(|e| format!("Failed to write manifest: {e}"))?;
+    if entry.manifest_url.is_empty() {
+        return Err(format!("{} offers no manifest", entry.id));
     }
 
-    // Download plugin.wasm
-    let wasm_bytes = download_bytes(&entry.download_url)?;
-    if !entry.checksum_sha256.is_empty() {
-        verify_checksum(&wasm_bytes, &entry.checksum_sha256)?;
+    let manifest = download_bytes(&entry.manifest_url)?;
+    if !entry.manifest_checksum_sha256.is_empty() {
+        verify_checksum(&manifest, &entry.manifest_checksum_sha256)?;
     }
-    std::fs::write(plugin_dir.join("plugin.wasm"), &wasm_bytes)
-        .map_err(|e| format!("Failed to write plugin.wasm: {e}"))?;
 
-    Ok(plugin_dir)
+    let text = String::from_utf8(manifest)
+        .map_err(|_| format!("{} sent a manifest that is not text", entry.id))?;
+    let parsed = crate::adapters::command::manifest::parse(&text)
+        .map_err(|e| format!("{}: {e}", entry.id))?;
+
+    if parsed.id != entry.id {
+        return Err(format!(
+            "the registry calls this {} and the manifest calls it {}",
+            entry.id, parsed.id
+        ));
+    }
+
+    let path = adapter_path(&entry.id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create adapter dir: {e}"))?;
+    }
+    std::fs::write(&path, &text).map_err(|e| format!("Failed to write manifest: {e}"))?;
+
+    Ok(path)
 }
 
 pub fn remove_plugin(id: &str) -> Result<(), String> {
-    let plugin_dir = plugins_dir().join(id);
-    if !plugin_dir.exists() {
+    let path = adapter_path(id);
+    if !path.exists() {
         return Ok(());
     }
-    std::fs::remove_dir_all(&plugin_dir)
-        .map_err(|e| format!("Failed to remove plugin dir {plugin_dir:?}: {e}"))
+
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {e}", path.display()))
 }
 
 pub fn installed_plugin_version(id: &str) -> Option<String> {
-    let manifest_path = plugins_dir().join(id).join("manifest.toml");
-    let content = std::fs::read_to_string(&manifest_path).ok()?;
-    let manifest: crate::adapters::wasm::PluginManifest = toml::from_str(&content).ok()?;
-    Some(manifest.adapter.version)
+    let text = std::fs::read_to_string(adapter_path(id)).ok()?;
+    let manifest = crate::adapters::command::manifest::parse(&text).ok()?;
+
+    (!manifest.version.is_empty()).then_some(manifest.version)
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {

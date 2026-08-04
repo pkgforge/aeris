@@ -127,6 +127,15 @@ impl CommandAdapter {
         Self::new(manifest, None)
     }
 
+    /// Mark this as one aeris ships with rather than one that was added.
+    ///
+    /// A built-in can be turned off but not taken away, so there is always
+    /// something to turn back on.
+    pub fn as_builtin(mut self) -> Self {
+        self.info.is_builtin = true;
+        self
+    }
+
     fn op(&self, name: &str) -> Result<&Op> {
         self.manifest.op(name).ok_or(AdapterError::NotSupported)
     }
