@@ -709,10 +709,13 @@ impl App {
 
         if !pkg.installed {
             let detail_pkey = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+            // Only work still going counts. A record left by something that
+            // already finished would otherwise stand in for the button.
             let is_installing = self
                 .browse_state
                 .package_progress
-                .contains_key(&detail_pkey)
+                .get(&detail_pkey)
+                .is_some_and(|status| !status.is_finished())
                 || self.browse_state.installing.as_deref() == Some(&pkg.id);
             if is_installing {
                 // The panel is narrow and shares its width with Close, so the

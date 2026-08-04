@@ -138,6 +138,18 @@ impl OperationStatus {
         }
     }
 
+    /// Whether the work this describes is over, one way or the other.
+    ///
+    /// A record left behind by a finished operation says nothing about what
+    /// is happening now, and reading it as though it did leaves the last
+    /// thing that happened on screen forever.
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self,
+            OperationStatus::Completed | OperationStatus::Failed(_)
+        )
+    }
+
     /// The same thing said in as few characters as it takes, for somewhere
     /// too narrow to spell it out.
     pub fn short_label(&self) -> String {
@@ -3609,6 +3621,9 @@ impl App {
         {
             selected.installed = installed;
         }
+
+        let key = crate::core::adapter::progress_key(adapter_id, package_id);
+        self.browse_state.package_progress.remove(&key);
     }
 
     pub(crate) fn install_package(
@@ -4029,6 +4044,35 @@ mod tests {
     // Deliberately not glob importing the parent: it pulls in gpui's prelude,
     // which shadows the test attribute.
     use super::readable;
+
+    #[test]
+    fn work_that_ended_is_not_work_in_flight() {
+        use super::OperationStatus;
+
+        assert!(OperationStatus::Completed.is_finished());
+        assert!(OperationStatus::Failed("nope".into()).is_finished());
+        assert!(!OperationStatus::Starting.is_finished());
+        assert!(
+            !OperationStatus::Downloading {
+                current: 1,
+                total: 2
+            }
+            .is_finished()
+        );
+        assert!(!OperationStatus::Installing("extracting".into()).is_finished());
+    }
+
+    #[test]
+    fn a_status_says_less_where_there_is_less_room() {
+        use super::OperationStatus;
+
+        let downloading = OperationStatus::Downloading {
+            current: 82_100_000,
+            total: 341_300_000,
+        };
+        assert_eq!(downloading.short_label(), "Downloading 24%");
+        assert!(downloading.label().contains("MB"));
+    }
 
     #[test]
     fn a_stage_is_shown_the_way_a_person_would_write_it() {
