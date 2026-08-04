@@ -173,15 +173,14 @@ impl CommandManifest {
             if op.args.is_empty() {
                 return Err(format!("operation {name} runs no arguments"));
             }
-            if op.output.format == Format::Lines {
-                let Some(pattern) = &op.pattern else {
-                    if op.progress.is_empty() {
-                        return Err(format!("operation {name} reads lines but has no pattern"));
-                    }
-                    continue;
-                };
+            if let Some(pattern) = &op.pattern {
                 regex::Regex::new(pattern)
                     .map_err(|e| format!("operation {name} has an unreadable pattern: {e}"))?;
+            } else if op.output.format == Format::Lines && !op.fields.is_empty() {
+                // Only an operation expected to yield records needs one. An
+                // operation that just runs and prints for a person to watch
+                // has nothing to pull out of what it printed.
+                return Err(format!("operation {name} reads lines but has no pattern"));
             }
         }
 
@@ -280,13 +279,29 @@ fields = { name = "name" }
     }
 
     #[test]
-    fn an_operation_reading_lines_needs_a_pattern() {
+    fn an_operation_reading_records_from_lines_needs_a_pattern() {
         let text = MINIMAL.replace(
             r#"output = { format = "json", select = "$.items[*]" }"#,
             r#"output = { format = "lines" }"#,
         );
         let err = parse(&text).expect_err("should refuse");
         assert!(err.contains("no pattern"), "{err}");
+    }
+
+    #[test]
+    fn an_operation_that_only_runs_needs_no_pattern() {
+        // Installing prints for a person to watch, and nothing is read back
+        // out of it, so there is nothing to describe.
+        let text = MINIMAL.replace(
+            r#"[ops.search]
+args = ["search", "{query}"]
+output = { format = "json", select = "$.items[*]" }
+fields = { name = "name" }"#,
+            r#"[ops.install]
+args = ["install", "{selector}"]
+output = { format = "lines" }"#,
+        );
+        parse(&text).expect("should accept");
     }
 
     #[test]

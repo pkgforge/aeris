@@ -1357,6 +1357,21 @@ esac
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("should be runnable");
 
+        // Another test forking at the moment this file was being written
+        // leaves its child holding a write handle to it, and exec refuses a
+        // file anyone is writing. The child clears in moments, so wait for the
+        // file to be runnable rather than let an unrelated test fail the run.
+        for attempt in 0..10 {
+            let ran = Command::new(&path)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .output();
+            if ran.is_ok_and(|ran| ran.status.success()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+        }
+
         path
     }
 
