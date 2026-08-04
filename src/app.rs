@@ -2280,7 +2280,7 @@ impl App {
 
         let mut had_events = false;
 
-        // Drain ProgressEvent channel (from WASM adapters)
+        // Drain the events adapters report as they work
         while let Ok(event) = self.progress_receiver.try_recv() {
             had_events = true;
             match event {
