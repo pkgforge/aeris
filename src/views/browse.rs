@@ -159,14 +159,26 @@ impl App {
         };
 
         // Build the browse list
+        // The search box and what it found stay put while the results move,
+        // so the box is always there to type in.
+        let search_header = div()
+            .flex_shrink_0()
+            .w_full()
+            .px(px(styles::spacing::XL))
+            .pt(px(styles::spacing::XL))
+            .pb(px(styles::spacing::SM))
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::SM))
+            .child(search_bar)
+            .child(result_count);
+
         let mut browse_list = div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(styles::spacing::SM))
             .w_full()
-            .child(search_bar)
-            .child(result_count)
             .child(results_content);
 
         // Install error banner
@@ -234,33 +246,52 @@ impl App {
         }
 
         let browse_panel = div()
-            .id("browse-scroll")
             .flex_1()
             .min_h_0()
             .min_w_0()
             .w_full()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .child(search_header)
             .child(
                 div()
-                    .p(px(styles::spacing::XL))
-                    .flex()
-                    .flex_col()
-                    .w_full()
+                    .id("browse-scroll")
+                    .flex_1()
+                    .min_h_0()
                     .min_w_0()
-                    .child(browse_list),
+                    .w_full()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .px(px(styles::spacing::XL))
+                            .pb(px(styles::spacing::XL))
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .min_w_0()
+                            .child(browse_list),
+                    ),
             );
 
         // Detail side panel
         if let Some(ref pkg) = self.browse_state.selected_package.clone() {
             div()
                 .flex_1()
+                .min_h_0()
+                .min_w_0()
                 .flex()
                 .flex_row()
                 .child(browse_panel)
                 .child(div().w(px(1.0)).h_full().bg(border))
                 .child(self.render_detail_panel(pkg, theme, cx))
         } else {
-            div().flex_1().flex().flex_row().child(browse_panel)
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .child(browse_panel)
         }
     }
 
@@ -526,10 +557,13 @@ impl App {
         });
 
         let mut content = div()
+            .id("detail-scroll")
             .flex_shrink()
             .w(px(320.0))
             .min_w(px(220.0))
             .h_full()
+            .min_h_0()
+            .overflow_y_scroll()
             .bg(surface)
             .border_l_1()
             .border_color(border)
