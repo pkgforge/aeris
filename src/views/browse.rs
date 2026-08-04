@@ -658,7 +658,7 @@ impl App {
                 div()
                     .text_size(px(styles::font_size::CAPTION))
                     .text_color(text_muted)
-                    .child(format!("Detail unavailable: {err}")),
+                    .child(err.clone()),
             );
         } else if let Some(ref detail) = self.browse_state.selected_detail {
             // What the search result carried is already shown above, so these

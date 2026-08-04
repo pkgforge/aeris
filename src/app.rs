@@ -2072,10 +2072,15 @@ impl App {
             Some(a) => a,
             None => return,
         };
+        // Saying so beats an empty space, which reads as something that
+        // failed rather than something never offered.
         if !adapter.capabilities().has_package_detail {
             self.browse_state.selected_detail = None;
             self.browse_state.detail_loading = false;
-            self.browse_state.detail_error = None;
+            self.browse_state.detail_error = Some(format!(
+                "{} does not report more than this",
+                adapter.info().name
+            ));
             return;
         }
 
@@ -2111,6 +2116,11 @@ impl App {
                         app.browse_state.detail_loading = false;
                         match result {
                             Ok(detail) => {
+                                log::debug!(
+                                    "showing details for {asked_for}: type={:?} source={:?}",
+                                    detail.pkg_type,
+                                    detail.source
+                                );
                                 app.browse_state.selected_detail = Some(detail);
                             }
                             Err(e) => {
