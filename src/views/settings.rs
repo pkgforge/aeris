@@ -14,7 +14,17 @@ use crate::{
     styles, theme,
 };
 
+/// Which setting a [`SettingsEdit`] is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsEditScope {
+    /// A field on the active adapter's configuration.
+    Adapter,
+    /// The registry URL, which is an Aeris-level setting.
+    RegistryUrl,
+}
+
 pub struct SettingsEdit {
+    pub scope: SettingsEditScope,
     pub key: String,
     pub label: String,
     pub field_type: ConfigFieldType,
@@ -25,6 +35,12 @@ pub struct SettingsState {
     pub selected_theme: AppTheme,
     pub startup_view: View,
     pub notifications: bool,
+    /// Where the adapter registry is read from, or empty for the default.
+    pub registry_url: String,
+    /// The result of the last "test connection" probe of the registry URL.
+    pub registry_testing: bool,
+    pub registry_test_error: Option<String>,
+    pub registry_test_count: Option<usize>,
     pub aeris_dirty: bool,
     pub aeris_save_error: Option<String>,
     pub aeris_save_success: bool,
@@ -32,6 +48,10 @@ pub struct SettingsState {
     pub adapter_schema: Option<ConfigSchema>,
     pub adapter_config: AdapterConfig,
     pub adapter_config_original: AdapterConfig,
+    /// The manager's configuration as it stands on disk, shown read-only until
+    /// a field is overridden. Kept apart from [`adapter_config`] so inherited
+    /// values never fill the editor input.
+    pub current_config: AdapterConfig,
     pub adapter_settings: HashMap<String, String>,
     pub adapter_dirty: bool,
     pub adapter_save_error: Option<String>,
@@ -46,12 +66,17 @@ impl Default for SettingsState {
             selected_theme: AppTheme::System,
             startup_view: View::Dashboard,
             notifications: true,
+            registry_url: String::new(),
+            registry_testing: false,
+            registry_test_error: None,
+            registry_test_count: None,
             aeris_dirty: false,
             aeris_save_error: None,
             aeris_save_success: false,
             adapter_schema: None,
             adapter_config: AdapterConfig::default(),
             adapter_config_original: AdapterConfig::default(),
+            current_config: AdapterConfig::default(),
             adapter_settings: HashMap::new(),
             adapter_dirty: false,
             adapter_save_error: None,
@@ -82,13 +107,18 @@ impl SettingsState {
             selected_theme: aeris_config.theme(),
             startup_view: aeris_config.startup_view(),
             notifications: aeris_config.notifications.unwrap_or(true),
+            registry_url: aeris_config.registry_url.clone().unwrap_or_default(),
+            registry_testing: false,
+            registry_test_error: None,
+            registry_test_count: None,
             aeris_dirty: false,
             aeris_save_error: None,
             aeris_save_success: false,
 
             adapter_schema: schema,
-            adapter_config: adapter.initial_config().unwrap_or_default(),
-            adapter_config_original: adapter.initial_config().unwrap_or_default(),
+            current_config: adapter.initial_config().unwrap_or_default(),
+            adapter_config: AdapterConfig::default(),
+            adapter_config_original: AdapterConfig::default(),
             adapter_settings,
             adapter_dirty: false,
             adapter_save_error: None,
@@ -158,6 +188,26 @@ impl App {
             theme,
         );
 
+        let registry_card = self.section_card(
+            "Registry",
+            Some("Where Aeris reads its list of adapters. An HTTP(S) URL or a local path; leave blank for the default."),
+            vec![
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(styles::spacing::XXS))
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::BODY))
+                            .child("Registry URL"),
+                    )
+                    .child(self.render_registry_url_field(theme, cx)),
+            ],
+            theme,
+        );
+
+        let registry_actions = self.render_registry_actions(theme, cx);
+
         let aeris_actions = self.render_aeris_actions(theme, cx);
 
         let mut aeris_section = div()
@@ -166,6 +216,8 @@ impl App {
             .gap(px(styles::spacing::MD))
             .child(appearance_card)
             .child(general_card)
+            .child(registry_card)
+            .child(registry_actions)
             .child(aeris_actions);
 
         if let Some(ref err) = self.settings_state.aeris_save_error {
@@ -345,7 +397,10 @@ impl App {
                 current_section = Some(field_section.clone());
             }
 
-            let value = if field.aeris_managed {
+            // What the user has overridden (if anything) is kept apart from
+            // the manager's current value: only an override reaches the editor
+            // input, while the current value is shown read-only.
+            let edit = if field.aeris_managed {
                 self.settings_state
                     .adapter_settings
                     .get(&field.key)
@@ -357,12 +412,22 @@ impl App {
                     .get(&field.key)
                     .cloned()
             };
+            let current = if field.aeris_managed {
+                None
+            } else {
+                self.settings_state
+                    .current_config
+                    .values
+                    .get(&field.key)
+                    .cloned()
+            };
 
             group.push(self.render_config_field_row(
                 &field.key,
                 &field.label,
                 &field.field_type,
-                value.as_ref(),
+                edit.as_ref(),
+                current.as_ref(),
                 field.default.as_ref(),
                 field.aeris_managed,
                 theme,
@@ -528,15 +593,108 @@ impl App {
         switch("notifications-toggle", checked, theme, Box::new(listener))
     }
 
+    fn render_registry_url_field(
+        &self,
+        theme: &theme::Theme,
+        cx: &mut Context<App>,
+    ) -> impl IntoElement {
+        let primary = theme.primary;
+
+        // Nothing set still has a value in effect — the default — so the actual
+        // URL is shown (muted) rather than a bare label. The input is left
+        // empty, so an unset value stays that way until something is typed.
+        let (display, is_default) = if self.settings_state.registry_url.trim().is_empty() {
+            (
+                crate::core::registry::DEFAULT_REGISTRY_URL.to_string(),
+                true,
+            )
+        } else {
+            (self.settings_state.registry_url.clone(), false)
+        };
+        let color = if is_default {
+            theme.text_muted
+        } else {
+            theme.text
+        };
+
+        let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.open_registry_url_edit(cx);
+        });
+
+        div()
+            .id("registry-url-edit")
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .text_size(px(styles::font_size::BODY))
+            .text_color(color)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(primary))
+            .on_click(listener)
+            .child(display)
+    }
+
+    /// The "Test connection" button for the registry URL and the result of the
+    /// last probe, shown inline so a bad URL is obvious before it is saved.
+    fn render_registry_actions(
+        &self,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let danger = theme.danger;
+        let success = theme.success;
+        let text_muted = theme.text_muted;
+
+        let testing = self.settings_state.registry_testing;
+        let test_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.test_registry(cx);
+        });
+
+        let mut row = div().flex().flex_col().gap(px(styles::spacing::SM));
+        row = row.child(div().flex().flex_row().child(action_button(
+            "registry-test-btn",
+            "Test connection",
+            !testing,
+            false,
+            theme,
+            Box::new(test_listener),
+        )));
+
+        if testing {
+            row = row.child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(text_muted)
+                    .child("Checking the registry…"),
+            );
+        } else if let Some(ref err) = self.settings_state.registry_test_error {
+            row = row.child(banner(err, danger, true));
+        } else if let Some(count) = self.settings_state.registry_test_count {
+            row = row.child(banner(
+                &format!("Loaded {count} adapters from the registry."),
+                success,
+                false,
+            ));
+        }
+
+        row
+    }
+
     fn editable_field_display(
         &self,
         key: &str,
         label: &str,
         field_type: &ConfigFieldType,
         display: String,
+        origin: ValueOrigin,
         theme: &theme::Theme,
         cx: &mut Context<App>,
     ) -> gpui::AnyElement {
+        // A value that is actually set — typed as an override or read from the
+        // manager's config file — reads as set. Only a manifest default (with
+        // nothing concrete behind it) is muted and tagged, so a default can be
+        // told apart from a value that is genuinely in place.
+        let muted = matches!(origin, ValueOrigin::Default | ValueOrigin::Unset);
+        let color = if muted { theme.text_muted } else { theme.text };
         let text_muted = theme.text_muted;
         let primary = theme.primary;
         let key_owned = key.to_string();
@@ -545,15 +703,30 @@ impl App {
         let listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
             app.open_settings_edit(&key_owned, &label_owned, field_type_owned.clone(), cx);
         });
-        div()
+
+        let mut cell = div()
             .id(SharedString::from(format!("cfg-edit-{key}")))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(styles::spacing::XS))
             .text_size(px(styles::font_size::BODY))
-            .text_color(text_muted)
+            .text_color(color)
             .cursor_pointer()
             .hover(move |s| s.text_color(primary))
             .on_click(listener)
-            .child(display)
-            .into_any_element()
+            .child(display);
+
+        if origin == ValueOrigin::Default {
+            cell = cell.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child("default"),
+            );
+        }
+
+        cell.into_any_element()
     }
 
     fn render_config_field_row(
@@ -561,7 +734,8 @@ impl App {
         key: &str,
         label: &str,
         field_type: &ConfigFieldType,
-        value: Option<&ConfigValue>,
+        edit: Option<&ConfigValue>,
+        current: Option<&ConfigValue>,
         default: Option<&ConfigValue>,
         aeris_managed: bool,
         theme: &theme::Theme,
@@ -569,10 +743,9 @@ impl App {
     ) -> Div {
         let value_display: gpui::AnyElement = match field_type {
             ConfigFieldType::Toggle => {
-                let checked = match value {
-                    Some(ConfigValue::Bool(v)) => *v,
-                    _ => matches!(default, Some(ConfigValue::Bool(true))),
-                };
+                let checked = as_bool(edit)
+                    .or_else(|| as_bool(current))
+                    .unwrap_or_else(|| matches!(default, Some(ConfigValue::Bool(true))));
                 let key_owned = key.to_string();
                 let toggle_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
                     app.toggle_adapter_config(&key_owned, cx);
@@ -585,30 +758,24 @@ impl App {
                 )
                 .into_any_element()
             }
-            ConfigFieldType::Text | ConfigFieldType::PathList | ConfigFieldType::ExecutablePath => {
-                let display = match value {
-                    Some(ConfigValue::String(s)) => s.clone(),
-                    _ => "(not set)".to_string(),
-                };
-                self.editable_field_display(key, label, field_type, display, theme, cx)
-            }
-            ConfigFieldType::Number => {
-                let display = match value {
-                    Some(ConfigValue::String(s)) => s.clone(),
-                    Some(ConfigValue::Integer(n)) => n.to_string(),
-                    _ => "(not set)".to_string(),
-                };
-                self.editable_field_display(key, label, field_type, display, theme, cx)
-            }
-            ConfigFieldType::Select(_options) => {
-                let display = match value {
-                    Some(ConfigValue::String(s)) => s.clone(),
-                    _ => match default {
-                        Some(ConfigValue::String(s)) => s.clone(),
-                        _ => "(not set)".to_string(),
-                    },
-                };
-                self.editable_field_display(key, label, field_type, display, theme, cx)
+            ConfigFieldType::Text
+            | ConfigFieldType::PathList
+            | ConfigFieldType::ExecutablePath
+            | ConfigFieldType::Number
+            | ConfigFieldType::Select(_) => {
+                // The value in effect — an override, the manager's current
+                // value, or a manifest default — is always shown. Only an
+                // override is styled as set; anything inherited is muted.
+                let (display, origin) = resolved_display(edit, current, default);
+                self.editable_field_display(
+                    key,
+                    label,
+                    field_type,
+                    display,
+                    origin,
+                    theme,
+                    cx,
+                )
             }
         };
 
@@ -649,6 +816,57 @@ fn field_row(label: &str, value: AnyElement) -> Div {
                 .child(label.to_string()),
         )
         .child(value)
+}
+
+/// Format a single config value for display.
+fn format_config_value(v: &ConfigValue) -> String {
+    match v {
+        ConfigValue::String(s) => s.clone(),
+        ConfigValue::Integer(n) => n.to_string(),
+        ConfigValue::Bool(b) => b.to_string(),
+        ConfigValue::StringList(list) => list.join(", "),
+    }
+}
+
+fn as_bool(v: Option<&ConfigValue>) -> Option<bool> {
+    match v {
+        Some(ConfigValue::Bool(b)) => Some(*b),
+        _ => None,
+    }
+}
+
+/// Where a field's displayed value comes from, which decides how it is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValueOrigin {
+    /// Typed by the user as an override this session.
+    Override,
+    /// Read from the manager's current configuration file.
+    Current,
+    /// The manifest's default, with nothing actually set.
+    Default,
+    /// Nothing to show.
+    Unset,
+}
+
+/// The text to show for a field and where it comes from. An override the user
+/// typed is shown as set; failing that, the manager's current value or a
+/// manifest default is shown muted, so the row always reflects what is in
+/// effect without filling the editor input.
+fn resolved_display(
+    edit: Option<&ConfigValue>,
+    current: Option<&ConfigValue>,
+    default: Option<&ConfigValue>,
+) -> (String, ValueOrigin) {
+    match edit {
+        Some(v) => (format_config_value(v), ValueOrigin::Override),
+        None => match current {
+            Some(v) => (format_config_value(v), ValueOrigin::Current),
+            None => match default {
+                Some(v) => (format_config_value(v), ValueOrigin::Default),
+                None => ("(not set)".to_string(), ValueOrigin::Unset),
+            },
+        },
+    }
 }
 
 fn subsection_header(name: &str, color: Hsla) -> Div {

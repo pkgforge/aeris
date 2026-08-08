@@ -3,7 +3,7 @@ use std::{fmt::Write, path::PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const DEFAULT_REGISTRY_URL: &str =
+pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/pkgforge/aeris-registry/main/registry.toml";
 
 #[derive(Debug, Deserialize)]
@@ -43,18 +43,12 @@ fn adapter_path(id: &str) -> PathBuf {
         .join(format!("{id}.toml"))
 }
 
+/// Read the registry from an HTTP(S) URL or a local path, falling back to
+/// the built-in default when no source is given.
 pub fn fetch_registry(url: Option<&str>) -> Result<Registry, String> {
     let url = url.unwrap_or(DEFAULT_REGISTRY_URL);
 
-    let resp = ureq::get(url)
-        .call()
-        .map_err(|e| format!("Failed to fetch registry: {e}"))?;
-
-    let body = resp
-        .into_body()
-        .read_to_string()
-        .map_err(|e| format!("Failed to read registry response: {e}"))?;
-
+    let body = read_text(url)?;
     let registry: Registry =
         toml::from_str(&body).map_err(|e| format!("Failed to parse registry: {e}"))?;
 
@@ -64,13 +58,14 @@ pub fn fetch_registry(url: Option<&str>) -> Result<Registry, String> {
 /// Fetch an adapter's manifest and put it where aeris looks for one.
 ///
 /// A manifest is read before it is kept, so a broken one is refused here
-/// rather than at the next start.
+/// rather than at the next start. The manifest URL may point at the network
+/// or at a local file.
 pub fn download_plugin(entry: &PluginEntry) -> Result<PathBuf, String> {
     if entry.manifest_url.is_empty() {
         return Err(format!("{} offers no manifest", entry.id));
     }
 
-    let manifest = download_bytes(&entry.manifest_url)?;
+    let manifest = read_bytes(&entry.manifest_url)?;
     if !entry.manifest_checksum_sha256.is_empty() {
         verify_checksum(&manifest, &entry.manifest_checksum_sha256)?;
     }
@@ -113,14 +108,38 @@ pub fn installed_plugin_version(id: &str) -> Option<String> {
     (!manifest.version.is_empty()).then_some(manifest.version)
 }
 
-fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let resp = ureq::get(url)
-        .call()
-        .map_err(|e| format!("Download failed: {e}"))?;
+/// Whether a source is fetched over HTTP rather than read from disk.
+fn is_remote(source: &str) -> bool {
+    source.starts_with("http://") || source.starts_with("https://")
+}
 
-    resp.into_body()
-        .read_to_vec()
-        .map_err(|e| format!("Failed to read download body: {e}"))
+/// Turn a source into a path, dropping a `file://` prefix and expanding `~`.
+fn local_path(source: &str) -> PathBuf {
+    let stripped = source.strip_prefix("file://").unwrap_or(source);
+    shellexpand::tilde(stripped).to_string().into()
+}
+
+/// Read bytes from an HTTP(S) URL or a local file.
+fn read_bytes(source: &str) -> Result<Vec<u8>, String> {
+    if is_remote(source) {
+        let resp = ureq::get(source)
+            .call()
+            .map_err(|e| format!("Download failed: {e}"))?;
+
+        return resp
+            .into_body()
+            .read_to_vec()
+            .map_err(|e| format!("Failed to read download body: {e}"));
+    }
+
+    let path = local_path(source);
+    std::fs::read(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))
+}
+
+/// Read text from an HTTP(S) URL or a local file.
+fn read_text(source: &str) -> Result<String, String> {
+    let bytes = read_bytes(source)?;
+    String::from_utf8(bytes).map_err(|e| format!("{source} is not valid UTF-8: {e}"))
 }
 
 fn verify_checksum(data: &[u8], expected_hex: &str) -> Result<(), String> {
@@ -137,4 +156,42 @@ fn verify_checksum(data: &[u8], expected_hex: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_is_remote_and_a_path_is_not() {
+        assert!(is_remote("https://example.com/registry.toml"));
+        assert!(is_remote("http://example.com/registry.toml"));
+        assert!(!is_remote("/etc/aeris/registry.toml"));
+        assert!(!is_remote("./registry.toml"));
+        assert!(!is_remote("file:///etc/aeris/registry.toml"));
+    }
+
+    #[test]
+    fn a_local_registry_is_read_from_disk() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("aeris-registry-{nanos}.toml"));
+        std::fs::write(&path, "[registry]\nversion = 1\nupdated = \"now\"\n").unwrap();
+
+        let registry =
+            fetch_registry(Some(path.to_str().unwrap())).expect("should read the registry");
+        assert_eq!(registry.registry.version, 1);
+        assert!(registry.plugins.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_missing_local_registry_explains_itself() {
+        let err = fetch_registry(Some("/no/such/aeris-registry.toml"))
+            .expect_err("should not read a missing file");
+        assert!(err.contains("Failed to read"), "{err}");
+    }
 }

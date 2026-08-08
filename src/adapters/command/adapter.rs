@@ -592,6 +592,28 @@ impl Adapter for CommandAdapter {
         Ok(AdapterConfig { values })
     }
 
+    /// What the editor starts with: the values actually written to the
+    /// manager's configuration file. Declared defaults are deliberately not
+    /// folded in here, so a field still at its default reads as unset and is
+    /// shown (muted) from the schema rather than filled into the input.
+    fn initial_config(&self) -> Option<AdapterConfig> {
+        let path = self.file_paths().ok()?.get("config").cloned()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        let document: toml::Value = toml::from_str(&text).ok()?;
+
+        let values = self
+            .manifest
+            .config
+            .iter()
+            .filter_map(|setting| {
+                let value = document.get(&setting.key).and_then(to_value)?;
+                Some((setting.key.clone(), value))
+            })
+            .collect();
+
+        Some(AdapterConfig { values })
+    }
+
     async fn set_config(&self, config: &AdapterConfig) -> Result<()> {
         use toml_edit::DocumentMut;
 
@@ -1572,6 +1594,33 @@ fields = {{ config = "config", packages_config = "packages_config" }}
 
         let after = block_on(adapter.get_config()).expect("should read back");
         assert_eq!(after.values.get("limit"), Some(&ConfigValue::Integer(9)));
+    }
+
+    #[test]
+    fn initial_config_reads_what_is_written_without_the_defaults() {
+        let program = fake_manager("initial-config");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+        let path = format!("{}.config.toml", program.display());
+
+        // No file yet: nothing to start the editor with, even though the
+        // manifest declares defaults, which are shown separately.
+        let _ = std::fs::remove_file(&path);
+        assert!(adapter.initial_config().is_none());
+
+        // A value the manager wrote is read back; a key it did not write is
+        // not filled in from the manifest's default.
+        std::fs::write(&path, "limit = 9\n").unwrap();
+        let config = adapter
+            .initial_config()
+            .expect("should read the written file");
+        assert_eq!(config.values.get("limit"), Some(&ConfigValue::Integer(9)));
+        assert!(
+            config.values.get("parallel").is_none(),
+            "the manifest default should not be folded in"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

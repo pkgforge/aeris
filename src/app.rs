@@ -1653,9 +1653,11 @@ impl App {
         self.adapter_view.registry_loading = true;
         self.adapter_view.registry_error = None;
 
+        let registry_url = self.aeris_config.registry_url.clone();
+
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let result = crate::core::registry::fetch_registry(None);
+                let result = crate::core::registry::fetch_registry(registry_url.as_deref());
 
                 let _ = cx.update(|cx| {
                     this.update(cx, |app, cx| {
@@ -1743,6 +1745,13 @@ impl App {
             _ => "dashboard".to_string(),
         });
         self.aeris_config.notifications = Some(self.settings_state.notifications);
+        // An empty URL falls back to the default, so it is stored as nothing
+        // rather than as an empty string.
+        self.aeris_config.registry_url = if self.settings_state.registry_url.trim().is_empty() {
+            None
+        } else {
+            Some(self.settings_state.registry_url.trim().to_string())
+        };
 
         self.selected_theme = self.settings_state.selected_theme;
 
@@ -1757,6 +1766,41 @@ impl App {
         }
         self.settings_state.saving = false;
         cx.notify();
+    }
+
+    /// Fetch the registry from the URL currently in the box and report back
+    /// how many adapters it offers, or why it could not be read. The value is
+    /// tested as-is rather than waiting for a save, and a blank URL means the
+    /// default, so a source can be tried before it is committed.
+    pub fn test_registry(&mut self, cx: &mut Context<Self>) {
+        self.settings_state.registry_testing = true;
+        self.settings_state.registry_test_error = None;
+        self.settings_state.registry_test_count = None;
+
+        let url = self.settings_state.registry_url.trim().to_string();
+        let url = if url.is_empty() { None } else { Some(url) };
+
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let result = crate::core::registry::fetch_registry(url.as_deref());
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        app.settings_state.registry_testing = false;
+                        match result {
+                            Ok(registry) => {
+                                app.settings_state.registry_test_count =
+                                    Some(registry.plugins.len());
+                            }
+                            Err(e) => {
+                                app.settings_state.registry_test_error = Some(e);
+                            }
+                        }
+                        cx.notify();
+                    })
+                });
+            },
+        )
+        .detach();
     }
 
     pub fn save_adapter_settings(&mut self, cx: &mut Context<Self>) {
@@ -1805,20 +1849,27 @@ impl App {
 
     pub fn toggle_adapter_config(&mut self, key: &str, cx: &mut Context<Self>) {
         use crate::core::config::ConfigValue;
-        let current = self
-            .settings_state
-            .adapter_config
-            .values
-            .get(key)
-            .and_then(|v| match v {
-                ConfigValue::Bool(b) => Some(*b),
-                _ => None,
-            })
+        let as_bool = |v: Option<&ConfigValue>| match v {
+            Some(ConfigValue::Bool(b)) => Some(*b),
+            _ => None,
+        };
+        // Flip relative to the value in effect — an override, or else what the
+        // manager currently has — rather than the empty edit state.
+        let effective = as_bool(self.settings_state.adapter_config.values.get(key))
+            .or_else(|| as_bool(self.settings_state.current_config.values.get(key)))
             .unwrap_or(false);
-        self.settings_state
-            .adapter_config
-            .values
-            .insert(key.to_string(), ConfigValue::Bool(!current));
+        let next = !effective;
+
+        // Landing back on what the manager already has drops the override, so a
+        // no-op is not stored as a change.
+        if as_bool(self.settings_state.current_config.values.get(key)) == Some(next) {
+            self.settings_state.adapter_config.values.remove(key);
+        } else {
+            self.settings_state
+                .adapter_config
+                .values
+                .insert(key.to_string(), ConfigValue::Bool(next));
+        }
         self.settings_state.adapter_dirty =
             self.settings_state.adapter_config != self.settings_state.adapter_config_original;
         cx.notify();
@@ -1935,11 +1986,16 @@ impl App {
         cx: &mut Context<Self>,
     ) {
         use crate::core::config::ConfigValue;
-        let initial = self
+        // A value that is actually set — an override typed this session or
+        // read from the manager's config file — fills the input so it can be
+        // edited; only a pure default (nothing concrete) starts empty.
+        let value = self
             .settings_state
             .adapter_config
             .values
             .get(key)
+            .or_else(|| self.settings_state.current_config.values.get(key));
+        let initial = value
             .map(|v| match v {
                 ConfigValue::String(s) => s.clone(),
                 ConfigValue::Integer(n) => n.to_string(),
@@ -1954,9 +2010,30 @@ impl App {
             ti
         });
         self.settings_state.edit = Some(crate::views::settings::SettingsEdit {
+            scope: crate::views::settings::SettingsEditScope::Adapter,
             key: key.to_string(),
             label: label.to_string(),
             field_type,
+            input,
+        });
+        self.pending_settings_edit_focus = true;
+        cx.notify();
+    }
+
+    /// Open the shared settings editor for the registry URL, an Aeris-level
+    /// value rather than a field on the active adapter.
+    pub fn open_registry_url_edit(&mut self, cx: &mut Context<Self>) {
+        let initial = self.settings_state.registry_url.clone();
+        let input = cx.new(|cx| {
+            let mut ti = crate::components::TextInput::new(cx, "URL or local path");
+            ti.set_content(initial, cx);
+            ti
+        });
+        self.settings_state.edit = Some(crate::views::settings::SettingsEdit {
+            scope: crate::views::settings::SettingsEditScope::RegistryUrl,
+            key: "registry_url".to_string(),
+            label: "Registry URL".to_string(),
+            field_type: crate::core::config::ConfigFieldType::Text,
             input,
         });
         self.pending_settings_edit_focus = true;
@@ -1970,10 +2047,26 @@ impl App {
 
     pub fn apply_settings_edit(&mut self, raw: String, cx: &mut Context<Self>) {
         use crate::core::config::{ConfigFieldType, ConfigValue};
+        use crate::views::settings::SettingsEditScope;
         let edit = match self.settings_state.edit.take() {
             Some(e) => e,
             None => return,
         };
+
+        // The registry URL is an Aeris-level string rather than an adapter
+        // field, so it is written back to the Aeris settings rather than to
+        // the adapter config. An empty value means "use the default".
+        if edit.scope == SettingsEditScope::RegistryUrl {
+            let trimmed = raw.trim().to_string();
+            let changed = self.settings_state.registry_url != trimmed;
+            self.settings_state.registry_url = trimmed;
+            if changed {
+                self.settings_state.aeris_dirty = true;
+            }
+            cx.notify();
+            return;
+        }
+
         let new_value = match edit.field_type {
             ConfigFieldType::Number => match raw.trim().parse::<i64>() {
                 Ok(n) => ConfigValue::Integer(n),
@@ -1986,10 +2079,25 @@ impl App {
             ConfigFieldType::Toggle => return,
             _ => ConfigValue::String(raw),
         };
-        self.settings_state
-            .adapter_config
+        // An empty value, or one that matches what the manager already has on
+        // disk, means "no override": the key is dropped rather than stored, so
+        // clearing the box or saving an unchanged value leaves the field as it is.
+        let is_empty_text =
+            matches!(&new_value, ConfigValue::String(s) if s.trim().is_empty());
+        let matches_current = self
+            .settings_state
+            .current_config
             .values
-            .insert(edit.key, new_value);
+            .get(&edit.key)
+            .is_some_and(|current| current == &new_value);
+        if is_empty_text || matches_current {
+            self.settings_state.adapter_config.values.remove(&edit.key);
+        } else {
+            self.settings_state
+                .adapter_config
+                .values
+                .insert(edit.key, new_value);
+        }
         self.settings_state.adapter_dirty =
             self.settings_state.adapter_config != self.settings_state.adapter_config_original;
         cx.notify();

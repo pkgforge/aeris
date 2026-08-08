@@ -11,6 +11,10 @@ pub struct AerisConfig {
     pub startup_view: Option<String>,
     pub default_adapter: Option<String>,
     pub notifications: Option<bool>,
+    /// Where the adapter registry is read from: an HTTP(S) URL or a local
+    /// path (a bare path or a `file://` URL). Falls back to the built-in
+    /// default when unset.
+    pub registry_url: Option<String>,
     #[serde(default)]
     pub adapters: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
