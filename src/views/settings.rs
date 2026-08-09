@@ -162,9 +162,10 @@ impl App {
         let appearance_card = self.section_card(
             "Appearance",
             Some("How Aeris looks on your system."),
-            vec![
-                field_row("Theme", self.render_theme_selector(theme, cx).into_any_element()),
-            ],
+            vec![field_row(
+                "Theme",
+                self.render_theme_selector(theme, cx).into_any_element(),
+            )],
             theme,
         );
 
@@ -182,7 +183,8 @@ impl App {
                 ),
                 field_row(
                     "Notifications",
-                    self.render_notifications_toggle(theme, cx).into_any_element(),
+                    self.render_notifications_toggle(theme, cx)
+                        .into_any_element(),
                 ),
             ],
             theme,
@@ -227,10 +229,7 @@ impl App {
             aeris_section = aeris_section.child(banner("Saved", success, false));
         }
 
-        let mut adapter_section = div()
-            .flex()
-            .flex_col()
-            .gap(px(styles::spacing::MD));
+        let mut adapter_section = div().flex().flex_col().gap(px(styles::spacing::MD));
 
         if let Some(schema) = self.settings_state.adapter_schema.clone() {
             let mut capitalized = schema.adapter_id.clone();
@@ -263,8 +262,7 @@ impl App {
                     ),
             );
 
-            adapter_section =
-                adapter_section.child(self.render_adapter_fields(&schema, theme, cx));
+            adapter_section = adapter_section.child(self.render_adapter_fields(&schema, theme, cx));
 
             adapter_section = adapter_section.child(self.render_adapter_actions(theme, cx));
 
@@ -384,11 +382,7 @@ impl App {
             let field_section = field.section.clone();
             if current_section.as_ref() != Some(&field_section) {
                 if !group.is_empty() {
-                    card = card.child(flush_group(
-                        std::mem::take(&mut group),
-                        first_group,
-                        border,
-                    ));
+                    card = card.child(flush_group(std::mem::take(&mut group), first_group, border));
                     first_group = false;
                 }
                 if let Some(ref name) = field_section {
@@ -442,33 +436,22 @@ impl App {
         card
     }
 
-    fn render_aeris_actions(
-        &self,
-        theme: &theme::Theme,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_aeris_actions(&self, theme: &theme::Theme, cx: &mut Context<Self>) -> Div {
         let save_enabled = self.settings_state.aeris_dirty && !self.settings_state.saving;
         let save_aeris = cx.listener(|app, _: &ClickEvent, _window, cx| {
             app.save_aeris_settings(cx);
         });
-        div()
-            .flex()
-            .flex_row()
-            .child(action_button(
-                "save-aeris-btn",
-                "Save Aeris Settings",
-                save_enabled,
-                true,
-                theme,
-                Box::new(save_aeris),
-            ))
+        div().flex().flex_row().child(action_button(
+            "save-aeris-btn",
+            "Save Aeris Settings",
+            save_enabled,
+            true,
+            theme,
+            Box::new(save_aeris),
+        ))
     }
 
-    fn render_adapter_actions(
-        &self,
-        theme: &theme::Theme,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_adapter_actions(&self, theme: &theme::Theme, cx: &mut Context<Self>) -> Div {
         let save_enabled = self.settings_state.adapter_dirty && !self.settings_state.saving;
         let revert_enabled = self.settings_state.adapter_dirty;
 
@@ -535,7 +518,11 @@ impl App {
                         listener: Box<
             dyn Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
         >| {
-            let btn_bg = if is_active { primary } else { transparent_black() };
+            let btn_bg = if is_active {
+                primary
+            } else {
+                transparent_black()
+            };
             let text = if is_active { gpui::white() } else { text_color };
 
             div()
@@ -635,11 +622,7 @@ impl App {
 
     /// The "Test connection" button for the registry URL and the result of the
     /// last probe, shown inline so a bad URL is obvious before it is saved.
-    fn render_registry_actions(
-        &self,
-        theme: &theme::Theme,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_registry_actions(&self, theme: &theme::Theme, cx: &mut Context<Self>) -> Div {
         let danger = theme.danger;
         let success = theme.success;
         let text_muted = theme.text_muted;
@@ -767,15 +750,7 @@ impl App {
                 // value, or a manifest default — is always shown. Only an
                 // override is styled as set; anything inherited is muted.
                 let (display, origin) = resolved_display(edit, current, default);
-                self.editable_field_display(
-                    key,
-                    label,
-                    field_type,
-                    display,
-                    origin,
-                    theme,
-                    cx,
-                )
+                self.editable_field_display(key, label, field_type, display, origin, theme, cx)
             }
         };
 

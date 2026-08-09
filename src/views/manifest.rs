@@ -221,11 +221,7 @@ impl App {
             .on_click(reload_listener)
             .child(if is_loading { "Reloading…" } else { "Reload" });
 
-        let apply_label = if applying {
-            "Applying…"
-        } else {
-            "Apply"
-        };
+        let apply_label = if applying { "Applying…" } else { "Apply" };
         let apply_bg = if apply_enabled { primary } else { surface };
         let apply_fg = if apply_enabled {
             gpui::white()
@@ -406,19 +402,18 @@ impl App {
                 .child(summary)
         });
 
-        let apply_error_card: Option<Div> =
-            self.manifest_state.apply_error.as_ref().map(|err| {
-                div()
-                    .px(px(styles::spacing::LG))
-                    .py(px(styles::spacing::SM))
-                    .rounded(px(styles::radius::MD))
-                    .bg(danger.opacity(0.12))
-                    .border_1()
-                    .border_color(danger.opacity(0.3))
-                    .text_size(px(styles::font_size::SMALL))
-                    .text_color(danger)
-                    .child(format!("Apply failed: {err}"))
-            });
+        let apply_error_card: Option<Div> = self.manifest_state.apply_error.as_ref().map(|err| {
+            div()
+                .px(px(styles::spacing::LG))
+                .py(px(styles::spacing::SM))
+                .rounded(px(styles::radius::MD))
+                .bg(danger.opacity(0.12))
+                .border_1()
+                .border_color(danger.opacity(0.3))
+                .text_size(px(styles::font_size::SMALL))
+                .text_color(danger)
+                .child(format!("Apply failed: {err}"))
+        });
 
         let body: AnyElement = match &self.manifest_state.status {
             ManifestStatus::Idle | ManifestStatus::Loading => empty_panel(
@@ -438,20 +433,14 @@ impl App {
                 Box::new(import_listener_empty),
             )
             .into_any_element(),
-            ManifestStatus::ParseError(err) => banner_panel(
-                "Manifest parse error",
-                err.as_str(),
-                danger,
-                border,
-            )
-            .into_any_element(),
-            ManifestStatus::Failed(err) => banner_panel(
-                "Failed to load manifest",
-                err.as_str(),
-                danger,
-                border,
-            )
-            .into_any_element(),
+            ManifestStatus::ParseError(err) => {
+                banner_panel("Manifest parse error", err.as_str(), danger, border)
+                    .into_any_element()
+            }
+            ManifestStatus::Failed(err) => {
+                banner_panel("Failed to load manifest", err.as_str(), danger, border)
+                    .into_any_element()
+            }
             ManifestStatus::Loaded(diff) => {
                 let diff = diff.clone();
                 render_diff_sections(diff, theme, primary, warning, success, danger, cx)
@@ -544,7 +533,12 @@ fn render_diff_sections(
             warning,
             theme,
         ))
-        .child(summary_chip("undeclared", diff.to_remove.len(), danger, theme))
+        .child(summary_chip(
+            "undeclared",
+            diff.to_remove.len(),
+            danger,
+            theme,
+        ))
         .child(summary_chip("in sync", diff.in_sync.len(), success, theme))
         .child(summary_chip(
             "unresolved",
@@ -687,12 +681,7 @@ fn diff_section(
         }
         body = body.child(row);
     }
-    card.child(
-        div()
-            .w_full()
-            .px(px(styles::spacing::LG))
-            .child(body),
-    )
+    card.child(div().w_full().px(px(styles::spacing::LG)).child(body))
 }
 
 fn entry_row(
@@ -745,7 +734,11 @@ fn entry_row(
 
     match kind {
         DiffKind::Install => {
-            if let Some(ver) = entry.new_version.as_ref().or(entry.current_version.as_ref()) {
+            if let Some(ver) = entry
+                .new_version
+                .as_ref()
+                .or(entry.current_version.as_ref())
+            {
                 row = row.child(chip(ver, accent.opacity(0.2), accent.opacity(0.4), accent));
             } else {
                 row = row.child(
@@ -798,7 +791,9 @@ fn entry_row(
         });
         row = row.child(
             div()
-                .id(SharedString::from(format!("manifest-edit-{kind_prefix}-{idx}")))
+                .id(SharedString::from(format!(
+                    "manifest-edit-{kind_prefix}-{idx}"
+                )))
                 .px(px(styles::spacing::SM))
                 .py(px(styles::spacing::XXS))
                 .rounded(px(styles::radius::SM))
@@ -837,7 +832,9 @@ fn entry_row(
     });
     let _ = text_muted;
     div()
-        .id(SharedString::from(format!("manifest-row-{kind_prefix}-{idx}")))
+        .id(SharedString::from(format!(
+            "manifest-row-{kind_prefix}-{idx}"
+        )))
         .w_full()
         .min_w_0()
         .cursor_pointer()
@@ -1043,12 +1040,7 @@ fn name_section_with_actions(
         }
         body = body.child(clickable);
     }
-    card.child(
-        div()
-            .w_full()
-            .px(px(styles::spacing::LG))
-            .child(body),
-    )
+    card.child(div().w_full().px(px(styles::spacing::LG)).child(body))
 }
 
 fn summary_chip(label: &str, count: usize, color: Hsla, theme: &theme::Theme) -> Div {
@@ -1269,7 +1261,11 @@ pub fn build_manifest_edit_modal(
         version_input: make_input(
             cx,
             "version (* for latest)",
-            if snap.version.is_empty() { "*" } else { &snap.version },
+            if snap.version.is_empty() {
+                "*"
+            } else {
+                &snap.version
+            },
         ),
         pkg_id_input: make_input(cx, "optional pkg_id", &snap.pkg_id),
         repo_input: make_input(cx, "optional repository name", &snap.repo),
@@ -1308,7 +1304,11 @@ fn switch_pill(
             .rounded_full()
             .bg(gpui::white())
     } else {
-        div().w(px(16.0)).h(px(16.0)).rounded_full().bg(gpui::white())
+        div()
+            .w(px(16.0))
+            .h(px(16.0))
+            .rounded_full()
+            .bg(gpui::white())
     };
     div()
         .id("manifest-prune-switch")
@@ -1367,9 +1367,7 @@ fn missing_file_panel(
             div()
                 .text_size(px(styles::font_size::SMALL))
                 .text_color(text_muted)
-                .child(
-                    "Create an empty manifest or import your currently installed packages.",
-                ),
+                .child("Create an empty manifest or import your currently installed packages."),
         )
         .child(
             div()

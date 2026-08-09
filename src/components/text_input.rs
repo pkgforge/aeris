@@ -267,7 +267,12 @@ impl TextInput {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             let lh = window.line_height();
             let idx = self.index_for_mouse_position(event.position, lh);
@@ -644,11 +649,7 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let input = self.input.read(cx);
         let lines = if input.multiline {
-            input
-                .content
-                .split('\n')
-                .count()
-                .max(input.min_lines)
+            input.content.split('\n').count().max(input.min_lines)
         } else {
             1
         };
@@ -817,8 +818,16 @@ impl Element for TextElement {
             }
             for li in sel_start_line..=sel_end_line {
                 let line = &lines[li];
-                let left_local = if li == sel_start_line { sel_start_local } else { 0 };
-                let right_local = if li == sel_end_line { sel_end_local } else { line.len };
+                let left_local = if li == sel_start_line {
+                    sel_start_local
+                } else {
+                    0
+                };
+                let right_local = if li == sel_end_line {
+                    sel_end_local
+                } else {
+                    line.len
+                };
                 let left_x = line.x_for_index(left_local);
                 let right_x = if li == sel_end_line {
                     line.x_for_index(right_local)
@@ -829,10 +838,7 @@ impl Element for TextElement {
                 selections.push(fill(
                     Bounds::from_corners(
                         point(bounds.left() + left_x - scroll_offset, y_top),
-                        point(
-                            bounds.left() + right_x - scroll_offset,
-                            y_top + line_height,
-                        ),
+                        point(bounds.left() + right_x - scroll_offset, y_top + line_height),
                     ),
                     hsla(0.6, 0.8, 0.5, 0.2),
                 ));

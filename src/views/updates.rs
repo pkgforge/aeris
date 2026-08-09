@@ -183,10 +183,7 @@ impl App {
                 )
                 .into_any_element()
         } else {
-            let mut cards_col = div()
-                .flex()
-                .flex_col()
-                .gap(px(styles::spacing::SM));
+            let mut cards_col = div().flex().flex_col().gap(px(styles::spacing::SM));
 
             for (idx, update) in self.updates_state.updates.iter().enumerate() {
                 cards_col = cards_col.child(self.render_update_card(update, idx, theme, cx));
@@ -221,9 +218,7 @@ impl App {
                             div()
                                 .text_size(px(styles::font_size::SMALL))
                                 .text_color(text_muted)
-                                .child(format!(
-                                    "{adapter_name} cannot detect available updates."
-                                )),
+                                .child(format!("{adapter_name} cannot detect available updates.")),
                         ),
                 );
             }

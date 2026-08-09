@@ -2082,8 +2082,7 @@ impl App {
         // An empty value, or one that matches what the manager already has on
         // disk, means "no override": the key is dropped rather than stored, so
         // clearing the box or saving an unchanged value leaves the field as it is.
-        let is_empty_text =
-            matches!(&new_value, ConfigValue::String(s) if s.trim().is_empty());
+        let is_empty_text = matches!(&new_value, ConfigValue::String(s) if s.trim().is_empty());
         let matches_current = self
             .settings_state
             .current_config
