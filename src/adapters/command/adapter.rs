@@ -988,6 +988,13 @@ fn scoped_capabilities(
         can_list: has(OP_LIST) || has(OP_LIST_INSTALLED),
         can_list_updates: has(OP_LIST_UPDATES),
         can_sync: has(OP_SYNC),
+        // Running a package means finding the commands it put on the path, so
+        // a manager has to say both where the package went and where it links
+        // what it installs.
+        can_run: has(OP_PATHS)
+            && manifest
+                .op(OP_LIST_INSTALLED)
+                .is_some_and(|op| op.fields.contains_key("path")),
         can_add_repo: has(OP_ADD_REPO),
         can_remove_repo: has(OP_REMOVE_REPO),
         can_list_repos: has(OP_LIST_REPOS),
@@ -1340,6 +1347,70 @@ progress = { event = "type", current = "current", total = "total", message = "pk
         assert!(!capabilities.can_remove);
         assert!(!capabilities.can_list_updates);
         assert!(capabilities.has_size_info);
+    }
+
+    #[test]
+    fn running_needs_both_a_bin_directory_and_a_package_path() {
+        let both = manifest(
+            r#"
+schema_version = 1
+id = "demo"
+name = "Demo"
+
+[detect]
+command = "demo"
+
+[ops.paths]
+args = ["paths"]
+output = { format = "json" }
+fields = { bin = "bin" }
+
+[ops.list_installed]
+args = ["installed"]
+output = { format = "json" }
+fields = { name = "name", path = "installed_path" }
+"#,
+        );
+        assert!(capabilities_from(&both).can_run);
+
+        let no_path = manifest(
+            r#"
+schema_version = 1
+id = "demo"
+name = "Demo"
+
+[detect]
+command = "demo"
+
+[ops.paths]
+args = ["paths"]
+output = { format = "json" }
+fields = { bin = "bin" }
+
+[ops.list_installed]
+args = ["installed"]
+output = { format = "json" }
+fields = { name = "name" }
+"#,
+        );
+        assert!(!capabilities_from(&no_path).can_run);
+
+        let no_paths_op = manifest(
+            r#"
+schema_version = 1
+id = "demo"
+name = "Demo"
+
+[detect]
+command = "demo"
+
+[ops.list_installed]
+args = ["installed"]
+output = { format = "json" }
+fields = { name = "name", path = "installed_path" }
+"#,
+        );
+        assert!(!capabilities_from(&no_paths_op).can_run);
     }
 
     #[test]

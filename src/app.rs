@@ -2312,40 +2312,59 @@ impl App {
             return;
         }
 
-        let bin_path = match active_bin_path(&self.paths) {
-            Some(p) => p,
-            None => {
-                self.add_toast(
-                    ToastLevel::Error,
-                    "Could not locate active profile bin directory".into(),
-                );
-                return;
-            }
-        };
-        let binaries = list_package_binaries(&install_path, &bin_path);
         let package_key = installed.unique_key();
-        match binaries.len() {
-            0 => self.add_toast(
-                ToastLevel::Error,
-                format!(
-                    "No binaries from {} are exposed in {}",
-                    install_path.display(),
-                    bin_path.display()
-                ),
-            ),
-            1 => {
-                let path = binaries.into_iter().next().unwrap();
-                self.spawn_binary(&path, &package_key);
-            }
-            _ => {
-                self.run_picker = Some(RunPicker {
-                    package_name: installed.package.name.clone(),
-                    binaries,
-                    package_key,
+        let package_name = installed.package.name.clone();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                // Where a manager links what it installs is its own business,
+                // so the package's own adapter is asked rather than assuming
+                // every package went where the built-in one puts things.
+                let paths = crate::tokio_spawn(async move { adapter.paths().await })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
+                    });
+
+                let _ = cx.update(|cx| {
+                    this.update(cx, |app, cx| {
+                        let Some(bin_path) = paths.as_ref().ok().and_then(active_bin_path) else {
+                            app.add_toast(
+                                ToastLevel::Error,
+                                format!(
+                                    "{package_name} cannot be run: its manager did not say where it links commands"
+                                ),
+                            );
+                            return;
+                        };
+
+                        let binaries = list_package_binaries(&install_path, &bin_path);
+                        match binaries.len() {
+                            0 => app.add_toast(
+                                ToastLevel::Error,
+                                format!(
+                                    "No binaries from {} are exposed in {}",
+                                    install_path.display(),
+                                    bin_path.display()
+                                ),
+                            ),
+                            1 => {
+                                let path = binaries.into_iter().next().unwrap();
+                                app.spawn_binary(&path, &package_key);
+                            }
+                            _ => {
+                                app.run_picker = Some(RunPicker {
+                                    package_name,
+                                    binaries,
+                                    package_key,
+                                });
+                            }
+                        }
+                        cx.notify();
+                    })
                 });
-                cx.notify();
-            }
-        }
+            },
+        )
+        .detach();
     }
 
     pub(crate) fn spawn_binary(&mut self, path: &std::path::Path, package_key: &str) {
