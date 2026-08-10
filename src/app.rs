@@ -2951,7 +2951,7 @@ impl Render for App {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(self.render_header(&theme, cx))
+                    .child(self.render_header(&theme, window, cx))
                     .child(self.render_content(&theme, cx)),
             );
 
@@ -3575,6 +3575,10 @@ impl Render for App {
             root = root.child(self.render_manifest_edit_modal(&theme, cx));
         }
 
+        // Last, so the edges sit over everything and a dialog cannot swallow
+        // the only way left to resize the window.
+        root = root.children(self.render_resize_edges(window));
+
         root
     }
 }
@@ -4033,9 +4037,16 @@ impl App {
             .border_r_1()
             .border_color(theme.border)
             .child(
+                // The name sits level with the header, so an undecorated
+                // window can be dragged by either.
                 div()
                     .px(px(styles::spacing::LG))
                     .py(px(styles::spacing::XL))
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        if App::draws_own_decorations(window) {
+                            window.start_window_move();
+                        }
+                    })
                     .child(
                         div()
                             .text_size(px(styles::font_size::TITLE))
@@ -4076,7 +4087,12 @@ impl App {
             )
     }
 
-    fn render_header(&mut self, theme: &theme::Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(
+        &mut self,
+        theme: &theme::Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mode_label = match self.current_mode {
             PackageMode::User => "User",
             PackageMode::System => "System",
@@ -4098,6 +4114,7 @@ impl App {
         };
 
         let mut header = div()
+            .id("app-header")
             .w_full()
             .px(px(styles::spacing::XXL))
             .py(px(styles::spacing::MD))
@@ -4115,8 +4132,30 @@ impl App {
                     .child(format!("{}", self.current_view)),
             );
 
+        // With no bar of its own, this row is what the window is dragged by.
+        if Self::draws_own_decorations(window) {
+            header = header
+                .on_mouse_down(MouseButton::Left, |_, window, _| {
+                    window.start_window_move();
+                })
+                .on_click(|event, window, _| {
+                    if event.click_count() == 2 {
+                        window.zoom_window();
+                    }
+                });
+        }
+
+        // Everything other than the view's name belongs together on the
+        // right. Left as separate children, the row would space them out and
+        // strand the mode toggle in the middle.
+        let mut trailing = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(styles::spacing::MD));
+
         if let Some(indicator) = op_indicator {
-            header = header.child(indicator);
+            trailing = trailing.child(indicator);
         }
 
         if let Some((adapter_id, completed, total, failed)) = self.batch_progress.clone() {
@@ -4125,7 +4164,7 @@ impl App {
             } else {
                 format!("{adapter_id} batch: {completed}/{total}")
             };
-            header = header.child(
+            trailing = trailing.child(
                 div()
                     .px(px(styles::spacing::MD))
                     .py(px(styles::spacing::XXS))
@@ -4139,29 +4178,34 @@ impl App {
         // Offered only where the manager says it can act system wide, which
         // needs privileges nothing here knows how to ask for otherwise.
         // Worth offering only when there is more than one way to work.
-        if !(self.any_adapter_works_in(PackageMode::User)
-            && self.any_adapter_works_in(PackageMode::System))
+        if self.any_adapter_works_in(PackageMode::User)
+            && self.any_adapter_works_in(PackageMode::System)
         {
-            return header;
+            let toggle_mode = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.toggle_mode(cx);
+            });
+
+            trailing = trailing.child(
+                div()
+                    .id("mode-toggle")
+                    .px(px(styles::spacing::MD))
+                    .py(px(styles::spacing::XXS))
+                    .rounded(px(styles::radius::FULL))
+                    .bg(theme.primary)
+                    .text_color(gpui::white())
+                    .text_size(px(styles::font_size::CAPTION))
+                    .cursor_pointer()
+                    // The header drags the window, so a control has to keep
+                    // its own press to itself.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(toggle_mode)
+                    .child(mode_label),
+            );
         }
 
-        let toggle_mode = cx.listener(|app, _: &ClickEvent, _window, cx| {
-            app.toggle_mode(cx);
-        });
-
-        header.child(
-            div()
-                .id("mode-toggle")
-                .px(px(styles::spacing::MD))
-                .py(px(styles::spacing::XXS))
-                .rounded(px(styles::radius::FULL))
-                .bg(theme.primary)
-                .text_color(gpui::white())
-                .text_size(px(styles::font_size::CAPTION))
-                .cursor_pointer()
-                .on_click(toggle_mode)
-                .child(mode_label),
-        )
+        header.child(trailing.children(self.window_controls(theme, window, cx)))
     }
 
     /// Whether any adapter in use works in the given scope.

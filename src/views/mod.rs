@@ -4,4 +4,5 @@ pub mod dashboard;
 pub mod installed;
 pub mod manifest;
 pub mod settings;
+pub mod titlebar;
 pub mod updates;
