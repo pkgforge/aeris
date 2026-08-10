@@ -32,6 +32,16 @@ pub enum ProgressEvent {
         adapter_id: AdapterId,
         message: String,
     },
+    /// The manager stopped to ask something and is waiting on the answer.
+    ///
+    /// Whatever is sent back is written to it as though typed. Dropping the
+    /// sender says nobody will answer, and the manager is given up on.
+    Asked {
+        adapter_id: AdapterId,
+        package_id: String,
+        question: String,
+        answer: std::sync::mpsc::Sender<String>,
+    },
     Completed {
         adapter_id: AdapterId,
         package_id: String,

@@ -1131,6 +1131,72 @@ struct Progress {
     pattern: Option<String>,
 }
 
+/// How long the manager has to go quiet before we look at what it left
+/// unfinished and consider whether it is waiting on us.
+const QUIET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long someone has to answer before the manager is given up on.
+const ANSWER_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A stop on how many times one run may ask, so a manager that keeps asking
+/// the same thing cannot go round forever.
+const MOST_QUESTIONS: usize = 20;
+
+/// Whether what a manager left unfinished reads as a question.
+///
+/// A question is the only thing worth interrupting for. A progress bar also
+/// leaves its line unfinished, and rewrites it for as long as the work takes,
+/// which is why silence alone says nothing.
+fn is_a_question(unfinished: &str) -> bool {
+    let asked = unfinished.trim();
+    if asked.is_empty() {
+        return false;
+    }
+
+    asked.contains('?') || {
+        let lowered = asked.to_lowercase();
+        ["[y/n]", "(y/n)", "[yes/no]"]
+            .iter()
+            .any(|form| lowered.contains(form))
+    }
+}
+
+/// Put the question to whoever is watching, and wait for what they say back.
+///
+/// The lines before it come too: a manager asking which of two things to
+/// install has just written out what they are, and the question alone would
+/// be unanswerable.
+fn answer_for(progress: &Progress, printed: &str, question: &str) -> Option<String> {
+    let context: Vec<&str> = printed
+        .lines()
+        .rev()
+        .take(14)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    let mut asked = context.join("\n");
+    if !asked.is_empty() {
+        asked.push('\n');
+    }
+    asked.push_str(question);
+
+    let (answer, given) = std::sync::mpsc::channel();
+    progress
+        .sender
+        .send(ProgressEvent::Asked {
+            adapter_id: progress.adapter_id.clone(),
+            package_id: progress.package_id.clone(),
+            question: asked,
+            answer,
+        })
+        .ok()?;
+
+    let said = given.recv_timeout(ANSWER_WINDOW).ok()?;
+    Some(format!("{said}\n"))
+}
+
 /// A manager's line, reduced to something worth putting on a button, or
 /// nothing when the line says nothing at all.
 fn stage_from(line: &str) -> Option<String> {
@@ -1217,32 +1283,105 @@ fn run_on_terminal(
     // finished: our own copy would hold the terminal open past its exit.
     drop(pty.slave);
 
-    let reader = pty
+    let mut reader = pty
         .master
         .try_clone_reader()
         .map_err(|e| AdapterError::Other(format!("could not read the terminal: {e}")))?;
+    let mut writer = pty
+        .master
+        .take_writer()
+        .map_err(|e| AdapterError::Other(format!("could not write to the terminal: {e}")))?;
+
+    // Read bytes rather than lines: a manager asking something leaves the
+    // question unfinished, with no newline behind it, and a reader waiting
+    // for one would sit on the very thing we need to see.
+    let (chunks, arriving) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = reader.read(&mut buffer) {
+            if read == 0 || chunks.send(buffer[..read].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
 
     let reporter = progress.map(Reporter::new);
     let mut printed = String::new();
+    // What the manager has written since its last newline. A question lives
+    // here until it is answered.
+    let mut unfinished = String::new();
+    let mut asked = 0usize;
 
-    for line in BufReader::new(reader)
-        .lines()
-        .map_while(std::result::Result::ok)
-    {
-        // A terminal ends its lines with a carriage return the reader leaves
-        // behind, and anything anchored to the end of a line would miss.
-        let line = line.trim_end_matches('\r');
-        let line = if strip_ansi {
-            output::strip_ansi(line)
-        } else {
-            line.to_string()
-        };
+    loop {
+        match arriving.recv_timeout(QUIET) {
+            Ok(chunk) => {
+                unfinished.push_str(&String::from_utf8_lossy(&chunk));
 
-        if let Some(reporter) = &reporter {
-            reporter.report(&line);
+                while let Some(at) = unfinished.find('\n') {
+                    let line: String = unfinished.drain(..=at).collect();
+                    let line = line.trim_end_matches(['\n', '\r']);
+                    let line = if strip_ansi {
+                        output::strip_ansi(line)
+                    } else {
+                        line.to_string()
+                    };
+
+                    if let Some(reporter) = &reporter {
+                        reporter.report(&line);
+                    }
+
+                    printed.push_str(&line);
+                    printed.push('\n');
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if child.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+
+                let question = output::strip_ansi(&unfinished);
+                if !is_a_question(&question) || asked >= MOST_QUESTIONS {
+                    continue;
+                }
+
+                let Some(progress) = progress else {
+                    // Nobody is listening, so nobody can answer.
+                    let _ = child.kill();
+                    return Err(AdapterError::Other(format!(
+                        "it asked something and there was nobody to answer: {}",
+                        question.trim()
+                    )));
+                };
+
+                asked += 1;
+                match answer_for(progress, &printed, question.trim()) {
+                    Some(answer) => {
+                        printed.push_str(question.trim());
+                        printed.push('\n');
+                        unfinished.clear();
+
+                        if writer.write_all(answer.as_bytes()).is_err() || writer.flush().is_err() {
+                            let _ = child.kill();
+                            return Err(AdapterError::Other(
+                                "the answer could not be given to it".into(),
+                            ));
+                        }
+                    }
+                    None => {
+                        let _ = child.kill();
+                        return Err(AdapterError::Other(format!(
+                            "it asked something that went unanswered: {}",
+                            question.trim()
+                        )));
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
+    }
 
-        printed.push_str(&line);
+    if !unfinished.trim().is_empty() {
+        printed.push_str(unfinished.trim_end());
         printed.push('\n');
     }
 
@@ -1931,6 +2070,12 @@ case "$1" in
     echo "SKULL ERROR: \"$2\" is not in the database"
     exit 0
     ;;
+  asks)
+    # Stops on an unfinished line, the way a manager putting a question does.
+    printf " 1. one thing\n 2. another thing\n Which do you choose? "
+    read -r answer
+    echo "chose $answer"
+    ;;
   terminal)
     # Gives up without a terminal, the way a manager that reads the
     # terminal's settings does.
@@ -2552,6 +2697,95 @@ output = {{ format = "lines" }}
         let long = stage_from(&"a".repeat(200)).expect("should say something");
         assert_eq!(long.chars().count(), STAGE_LIMIT);
         assert!(long.ends_with('\u{2026}'), "{long}");
+    }
+
+    #[test]
+    fn silence_alone_is_not_a_question() {
+        // A progress bar leaves its line unfinished for as long as the work
+        // takes, and interrupting that would be the common case, not the rare
+        // one.
+        assert!(!is_a_question(""));
+        assert!(!is_a_question("   "));
+        assert!(!is_a_question("hello-rhino 45%[=======>      ]"));
+        assert!(!is_a_question("Unpacking hello-rhino ..."));
+
+        assert!(is_a_question(" Which version you choose (press ENTER)?"));
+        assert!(is_a_question("Overwrite the existing file? [y/N]"));
+        assert!(is_a_question("Continue (y/n)"));
+    }
+
+    #[test]
+    fn a_manager_that_stops_to_ask_is_answered() {
+        let program = fake_manager("asks");
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+
+        let progress = Progress {
+            sender,
+            adapter_id: "demo".into(),
+            package_id: "cat".into(),
+            map: HashMap::new(),
+            format: Format::Lines,
+            pattern: None,
+        };
+
+        // Whoever is watching answers as soon as it is asked.
+        let answering = std::thread::spawn(move || {
+            while let Some(event) = events.blocking_recv() {
+                if let ProgressEvent::Asked {
+                    question, answer, ..
+                } = event
+                {
+                    assert!(question.contains("Which do you choose?"), "{question}");
+                    // The choices came along with it, or the question could
+                    // not be answered.
+                    assert!(question.contains("another thing"), "{question}");
+                    let _ = answer.send("2".to_string());
+                    return true;
+                }
+            }
+            false
+        });
+
+        let ran = run_on_terminal(
+            &program,
+            &["asks".to_string()],
+            false,
+            None,
+            Some(&progress),
+        )
+        .expect("should get through");
+
+        assert!(answering.join().unwrap_or(false), "should have been asked");
+        assert!(ran.printed.contains("chose 2"), "{}", ran.printed);
+    }
+
+    #[test]
+    fn a_question_nobody_answers_gives_up() {
+        let program = fake_manager("asks-unanswered");
+        let (sender, events) = tokio::sync::mpsc::unbounded_channel();
+
+        let progress = Progress {
+            sender,
+            adapter_id: "demo".into(),
+            package_id: "cat".into(),
+            map: HashMap::new(),
+            format: Format::Lines,
+            pattern: None,
+        };
+
+        // Nobody is listening, so the way back closes the moment it is asked.
+        drop(events);
+
+        let Err(err) = run_on_terminal(
+            &program,
+            &["asks".to_string()],
+            false,
+            None,
+            Some(&progress),
+        ) else {
+            panic!("should not wait forever on an answer that cannot come");
+        };
+        assert!(err.to_string().contains("unanswered"), "{err}");
     }
 
     #[test]

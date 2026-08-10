@@ -403,6 +403,9 @@ pub struct App {
     pub(crate) adapter_manager: AdapterManager,
     pub(crate) adapter_view: AdapterViewState,
     pub(crate) confirm_dialog: Option<ConfirmAction>,
+    /// What a manager stopped to ask, and the way back to it.
+    pub(crate) question: Option<Question>,
+    pub(crate) answer_input: Entity<crate::components::TextInput>,
     pub(crate) run_picker: Option<RunPicker>,
     /// Running processes launched via Run, keyed by package unique_key.
     pub(crate) running_processes: HashMap<String, Vec<RunningProcess>>,
@@ -460,6 +463,15 @@ fn readable(stage: &str) -> String {
 
 fn missing_manifest() -> String {
     "soar did not say where its packages file is".to_string()
+}
+
+/// A manager waiting on an answer, and the way to give it one.
+pub struct Question {
+    pub adapter_id: String,
+    pub package_id: String,
+    /// What it wrote before it stopped, the question last.
+    pub asked: String,
+    pub answer: std::sync::mpsc::Sender<String>,
 }
 
 /// Window during which a change arriving after one of our own writes is
@@ -638,6 +650,7 @@ impl App {
         };
 
         let search_input = cx.new(|cx| crate::components::TextInput::new(cx, "Search packages..."));
+        let answer_input = cx.new(|cx| crate::components::TextInput::new(cx, "Your answer..."));
 
         let (manifest_watcher_rx, manifest_watcher) =
             spawn_manifest_watcher(paths.get("packages_config").map(std::path::Path::new));
@@ -677,6 +690,8 @@ impl App {
             adapter_manager,
             adapter_view: AdapterViewState::default(),
             confirm_dialog: None,
+            question: None,
+            answer_input,
             run_picker: None,
             running_processes: HashMap::new(),
             next_run_id: 1,
@@ -2648,6 +2663,12 @@ impl App {
 
     /// Handle the Escape key. Closes the topmost overlay or clears selection.
     pub(crate) fn handle_escape(&mut self, cx: &mut Context<Self>) {
+        // Dropping the way back tells the manager nobody is going to answer,
+        // and it stops rather than waiting out its window.
+        if self.question.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self.settings_state.edit.is_some() {
             self.close_settings_edit(cx);
             return;
@@ -2685,6 +2706,13 @@ impl App {
 
     /// Handle Enter to confirm the active dialog.
     pub(crate) fn handle_confirm(&mut self, cx: &mut Context<Self>) {
+        // A manager waiting on an answer is holding everything else up, so
+        // it gets the key first.
+        if self.question.is_some() {
+            self.answer_question(cx);
+            return;
+        }
+
         if let Some(action) = self.confirm_dialog.take() {
             self.execute_confirmed_action(action, cx);
         }
@@ -2700,6 +2728,25 @@ impl App {
             created_at: Instant::now(),
             duration: Duration::from_secs(5),
         });
+    }
+
+    /// Give the manager what was typed, and let it get on with it.
+    pub(crate) fn answer_question(&mut self, cx: &mut Context<Self>) {
+        let Some(question) = self.question.take() else {
+            return;
+        };
+
+        let said = self.answer_input.read(cx).content().trim().to_string();
+        if question.answer.send(said).is_err() {
+            self.add_toast(
+                ToastLevel::Error,
+                "The manager stopped waiting for an answer".into(),
+            );
+        }
+
+        self.answer_input
+            .update(cx, |input, cx| input.set_content("", cx));
+        cx.notify();
     }
 
     fn cleanup_toasts(&mut self) {
@@ -2748,6 +2795,22 @@ impl App {
                 } => {
                     let key = progress_key(&adapter_id, &package_id);
                     self.record_progress(key, OperationStatus::Installing(readable(&phase)));
+                }
+                ProgressEvent::Asked {
+                    adapter_id,
+                    package_id,
+                    question,
+                    answer,
+                } => {
+                    self.answer_input
+                        .update(cx, |input, cx| input.set_content("", cx));
+                    self.question = Some(Question {
+                        adapter_id,
+                        package_id,
+                        asked: question,
+                        answer,
+                    });
+                    cx.notify();
                 }
                 ProgressEvent::Completed {
                     adapter_id,
@@ -2936,6 +2999,119 @@ impl Render for App {
                     .items_end()
                     .gap(px(styles::spacing::SM))
                     .children(toast_elements),
+            );
+        }
+
+        // A manager stopped to ask something. Nothing else can be answered
+        // until this is, since the manager is holding its terminal open
+        // waiting on us.
+        if let Some(question) = self.question.as_ref() {
+            let asked = question.asked.clone();
+            let surface = theme.surface;
+            let border = theme.border;
+            let primary = theme.primary;
+            let hover = theme.hover;
+            let text_muted = theme.text_muted;
+
+            let send = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                app.answer_question(cx);
+            });
+            let give_up = cx.listener(|app, _: &ClickEvent, _window, cx| {
+                // Dropping the way back tells the manager nobody will answer.
+                app.question = None;
+                cx.notify();
+            });
+
+            root = root.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(Hsla {
+                        h: 0.0,
+                        s: 0.0,
+                        l: 0.0,
+                        a: 0.5,
+                    })
+                    .child(
+                        div()
+                            .w(px(560.0))
+                            .p(px(styles::spacing::XXL))
+                            .rounded(px(styles::radius::LG))
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .flex()
+                            .flex_col()
+                            .gap(px(styles::spacing::MD))
+                            .child(
+                                div()
+                                    .text_size(px(styles::font_size::HEADING))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("The manager is asking"),
+                            )
+                            .child(
+                                div()
+                                    .max_h(px(260.0))
+                                    .overflow_hidden()
+                                    .p(px(styles::spacing::SM))
+                                    .rounded(px(styles::radius::MD))
+                                    .bg(theme.bg)
+                                    .border_1()
+                                    .border_color(border)
+                                    .text_size(px(styles::font_size::SMALL))
+                                    .text_color(text_muted)
+                                    .child(asked),
+                            )
+                            .child(
+                                div()
+                                    .px(px(styles::spacing::MD))
+                                    .py(px(styles::spacing::XS))
+                                    .rounded(px(styles::radius::MD))
+                                    .bg(theme.bg)
+                                    .border_1()
+                                    .border_color(border)
+                                    .child(self.answer_input.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(styles::spacing::SM))
+                                    .justify_end()
+                                    .child(
+                                        div()
+                                            .id("question-give-up")
+                                            .px(px(styles::spacing::LG))
+                                            .py(px(styles::spacing::XS))
+                                            .rounded(px(styles::radius::MD))
+                                            .bg(surface)
+                                            .border_1()
+                                            .border_color(border)
+                                            .cursor_pointer()
+                                            .text_size(px(styles::font_size::SMALL))
+                                            .hover(move |st| st.bg(hover))
+                                            .on_click(give_up)
+                                            .child("Give up"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("question-answer")
+                                            .px(px(styles::spacing::LG))
+                                            .py(px(styles::spacing::XS))
+                                            .rounded(px(styles::radius::MD))
+                                            .bg(primary)
+                                            .text_color(gpui::white())
+                                            .cursor_pointer()
+                                            .text_size(px(styles::font_size::SMALL))
+                                            .on_click(send)
+                                            .child("Answer"),
+                                    ),
+                            ),
+                    ),
             );
         }
 
