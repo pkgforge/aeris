@@ -908,7 +908,9 @@ impl App {
             .gap(px(styles::spacing::SM))
             .child(header)
             .child(desc)
-            .child(action)
+            // In a column every child is stretched to the full width, so the
+            // button needs a row of its own to be only as wide as its label.
+            .child(div().flex().flex_row().child(action))
     }
 
     fn render_capabilities(&self, caps: Capabilities, theme: &theme::Theme) -> impl IntoElement {

@@ -50,10 +50,7 @@ impl CommandAdapter {
     /// too old to speak the interface the manifest describes.
     pub fn new(manifest: CommandManifest, source: Option<PathBuf>) -> Result<Self> {
         let program = which::which(&manifest.detect.command).map_err(|_| {
-            AdapterError::PluginError(format!(
-                "{} describes {}, which is not installed",
-                manifest.id, manifest.detect.command
-            ))
+            AdapterError::PluginError(format!("{} is not installed", manifest.detect.command))
         })?;
 
         let found = detect_version(&program, &manifest);
@@ -62,8 +59,8 @@ impl CommandAdapter {
                 Some(found) if version::at_least(found, required) => {}
                 Some(found) => {
                     return Err(AdapterError::PluginError(format!(
-                        "{} is {found}, and {} needs {required} or newer",
-                        manifest.detect.command, manifest.id
+                        "{} is {found}, older than the {required} this needs",
+                        manifest.detect.command
                     )));
                 }
                 None => {

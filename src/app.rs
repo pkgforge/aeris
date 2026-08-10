@@ -1736,12 +1736,21 @@ impl App {
                                         app.add_toast(ToastLevel::Success, format!("Added {name}"));
                                     }
                                     // The manifest is sound but the manager it
-                                    // describes is missing or too old. Keeping
-                                    // it means installing that is enough.
-                                    Err(e) => app.add_toast(
-                                        ToastLevel::Error,
-                                        format!("Kept the manifest for {name}, but {e}"),
-                                    ),
+                                    // describes is missing or too old. It is
+                                    // kept either way, so installing that is
+                                    // all it takes.
+                                    Err(e) => {
+                                        use crate::core::adapter::AdapterError;
+
+                                        let reason = match &e {
+                                            AdapterError::PluginError(said) => said.clone(),
+                                            other => other.to_string(),
+                                        };
+                                        app.add_toast(
+                                            ToastLevel::Error,
+                                            format!("Added {name}, but {reason}"),
+                                        )
+                                    }
                                 }
                             }
                             Err(e) => app
