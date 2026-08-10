@@ -266,18 +266,70 @@ pub(crate) fn rank_results(results: &mut [crate::core::package::Package], query:
 
     results.sort_by_cached_key(|pkg| {
         let name = pkg.name.to_lowercase();
-        let tier = if name == query {
-            0u8
+        let (tier, score) = if name == query {
+            (0u8, 0)
         } else if name.starts_with(&query) {
-            1
+            (1, 0)
         } else if name.contains(&query) {
-            2
+            (2, 0)
+        } else if let Some(score) = subsequence_score(&name, &query) {
+            (3, score)
         } else {
-            3
+            (4, 0)
         };
 
-        (tier, name.len(), name, pkg.adapter_id.clone())
+        (
+            tier,
+            std::cmp::Reverse(score),
+            name.len(),
+            name,
+            pkg.adapter_id.clone(),
+        )
     });
+}
+
+/// How well a name answers a query typed as an abbreviation, or nothing when
+/// the query is not in there at all.
+///
+/// The letters have to appear in order. A letter scores most at the very
+/// start, well at the start of a word within the name, and little in the
+/// middle of one; running on unbroken from the last letter is worth as much
+/// again. The name's length is then taken off, so of two names holding the
+/// query the tighter one wins.
+///
+/// Letters are taken as they come rather than by looking for the best
+/// arrangement. That can score an awkward name slightly low, which costs an
+/// ordering rather than a result.
+fn subsequence_score(name: &str, query: &str) -> Option<u32> {
+    if query.is_empty() {
+        return None;
+    }
+
+    let name: Vec<char> = name.chars().collect();
+    let mut score = 0u32;
+    let mut from = 0usize;
+    let mut previous: Option<usize> = None;
+
+    for wanted in query.chars() {
+        let at = name[from..].iter().position(|c| *c == wanted)? + from;
+
+        score += if at == 0 {
+            16
+        } else if matches!(name[at - 1], '-' | '_' | '.' | ' ' | '/' | '+') {
+            8
+        } else {
+            1
+        };
+
+        if previous.is_some_and(|last| at == last + 1) {
+            score += 8;
+        }
+
+        previous = Some(at);
+        from = at + 1;
+    }
+
+    Some(score.saturating_sub(name.len().min(32) as u32))
 }
 
 /// A sentence accounting for the managers this scope leaves out, or nothing
@@ -4478,6 +4530,56 @@ mod tests {
                 ("ripgrep-all", "soar"),
             ]
         );
+    }
+
+    #[test]
+    fn a_name_answers_an_abbreviation_when_its_letters_are_in_order() {
+        use super::subsequence_score;
+
+        // The letters are there in order, so this is the whole point.
+        assert!(subsequence_score("ripgrep", "rgrep").is_some());
+        // And here they are not: there is no second `g`.
+        assert!(subsequence_score("grep", "rgrep").is_none());
+        assert!(subsequence_score("ripgrep", "").is_none());
+        assert!(subsequence_score("fd", "ripgrep").is_none());
+
+        // Of two names holding the query, the tighter one scores higher.
+        let tight = subsequence_score("ripgrep", "rgrep").unwrap();
+        let loose = subsequence_score("ripgrep-all", "rgrep").unwrap();
+        assert!(tight > loose, "{tight} should beat {loose}");
+
+        // Starting a word beats landing in the middle of one.
+        let boundary = subsequence_score("fd-find", "ff").unwrap();
+        let middle = subsequence_score("fdxfind", "ff").unwrap();
+        assert!(boundary > middle, "{boundary} should beat {middle}");
+    }
+
+    #[test]
+    fn an_abbreviation_outranks_a_name_that_does_not_hold_it() {
+        use super::rank_results;
+        use crate::core::package::Package;
+
+        let pkg = |name: &str| Package {
+            id: name.to_string(),
+            name: name.to_string(),
+            version: "1.0".into(),
+            adapter_id: "soar".into(),
+            description: None,
+            size: None,
+            homepage: None,
+            license: None,
+            installed: false,
+            update_available: false,
+            category: None,
+            tags: Vec::new(),
+            icon_url: None,
+        };
+
+        let mut results = vec![pkg("unrelated"), pkg("ripgrep-all"), pkg("ripgrep")];
+        rank_results(&mut results, "rgrep");
+
+        let order: Vec<&str> = results.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(order, vec!["ripgrep", "ripgrep-all", "unrelated"]);
     }
 
     #[test]
