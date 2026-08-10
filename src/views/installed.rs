@@ -238,10 +238,13 @@ impl App {
         let mut header = div()
             .flex()
             .flex_row()
+            .min_w_0()
             .gap(px(styles::spacing::SM))
             .items_center()
             .child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(styles::font_size::HEADING))
                     .child(pkg.package.name.clone()),
             );
@@ -249,6 +252,7 @@ impl App {
         if !pkg.package.version.is_empty() {
             header = header.child(
                 div()
+                    .flex_shrink_0()
                     .px(px(styles::spacing::XS))
                     .py(px(styles::spacing::XXXS))
                     .rounded(px(styles::radius::SM))
@@ -280,6 +284,7 @@ impl App {
         let mut info_row = div()
             .flex()
             .flex_row()
+            .min_w_0()
             .gap(px(styles::spacing::MD))
             .items_center();
 
@@ -298,6 +303,8 @@ impl App {
         if let Some(ref path) = pkg.install_path {
             info_row = info_row.child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(styles::font_size::CAPTION))
                     .text_color(text_muted)
                     .child(path.clone()),
@@ -327,9 +334,11 @@ impl App {
             );
         }
 
-        // Left column
+        // Left column. Like the browse row, this has to be allowed to shrink
+        // or a long name or install path pushes the buttons off the end.
         let mut left = div()
             .flex_1()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(px(styles::spacing::XXS))
@@ -566,6 +575,6 @@ impl App {
             .items_center()
             .child(checkbox)
             .child(left)
-            .child(buttons)
+            .child(div().flex_shrink_0().child(buttons))
     }
 }

@@ -324,10 +324,13 @@ impl App {
         let mut header = div()
             .flex()
             .flex_row()
+            .min_w_0()
             .gap(px(styles::spacing::SM))
             .items_center()
             .child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(styles::font_size::HEADING))
                     .child(pkg.name.clone()),
             );
@@ -335,6 +338,7 @@ impl App {
         if !pkg.version.is_empty() {
             header = header.child(
                 div()
+                    .flex_shrink_0()
                     .px(px(styles::spacing::XS))
                     .py(px(styles::spacing::XXXS))
                     .rounded(px(styles::radius::SM))
@@ -349,6 +353,8 @@ impl App {
         header = header.child(self.adapter_badge(&pkg.adapter_id, theme));
 
         let description = div()
+            .w_full()
+            .truncate()
             .text_size(px(styles::font_size::SMALL))
             .text_color(text_muted)
             .child(
@@ -456,9 +462,12 @@ impl App {
                 .into_any_element()
         };
 
-        // Left column
+        // Left column. A flex child will not shrink below what it holds
+        // unless it is told it may, so without this a long description pushes
+        // the row wider than the window and the button off the end of it.
         let mut left = div()
             .flex_1()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(px(styles::spacing::XXS))
@@ -522,7 +531,10 @@ impl App {
             card_content = card_content.child(checkbox);
         }
 
-        card_content = card_content.child(left).child(install_status);
+        // The button keeps its width; the text beside it is what gives way.
+        card_content = card_content
+            .child(left)
+            .child(div().flex_shrink_0().child(install_status));
 
         let card_bg = if is_selected {
             primary.opacity(0.1)
@@ -970,6 +982,7 @@ impl App {
     pub fn adapter_badge(&self, adapter_id: &str, _theme: &theme::Theme) -> Div {
         let color = Self::adapter_color(adapter_id);
         div()
+            .flex_shrink_0()
             .px(px(styles::spacing::XS))
             .py(px(styles::spacing::XXXS))
             .rounded(px(styles::radius::SM))
