@@ -1222,20 +1222,14 @@ fn run_on_terminal(
     })?;
 
     if let Some(said) = failure.and_then(|pattern| complaint(&printed, pattern)) {
-        return Err(AdapterError::Other(format!(
-            "{} {} failed: {said}",
-            program.display(),
-            args.join(" ")
-        )));
+        log::error!("{} {} failed: {said}", program.display(), args.join(" "));
+        return Err(AdapterError::Other(said));
     }
 
     if !status.success() {
-        return Err(AdapterError::Other(format!(
-            "{} {} failed: {}",
-            program.display(),
-            args.join(" "),
-            last_lines(&printed)
-        )));
+        let said = last_lines(&printed);
+        log::error!("{} {} failed: {said}", program.display(), args.join(" "));
+        return Err(AdapterError::Other(said));
     }
 
     Ok(Ran {
@@ -1328,20 +1322,14 @@ fn run(
     if let Some(said) = failure
         .and_then(|pattern| complaint(&printed, pattern).or_else(|| complaint(&errors, pattern)))
     {
-        return Err(AdapterError::Other(format!(
-            "{} {} failed: {said}",
-            program.display(),
-            args.join(" ")
-        )));
+        log::error!("{} {} failed: {said}", program.display(), args.join(" "));
+        return Err(AdapterError::Other(said));
     }
 
     if !status.success() {
-        return Err(AdapterError::Other(format!(
-            "{} {} failed: {}",
-            program.display(),
-            args.join(" "),
-            last_lines(&errors)
-        )));
+        let said = last_lines(&errors);
+        log::error!("{} {} failed: {said}", program.display(), args.join(" "));
+        return Err(AdapterError::Other(said));
     }
 
     Ok(Ran {
@@ -1352,9 +1340,14 @@ fn run(
 
 /// Keeps the tail of what a failed run complained about.
 fn last_lines(text: &str) -> String {
+    // A manager that prints a stack trace puts it after the thing that went
+    // wrong, so taking the last lines would report how it got there rather
+    // than what happened. Frames are marked with an arrow, and a line of
+    // pure rule says nothing at all.
     let lines: Vec<&str> = text
         .lines()
-        .filter(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .filter(|line| line.chars().any(char::is_alphanumeric) && !line.contains('\u{27a4}'))
         .collect();
     let tail = lines.len().saturating_sub(ERROR_LINES);
     let tail = lines[tail..].join("; ");
@@ -2440,6 +2433,23 @@ output = {{ format = "lines" }}
 
         let why = crate::core::package::failure_among(&results).expect("should name the failure");
         assert!(why.contains("not in the database"), "{why}");
+    }
+
+    #[test]
+    fn what_went_wrong_is_reported_over_how_it_got_there() {
+        let said = last_lines(
+            "bwrap: Can't mount proc on /newroot/proc: Operation not permitted\n\
+             [!] ERROR: Stacktrace (most recent call last)\n\
+             \u{251c}\u{2500}\u{27a4}MAIN() /usr/bin/pacstall:1053\n\
+             \u{2502}  \u{2570}\u{2500}\u{2500}\u{27a4} if ! source \"package-base.sh\"; then\n\
+             \u{2570}\u{2500}\u{27a4}TRACEBACK: /usr/share/pacstall/scripts/bwrap.sh:27\n",
+        );
+
+        // The trace says how it got there. The line above it says what
+        // happened, and that is the part worth putting in front of someone.
+        assert!(said.contains("Can't mount proc"), "{said}");
+        assert!(!said.contains("MAIN()"), "{said}");
+        assert!(!said.contains("TRACEBACK"), "{said}");
     }
 
     #[test]

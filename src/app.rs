@@ -2909,7 +2909,11 @@ impl Render for App {
                             (theme.primary.opacity(0.15), theme.primary.opacity(0.3))
                         }
                     };
+                    // A manager can fail at length, and without a width to
+                    // wrap against the message would run off the window
+                    // rather than off the toast.
                     div()
+                        .max_w(px(420.0))
                         .px(px(styles::spacing::LG))
                         .py(px(styles::spacing::SM))
                         .rounded(px(styles::radius::MD))
@@ -2917,6 +2921,7 @@ impl Render for App {
                         .border_1()
                         .border_color(border_color)
                         .text_size(px(styles::font_size::SMALL))
+                        .line_clamp(4)
                         .child(toast.message.clone())
                 })
                 .collect();
@@ -2928,6 +2933,7 @@ impl Render for App {
                     .right(px(styles::spacing::XL))
                     .flex()
                     .flex_col()
+                    .items_end()
                     .gap(px(styles::spacing::SM))
                     .children(toast_elements),
             );

@@ -93,8 +93,10 @@ pub fn failure_among(results: &[InstallResult]) -> Option<String> {
         .clone()
         .unwrap_or_else(|| "it gave no reason".to_string());
 
+    // Naming the one package would only repeat whatever asked for it, which
+    // has already said which package this is about.
     Some(if failed.len() == 1 {
-        format!("{}: {reason}", first.package_name)
+        reason
     } else {
         format!(
             "{} of {} failed. {}: {reason}",
@@ -128,12 +130,12 @@ mod tests {
         // package still did not go in.
         assert_eq!(
             failure_among(&[result("firefox-bin", false, Some("bwrap: not permitted"))]).as_deref(),
-            Some("firefox-bin: bwrap: not permitted")
+            Some("bwrap: not permitted")
         );
 
         assert_eq!(
             failure_among(&[result("fd", false, None)]).as_deref(),
-            Some("fd: it gave no reason")
+            Some("it gave no reason")
         );
 
         assert_eq!(
