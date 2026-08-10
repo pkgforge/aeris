@@ -180,6 +180,17 @@ pub fn update_for(entry: &PluginEntry) -> Option<String> {
     .then(|| entry.version.clone())
 }
 
+/// The command an adapter already on disk needs in order to work.
+///
+/// A manifest is kept whether or not that command is there, so this is how
+/// the page can say what is still missing.
+pub fn installed_needs(id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(adapter_path(id)).ok()?;
+    let manifest = crate::adapters::command::manifest::parse(&text).ok()?;
+
+    Some(manifest.detect.command)
+}
+
 pub fn installed_plugin_version(id: &str) -> Option<String> {
     let text = std::fs::read_to_string(adapter_path(id)).ok()?;
     let manifest = crate::adapters::command::manifest::parse(&text).ok()?;

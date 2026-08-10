@@ -132,8 +132,20 @@ impl App {
                 has_available = true;
                 let is_installing =
                     self.adapter_view.installing_plugin.as_deref() == Some(&entry.id);
-                content =
-                    content.child(self.render_registry_card(&entry, is_installing, theme, cx));
+
+                // Kept on disk but not in use, because the command it drives
+                // is not installed. Saying so beats offering to add it again.
+                let waiting_for = (!installed_ids.iter().any(|id| id == &entry.id))
+                    .then(|| crate::core::registry::installed_needs(&entry.id))
+                    .flatten();
+
+                content = content.child(self.render_registry_card(
+                    &entry,
+                    is_installing,
+                    waiting_for,
+                    theme,
+                    cx,
+                ));
             }
 
             if !has_available {
@@ -834,6 +846,7 @@ impl App {
         &self,
         entry: &PluginEntry,
         installing: bool,
+        waiting_for: Option<String>,
         theme: &theme::Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -878,17 +891,22 @@ impl App {
                 app.install_plugin(wanted.clone(), cx);
             });
 
-            let label = match crate::core::registry::update_for(entry) {
-                Some(newer) => format!("Update to {newer}"),
-                None => "Install".to_string(),
+            let label = match (&waiting_for, crate::core::registry::update_for(entry)) {
+                // Already added; what it drives is what is missing, so the
+                // useful thing to offer is another look once that is there.
+                (Some(command), _) => format!("Waiting for {command}"),
+                (None, Some(newer)) => format!("Update to {newer}"),
+                (None, None) => "Install".to_string(),
             };
+
+            let waiting = waiting_for.is_some();
 
             div()
                 .id(SharedString::from(format!("install-plugin-{}", entry.id)))
                 .px(px(styles::spacing::SM))
                 .py(px(styles::spacing::XS))
                 .rounded(px(styles::radius::MD))
-                .bg(primary)
+                .bg(if waiting { surface } else { primary })
                 .text_color(gpui::white())
                 .text_size(px(styles::font_size::SMALL))
                 .cursor_pointer()
