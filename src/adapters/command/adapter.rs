@@ -1131,6 +1131,35 @@ struct Progress {
     pattern: Option<String>,
 }
 
+/// A manager's line, reduced to something worth putting on a button, or
+/// nothing when the line says nothing at all.
+fn stage_from(line: &str) -> Option<String> {
+    // A progress bar rewrites the one line over and over, and only the last
+    // thing it wrote still stands.
+    let line = line.rsplit('\r').next().unwrap_or(line).trim();
+
+    // Managers mark and grade their lines before saying anything, so
+    // `[+] INFO: Sourcing pacscript` is three characters of decoration, one
+    // word of grading, and then the news.
+    let line = line.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let line = ["INFO:", "WARNING:", "ERROR:"]
+        .iter()
+        .find_map(|level| line.strip_prefix(level))
+        .unwrap_or(line)
+        .trim();
+
+    if !line.chars().any(char::is_alphanumeric) {
+        return None;
+    }
+
+    Some(if line.chars().count() > STAGE_LIMIT {
+        let kept: String = line.chars().take(STAGE_LIMIT - 1).collect();
+        format!("{}\u{2026}", kept.trim_end())
+    } else {
+        line.to_string()
+    })
+}
+
 /// The line where a manager said it had failed, cleaned of the decoration it
 /// was written with, or nothing when it said no such thing.
 fn complaint(text: &str, pattern: &str) -> Option<String> {
@@ -1359,9 +1388,16 @@ fn last_lines(text: &str) -> String {
     }
 }
 
+/// The longest stage worth showing. A manager writing a paragraph is still
+/// telling us one thing, and the button it lands on is not wide.
+const STAGE_LIMIT: usize = 44;
+
 struct Reporter<'a> {
     progress: &'a Progress,
     pattern: Option<regex::Regex>,
+    /// The last stage reported, so a manager repeating itself does not make
+    /// the window redraw for nothing.
+    said: std::cell::RefCell<String>,
 }
 
 impl<'a> Reporter<'a> {
@@ -1371,11 +1407,19 @@ impl<'a> Reporter<'a> {
             .as_deref()
             .and_then(|pattern| regex::Regex::new(pattern).ok());
 
-        Self { progress, pattern }
+        Self {
+            progress,
+            pattern,
+            said: std::cell::RefCell::new(String::new()),
+        }
     }
 
     fn report(&self, line: &str) {
+        // Most managers have nothing machine readable to say while they work.
+        // Their own words are still better than a label that sits at
+        // "Starting" until the whole thing is over.
         if self.progress.map.is_empty() {
+            self.report_in_its_own_words(line);
             return;
         }
 
@@ -1385,6 +1429,25 @@ impl<'a> Reporter<'a> {
         if let Some(event) = self.event(&record) {
             let _ = self.progress.sender.send(event);
         }
+    }
+
+    fn report_in_its_own_words(&self, line: &str) {
+        let Some(stage) = stage_from(line) else {
+            return;
+        };
+
+        if *self.said.borrow() == stage {
+            return;
+        }
+        stage.clone_into(&mut self.said.borrow_mut());
+
+        let _ = self.progress.sender.send(ProgressEvent::Phase {
+            adapter_id: self.progress.adapter_id.clone(),
+            package_id: self.progress.package_id.clone(),
+            phase: stage,
+            // Nothing here says how far along it is, only what it is doing.
+            progress_percent: 0.0,
+        });
     }
 
     fn record(&self, line: &str) -> Option<Value> {
@@ -2450,6 +2513,45 @@ output = {{ format = "lines" }}
         assert!(said.contains("Can't mount proc"), "{said}");
         assert!(!said.contains("MAIN()"), "{said}");
         assert!(!said.contains("TRACEBACK"), "{said}");
+    }
+
+    #[test]
+    fn a_line_is_reduced_to_the_stage_it_reports() {
+        // Real lines, from the managers this exists for.
+        assert_eq!(
+            stage_from("[+] INFO: Sourcing pacscript").as_deref(),
+            Some("Sourcing pacscript")
+        );
+        assert_eq!(
+            stage_from("\t[>] Building dependency tree").as_deref(),
+            Some("Building dependency tree")
+        );
+        assert_eq!(
+            stage_from("Setting up hello-rhino ...").as_deref(),
+            Some("Setting up hello-rhino ...")
+        );
+        // Long enough that only its beginning fits.
+        assert_eq!(
+            stage_from("Setting up hello-rhino (2025.2-pacstall1) ...").as_deref(),
+            Some("Setting up hello-rhino (2025.2-pacstall1) .\u{2026}")
+        );
+
+        // Nothing worth saying.
+        assert_eq!(stage_from(""), None);
+        assert_eq!(stage_from("   "), None);
+        assert_eq!(stage_from("======="), None);
+        assert_eq!(stage_from(" ├─➤ "), None);
+
+        // A bar rewrites its line, and only the last state stands.
+        assert_eq!(
+            stage_from("Unpacking 10%\rUnpacking 50%\rUnpacking 90%").as_deref(),
+            Some("Unpacking 90%")
+        );
+
+        // Too long to sit on a button.
+        let long = stage_from(&"a".repeat(200)).expect("should say something");
+        assert_eq!(long.chars().count(), STAGE_LIMIT);
+        assert!(long.ends_with('\u{2026}'), "{long}");
     }
 
     #[test]
