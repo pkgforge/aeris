@@ -381,6 +381,11 @@ impl App {
             );
         }
 
+        let can_install = self
+            .adapter_manager
+            .get_adapter(&pkg.adapter_id)
+            .is_some_and(|a| a.capabilities().can_install);
+
         let install_status: AnyElement = if pkg.installed && pkg.update_available {
             div()
                 .px(px(10.0))
@@ -422,6 +427,10 @@ impl App {
                 .text_color(primary)
                 .child(label)
                 .into_any_element()
+        } else if !can_install {
+            // Offering a button the manager has no command for would only fail
+            // once it was pressed.
+            div().into_any_element()
         } else {
             let install_pkg = pkg.clone();
             let install_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
@@ -771,7 +780,12 @@ impl App {
             .items_center()
             .justify_end();
 
-        if !pkg.installed {
+        let detail_can_install = self
+            .adapter_manager
+            .get_adapter(&pkg.adapter_id)
+            .is_some_and(|a| a.capabilities().can_install);
+
+        if !pkg.installed && detail_can_install {
             let detail_pkey = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
             // Only work still going counts. A record left by something that
             // already finished would otherwise stand in for the button.

@@ -1103,80 +1103,49 @@ impl App {
     }
 
     fn render_capabilities(&self, caps: Capabilities, theme: &theme::Theme) -> impl IntoElement {
-        let entries: Vec<(&str, bool)> = vec![
+        // Only what the manager can do is worth a badge. Listing the rest says
+        // little, since a manager not doing something is the ordinary case.
+        let entries: Vec<&str> = [
             ("Search", caps.can_search),
             ("Install", caps.can_install),
             ("Remove", caps.can_remove),
             ("Update", caps.can_update),
             ("List", caps.can_list),
+            ("List Updates", caps.can_list_updates),
             ("Sync", caps.can_sync),
             ("Run", caps.can_run),
             ("Add Repo", caps.can_add_repo),
             ("Remove Repo", caps.can_remove_repo),
             ("List Repos", caps.can_list_repos),
             ("Profiles", caps.has_profiles),
-            ("Groups", caps.has_groups),
-            ("Dependencies", caps.has_dependencies),
             ("Size Info", caps.has_size_info),
             ("Package Detail", caps.has_package_detail),
-            ("Dry Run", caps.supports_dry_run),
-            ("Verification", caps.supports_verification),
-            ("Locks", caps.supports_locks),
-            ("Batch Install", caps.supports_batch_install),
-            ("Portable", caps.supports_portable),
-            ("Hooks", caps.supports_hooks),
-            ("Build from Source", caps.supports_build_from_source),
             ("Declarative", caps.supports_declarative),
-            ("Snapshots", caps.supports_snapshots),
-        ];
+            ("User Packages", caps.supports_user_packages),
+            ("System Packages", caps.supports_system_packages),
+        ]
+        .into_iter()
+        .filter_map(|(name, supported)| supported.then_some(name))
+        .collect();
 
         let success = theme.success;
-        let surface = theme.surface;
-        let border = theme.border;
 
-        let mut rows: Vec<Div> = Vec::new();
-        let mut current_row = div()
+        div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .gap(px(styles::spacing::XS))
-            .flex_wrap();
-
-        for (i, (name, supported)) in entries.iter().enumerate() {
-            let badge_color = if *supported { success } else { surface };
-            let badge_border = if *supported {
-                success.opacity(0.4)
-            } else {
-                border
-            };
-
-            current_row = current_row.child(
+            .children(entries.into_iter().map(|name| {
                 div()
                     .px(px(styles::spacing::SM))
                     .py(px(3.0))
                     .rounded(px(styles::radius::SM))
-                    .bg(badge_color.opacity(0.2))
+                    .bg(success.opacity(0.2))
                     .border_1()
-                    .border_color(badge_border)
+                    .border_color(success.opacity(0.4))
                     .text_size(px(styles::font_size::CAPTION))
-                    .child(name.to_string()),
-            );
-
-            if (i + 1) % 6 == 0 && i + 1 < entries.len() {
-                rows.push(current_row);
-                current_row = div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(styles::spacing::XS))
-                    .flex_wrap();
-            }
-        }
-        rows.push(current_row);
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(styles::spacing::XS))
-            .children(rows)
+                    .child(name.to_string())
+            }))
     }
 
     fn badge(&self, label: &str, color: Hsla, _theme: &theme::Theme) -> Div {

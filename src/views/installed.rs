@@ -356,13 +356,13 @@ impl App {
             .gap(px(styles::spacing::XS))
             .items_center();
 
-        let can_run = self
+        let caps = self
             .adapter_manager
             .get_adapter(&pkg.package.adapter_id)
-            .map(|a| a.capabilities().can_run)
-            .unwrap_or(false);
+            .map(|a| *a.capabilities())
+            .unwrap_or_default();
 
-        if can_run {
+        if caps.can_run {
             let run_installed = pkg.clone();
             let run_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
                 cx.stop_propagation();
@@ -467,8 +467,9 @@ impl App {
             }
         }
 
-        // Remove button
-        if is_removing {
+        // Remove is only offered when the manager has a command for it, since
+        // otherwise pressing it could only ever fail.
+        if caps.can_remove && is_removing {
             let label = pkg_status
                 .map(|s| s.label())
                 .unwrap_or_else(|| "Removing...".into());
@@ -482,7 +483,7 @@ impl App {
                     .text_size(px(styles::font_size::SMALL))
                     .child(label),
             );
-        } else {
+        } else if caps.can_remove {
             let remove_pkg = pkg.package.clone();
             let remove_unique_key = unique_key.clone();
             let remove_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {

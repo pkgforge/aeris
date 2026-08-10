@@ -18,21 +18,10 @@ pub struct Capabilities {
 
     pub has_profiles: bool,
 
-    pub has_groups: bool,
-    pub has_dependencies: bool,
     pub has_size_info: bool,
     pub has_package_detail: bool,
 
-    pub supports_dry_run: bool,
-    pub supports_verification: bool,
-    pub supports_locks: bool,
-    pub supports_batch_install: bool,
-
-    pub supports_portable: bool,
-    pub supports_hooks: bool,
-    pub supports_build_from_source: bool,
     pub supports_declarative: bool,
-    pub supports_snapshots: bool,
 
     pub supports_user_packages: bool,
     pub supports_system_packages: bool,
