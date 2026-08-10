@@ -5,22 +5,25 @@
 ## Overview
 
 Aeris is a desktop GUI for searching, installing, updating, and removing
-packages. It talks to package backends through an adapter layer, so a
-single interface can eventually front many package managers.
+packages. It drives each package manager as a command, described by a TOML
+manifest, so one interface fronts several of them at once.
 
-Today the shipping backend is [soar](https://github.com/pkgforge/soar).
-A WebAssembly adapter system is included so additional backends can be
-added as plugins without rebuilding Aeris. Support for more backends is
-planned, not yet complete.
+[soar](https://github.com/pkgforge/soar) is built in and describes itself, so
+Aeris always drives the soar that is actually installed. Other managers are
+added at runtime from the
+[adapter registry](https://github.com/pkgforge/aeris-registry), so supporting
+one is a matter of writing a manifest rather than changing Aeris.
 
 ## Features
 
-- Browse and search packages from configured repositories
+- Search every enabled manager at once, ranked by how well each result answers
 - Install, update, and remove packages
+- Work per user or system wide, for a manager that offers both
+- Add adapters from the registry, refreshed on an interval and offered as updates
 - View installed packages and available updates
 - Declarative manifest view: edit `packages.toml`, preview the diff, and apply
 - Per package detail panel with source, build, and option fields
-- Live progress for running operations
+- Live progress, including answering a manager that stops to ask something
 
 ## Install
 
@@ -57,6 +60,26 @@ A Nix flake is provided:
 ```sh
 nix develop
 ```
+
+## Adapters
+
+An adapter is a TOML manifest naming the arguments for each operation and how
+to read what comes back, so a manager that already answers in JSON needs
+nothing more than a description. A manifest also says how the manager acts
+system wide, which settings it accepts, and whether an operation needs a
+terminal.
+
+Manifests are read from, in order:
+
+```
+~/.local/share/aeris/adapters
+/usr/local/share/aeris/adapters
+./adapters
+```
+
+The Adapters page installs them from the registry and checks for newer ones.
+See [pkgforge/aeris-registry](https://github.com/pkgforge/aeris-registry) for
+the published manifests and the schema.
 
 ## Contributing
 
