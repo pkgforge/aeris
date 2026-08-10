@@ -253,6 +253,33 @@ pub(crate) fn list_package_binaries(
     out
 }
 
+/// Order results by how well they answer the query rather than by which
+/// manager happened to be asked first.
+///
+/// An exact name comes first, then a name starting with what was typed, then
+/// one merely containing it, and last anything that matched on its
+/// description alone. Within a tier the shorter name wins, since a longer one
+/// is usually a variant of it, and the name settles the rest so the order
+/// does not shift between searches.
+pub(crate) fn rank_results(results: &mut [crate::core::package::Package], query: &str) {
+    let query = query.trim().to_lowercase();
+
+    results.sort_by_cached_key(|pkg| {
+        let name = pkg.name.to_lowercase();
+        let tier = if name == query {
+            0u8
+        } else if name.starts_with(&query) {
+            1
+        } else if name.contains(&query) {
+            2
+        } else {
+            3
+        };
+
+        (tier, name.len(), name, pkg.adapter_id.clone())
+    });
+}
+
 /// A sentence accounting for the managers this scope leaves out, or nothing
 /// when it leaves none out.
 ///
@@ -657,6 +684,7 @@ impl App {
                             }
                         }
                     }
+                    rank_results(&mut results, &query);
                     results
                 })
                 .await
@@ -4395,6 +4423,62 @@ mod tests {
     // Deliberately not glob importing the parent: it pulls in gpui's prelude,
     // which shadows the test attribute.
     use super::readable;
+
+    #[test]
+    fn results_are_ordered_by_how_well_they_answer_the_query() {
+        use super::rank_results;
+        use crate::core::package::Package;
+
+        let pkg = |name: &str, adapter: &str| Package {
+            id: name.to_string(),
+            name: name.to_string(),
+            version: "1.0".into(),
+            adapter_id: adapter.to_string(),
+            description: None,
+            size: None,
+            homepage: None,
+            license: None,
+            installed: false,
+            update_available: false,
+            category: None,
+            tags: Vec::new(),
+            icon_url: None,
+        };
+
+        // As they arrive: one manager's answers, then the next one's.
+        let mut results = vec![
+            pkg("ripgrep-all", "soar"),
+            pkg("fd", "soar"),
+            pkg("the-fd-thing", "soar"),
+            pkg("fd", "pacstall"),
+            pkg("fd-find", "pacstall"),
+            pkg("unrelated", "am"),
+        ];
+
+        rank_results(&mut results, "fd");
+
+        let order: Vec<(&str, &str)> = results
+            .iter()
+            .map(|p| (p.name.as_str(), p.adapter_id.as_str()))
+            .collect();
+
+        assert_eq!(
+            order,
+            vec![
+                // Exact, and the two managers holding it sit together.
+                ("fd", "pacstall"),
+                ("fd", "soar"),
+                // Starts with what was typed.
+                ("fd-find", "pacstall"),
+                // Merely contains it.
+                ("the-fd-thing", "soar"),
+                // Matched on something other than the name, where the same
+                // shorter-first rule applies for want of anything better.
+                ("unrelated", "am"),
+                ("ripgrep-all", "soar"),
+            ]
+        );
+    }
 
     #[test]
     fn a_scope_accounts_for_the_managers_it_leaves_out() {
