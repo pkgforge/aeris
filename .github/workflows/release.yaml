@@ -29,29 +29,33 @@ jobs:
         build:
           - {
               NAME: x86_64-linux,
+              ARCH: x86_64,
               RUNNER: ubuntu-latest,
               IMAGE: "archlinux:latest",
               ONELF: onelf-x86_64-linux,
               VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-intel vulkan-nouveau",
+              DEBLOATED: "llvm-libs-nano mesa-nano vulkan-radeon-nano vulkan-intel-nano vulkan-nouveau-nano libxml2-iculess",
+              PKG_EXT: "pkg.tar.zst",
             }
           - {
               NAME: aarch64-linux,
+              ARCH: aarch64,
               RUNNER: ubuntu-24.04-arm,
               IMAGE: "menci/archlinuxarm:latest",
               ONELF: onelf-aarch64-linux,
               VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-nouveau vulkan-panfrost vulkan-broadcom",
+              DEBLOATED: "llvm-libs-nano mesa-nano vulkan-radeon-nano vulkan-nouveau-nano vulkan-panfrost-nano vulkan-broadcom-nano libxml2-iculess",
+              PKG_EXT: "pkg.tar.xz",
             }
     steps:
       - name: Install dependencies
         shell: bash
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel git curl tar xz b3sum rust patchelf \
-            pkgconf fontconfig freetype2 \
+            base-devel git curl tar xz b3sum rust patchelf pkgconf \
             libxcb libxkbcommon libxkbcommon-x11 \
-            wayland mesa vulkan-icd-loader vulkan-headers \
-            ${{ matrix.build.VULKAN_DRIVERS }} \
-            alsa-lib
+            wayland mesa vulkan-icd-loader \
+            ${{ matrix.build.VULKAN_DRIVERS }}
 
       - name: Checkout
         uses: actions/checkout@v5
@@ -68,6 +72,24 @@ jobs:
           tar -cJf "aeris-${{ matrix.build.NAME }}.tar.xz" release/
           b3sum "aeris-${{ matrix.build.NAME }}.tar.xz" \
             > "aeris-${{ matrix.build.NAME }}.tar.xz.b3sum"
+
+      # The graphics stack is most of what gets bundled, and llvm-libs alone is
+      # over half of it. These are the same packages without the parts a
+      # bundled renderer never reaches for, and they install under the stock
+      # names, so onelf picks them up unchanged.
+      #
+      # After the build, not before: rustc links the system libLLVM, and the
+      # slimmed one drops targets it needs.
+      - name: Slim the graphics stack
+        shell: bash
+        run: |
+          base="https://github.com/pkgforge-dev/archlinux-pkgs-debloated/releases/download/continuous"
+          mkdir -p /tmp/debloated
+          cd /tmp/debloated
+          for pkg in ${{ matrix.build.DEBLOATED }}; do
+            curl -fsSL -O "$base/${pkg}-${{ matrix.build.ARCH }}.${{ matrix.build.PKG_EXT }}"
+          done
+          pacman -U --noconfirm ./*.${{ matrix.build.PKG_EXT }}
 
       - name: Fetch onelf
         shell: bash
