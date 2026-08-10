@@ -179,6 +179,15 @@ fn captures(pattern: &regex::Regex, line: &str) -> Option<Value> {
     (!record.is_empty()).then_some(Value::Object(record))
 }
 
+/// Read a field by the name the manager itself reports it under.
+///
+/// Unlike the mapped fields, this is for values aeris has no name for and
+/// only passes along.
+pub fn value(record: &Value, name: &str) -> Option<String> {
+    let mapped = HashMap::from([(name.to_string(), name.to_string())]);
+    text(record, &mapped, name)
+}
+
 /// Read one field of a record, under the name the manifest maps it to.
 ///
 /// A manager reporting several of something, such as more than one homepage,

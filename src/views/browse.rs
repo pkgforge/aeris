@@ -745,6 +745,12 @@ impl App {
             if let Some(ref date) = detail.build_date {
                 content = content.child(self.detail_row("Build date", &on_day(date), theme));
             }
+
+            // Whatever else the manager reports, labelled as its manifest
+            // asked. Shown last, since aeris cannot judge how it ranks.
+            for (label, value) in &detail.extra {
+                content = content.child(self.detail_row(label, value, theme));
+            }
         }
 
         // Separator

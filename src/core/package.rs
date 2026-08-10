@@ -31,6 +31,10 @@ pub struct PackageDetail {
     pub source: Option<String>,
     pub build_date: Option<String>,
     pub download_url: Option<String>,
+    /// Whatever else the manager reports, labelled as it asked. Aeris shows
+    /// these without knowing what any of them mean.
+    #[serde(default)]
+    pub extra: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

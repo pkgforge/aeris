@@ -420,12 +420,22 @@ impl Adapter for CommandAdapter {
             .to_package(record, fields)
             .ok_or_else(|| AdapterError::PackageNotFound(package_id.to_string()))?;
 
+        // Whatever else the manifest asked to be shown, in the order it
+        // asked. Nothing here knows what any of them mean.
+        let extra = self
+            .op(OP_INFO)?
+            .extra
+            .iter()
+            .filter_map(|extra| Some((extra.label.clone(), output::value(record, &extra.field)?)))
+            .collect();
+
         Ok(PackageDetail {
             package,
             pkg_type: output::text(record, fields, "pkg_type"),
             source: output::text(record, fields, "source"),
             build_date: output::text(record, fields, "build_date"),
             download_url: output::text(record, fields, "download_url"),
+            extra,
         })
     }
 

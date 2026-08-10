@@ -147,6 +147,18 @@ pub struct Op {
     /// Named captures pulled from each line, for the `lines` format.
     #[serde(default)]
     pub pattern: Option<String>,
+    /// Anything else worth showing, in the order it should be shown. Lets a
+    /// manager surface what it knows without aeris having a name for it.
+    #[serde(default)]
+    pub extra: Vec<Extra>,
+}
+
+/// One more thing a manager reports, and what to call it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Extra {
+    pub label: String,
+    /// The name the manager reports it under.
+    pub field: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
