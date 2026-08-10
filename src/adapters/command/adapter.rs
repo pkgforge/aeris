@@ -881,7 +881,6 @@ fn changes(record: &Value, key: &str, removing: bool) -> Vec<ManifestEntry> {
                     let version = text(item, "version");
                     Some(ManifestEntry {
                         name: text(item, "name")?,
-                        pkg_id: text(item, "pkg_id"),
                         current_version: text(item, "current_version"),
                         // A package on its way out has no version to move to.
                         new_version: (!removing).then_some(version).flatten(),

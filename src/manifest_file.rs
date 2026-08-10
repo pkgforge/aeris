@@ -75,7 +75,6 @@ fn upsert_inline_fields(
     };
     t.insert("version", v.into());
 
-    upsert_str_inline(t, "pkg_id", &snap.pkg_id);
     upsert_str_inline(t, "repo", &snap.repo);
     upsert_str_inline(t, "url", &snap.url);
     upsert_str_inline(t, "github", &snap.github);
@@ -153,7 +152,6 @@ fn upsert_table_fields(
     };
     t.insert("version", toml_edit::value(v));
 
-    upsert_str_table(t, "pkg_id", &snap.pkg_id);
     upsert_str_table(t, "repo", &snap.repo);
     upsert_str_table(t, "url", &snap.url);
     upsert_str_table(t, "github", &snap.github);
@@ -320,7 +318,6 @@ pub fn read_entry(
     };
 
     snapshot.version = unstarred(&text_at("version"));
-    snapshot.pkg_id = text_at("pkg_id");
     snapshot.repo = text_at("repo");
     snapshot.url = text_at("url");
     snapshot.github = text_at("github");
@@ -487,7 +484,7 @@ mod tests {
             .expect("should read")
             .expect("should be there");
         assert_eq!(read.version, "15.2.0");
-        assert!(read.pkg_id.is_empty());
+        assert!(read.repo.is_empty());
     }
 
     #[test]

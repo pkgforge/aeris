@@ -853,15 +853,13 @@ impl App {
                     .to_install
                     .iter()
                     .chain(diff.to_update.iter())
-                    .filter_map(|e| e.pkg_id.clone())
-                    .map(|pid| crate::core::adapter::progress_key(&adapter_id, &pid))
+                    .map(|e| crate::core::adapter::package_key(&adapter_id, &e.name))
                     .collect();
                 if prune {
                     keys.extend(
                         diff.to_remove
                             .iter()
-                            .filter_map(|e| e.pkg_id.clone())
-                            .map(|pid| crate::core::adapter::progress_key(&adapter_id, &pid)),
+                            .map(|e| crate::core::adapter::package_key(&adapter_id, &e.name)),
                     );
                 }
                 keys
@@ -1000,7 +998,6 @@ impl App {
         let mut snap = ManifestEntrySnapshot {
             name: edit.name_input.read(cx).content().trim().to_string(),
             version: edit.version_input.read(cx).content().trim().to_string(),
-            pkg_id: edit.pkg_id_input.read(cx).content().trim().to_string(),
             repo: edit.repo_input.read(cx).content().trim().to_string(),
             url: edit.url_input.read(cx).content().trim().to_string(),
             github: edit.github_input.read(cx).content().trim().to_string(),
@@ -1380,7 +1377,7 @@ impl App {
             })
             .cloned()
             .collect();
-        let pkg_ids: Vec<String> = packages.iter().map(|p| p.id.clone()).collect();
+        let package_ids: Vec<String> = packages.iter().map(|p| p.id.clone()).collect();
         let progress_keys: Vec<String> = packages
             .iter()
             .map(|p| crate::core::adapter::progress_key(&p.adapter_id, &p.id))
@@ -1437,7 +1434,7 @@ impl App {
                         app.browse_state.selected.clear();
                         // Mark installed in search results
                         for p in &mut app.browse_state.search_results {
-                            if pkg_ids.contains(&p.id) {
+                            if package_ids.contains(&p.id) {
                                 p.installed = true;
                             }
                         }
@@ -1448,7 +1445,7 @@ impl App {
                         app.installed_state.loaded = false;
                         app.add_toast(
                             ToastLevel::Success,
-                            format!("Installed {} packages", pkg_ids.len()),
+                            format!("Installed {} packages", package_ids.len()),
                         );
                         cx.notify();
                     })
@@ -2440,14 +2437,14 @@ impl App {
         self.browse_state.detail_loading = true;
         self.browse_state.detail_error = None;
 
-        let pkg_id = pkg.id.clone();
-        log::debug!("loading details for {pkg_id}");
+        let package_id = pkg.id.clone();
+        log::debug!("loading details for {package_id}");
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let asked_for = pkg_id.clone();
+                let asked_for = package_id.clone();
                 let result =
-                    crate::tokio_spawn(async move { adapter.package_detail(&pkg_id).await })
+                    crate::tokio_spawn(async move { adapter.package_detail(&package_id).await })
                         .await
                         .unwrap_or_else(|e| {
                             Err(crate::core::adapter::AdapterError::Other(format!("{e}")))
@@ -2661,26 +2658,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// Find the progress key for a soar package by matching its pkg_id suffix
-    /// against browse/installed search results.
-    fn soar_progress_key(&self, soar_pkg_id: &str) -> Option<String> {
-        use crate::core::adapter::progress_key;
-        // Browse results: aeris id = "{repo_name}.{pkg_id}", try matching by suffix
-        for pkg in &self.browse_state.search_results {
-            if pkg.adapter_id == "soar" && pkg.id.ends_with(soar_pkg_id) {
-                return Some(progress_key("soar", &pkg.id));
-            }
-        }
-        // Installed packages
-        for pkg in &self.installed_state.packages {
-            if pkg.package.adapter_id == "soar" && pkg.package.id.ends_with(soar_pkg_id) {
-                return Some(progress_key("soar", &pkg.package.id));
-            }
-        }
-        // Fallback: use soar_pkg_id directly
-        Some(progress_key("soar", soar_pkg_id))
     }
 }
 
@@ -3312,7 +3289,6 @@ impl App {
 
         let name_input = edit.name_input.clone();
         let version_input = edit.version_input.clone();
-        let pkg_id_input = edit.pkg_id_input.clone();
         let repo_input = edit.repo_input.clone();
         let url_input = edit.url_input.clone();
         let github_input = edit.github_input.clone();
@@ -3467,20 +3443,12 @@ impl App {
 
         let identity = section(
             "Identity",
-            vec![
-                labeled_row(
-                    "Package ID",
-                    Some("Optional. Disambiguates packages that share a name across repos."),
-                    pkg_id_input,
-                    true,
-                ),
-                labeled_row(
-                    "Repository",
-                    Some("Optional. Restricts the lookup to a specific repository."),
-                    repo_input,
-                    true,
-                ),
-            ],
+            vec![labeled_row(
+                "Repository",
+                Some("Optional. Restricts the lookup to a specific repository."),
+                repo_input,
+                true,
+            )],
         );
 
         let source = section(
@@ -3973,11 +3941,11 @@ impl App {
         mode: PackageMode,
         cx: &mut Context<Self>,
     ) {
-        let pkg_id = pkg.id.clone();
+        let package_id = pkg.id.clone();
         let pkg_name = pkg.name.clone();
         let adapter_id = pkg.adapter_id.clone();
         let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
-        self.browse_state.installing = Some(pkg_id.clone());
+        self.browse_state.installing = Some(package_id.clone());
         self.browse_state
             .package_progress
             .insert(progress_key.clone(), OperationStatus::Starting);
@@ -3997,7 +3965,7 @@ impl App {
                             app.browse_state.installing = None;
                             match result {
                                 Ok(Ok(_)) => {
-                                    app.mark_installed(&adapter_id, &pkg_id, true);
+                                    app.mark_installed(&adapter_id, &package_id, true);
                                     app.browse_state.package_progress.remove(&progress_key);
                                     app.add_toast(
                                         ToastLevel::Success,
@@ -4052,7 +4020,7 @@ impl App {
         cx: &mut Context<Self>,
     ) {
         let pkg_name = pkg.name.clone();
-        let pkg_id = pkg.id.clone();
+        let package_id = pkg.id.clone();
         let adapter_id = pkg.adapter_id.clone();
         let progress_key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
         self.installed_state.removing = Some(unique_key);
@@ -4076,7 +4044,7 @@ impl App {
                             app.installed_state.package_progress.remove(&progress_key);
                             match result {
                                 Ok(Ok(_)) => {
-                                    app.mark_installed(&adapter_id, &pkg_id, false);
+                                    app.mark_installed(&adapter_id, &package_id, false);
                                     app.add_toast(
                                         ToastLevel::Success,
                                         format!("Removed {pkg_name}"),

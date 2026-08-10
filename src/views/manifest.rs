@@ -7,7 +7,6 @@ use crate::{app::App, components::TextInput, styles, theme};
 #[derive(Debug, Clone, Default)]
 pub struct ManifestEntry {
     pub name: String,
-    pub pkg_id: Option<String>,
     pub current_version: Option<String>,
     pub new_version: Option<String>,
 }
@@ -38,7 +37,6 @@ pub struct ManifestApplyReport {
 pub struct ManifestEntrySnapshot {
     pub name: String,
     pub version: String,
-    pub pkg_id: String,
     pub repo: String,
     pub url: String,
     pub github: String,
@@ -58,8 +56,7 @@ impl ManifestEntrySnapshot {
     /// Whether this entry has any field set beyond a bare version. Used to
     /// decide whether to write Simple or Detailed form.
     pub fn needs_detailed(&self) -> bool {
-        !self.pkg_id.is_empty()
-            || !self.repo.is_empty()
+        !self.repo.is_empty()
             || !self.url.is_empty()
             || !self.github.is_empty()
             || !self.gitlab.is_empty()
@@ -101,7 +98,6 @@ pub struct ManifestEditModal {
     pub kind: ManifestEditKind,
     pub name_input: Entity<TextInput>,
     pub version_input: Entity<TextInput>,
-    pub pkg_id_input: Entity<TextInput>,
     pub repo_input: Entity<TextInput>,
     pub url_input: Entity<TextInput>,
     pub github_input: Entity<TextInput>,
@@ -1154,7 +1150,6 @@ fn render_manifest_detail(
         body = body.child(f);
     }
     for (label, value) in [
-        ("Package ID", snap.pkg_id.clone()),
         ("Repository", snap.repo.clone()),
         ("URL", snap.url.clone()),
         ("GitHub", snap.github.clone()),
@@ -1267,7 +1262,6 @@ pub fn build_manifest_edit_modal(
                 &snap.version
             },
         ),
-        pkg_id_input: make_input(cx, "optional pkg_id", &snap.pkg_id),
         repo_input: make_input(cx, "optional repository name", &snap.repo),
         url_input: make_input(cx, "direct download URL", &snap.url),
         github_input: make_input(cx, "owner/repo on GitHub", &snap.github),
