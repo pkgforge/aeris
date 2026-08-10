@@ -26,9 +26,9 @@ use crate::views::manifest::{ManifestApplyReport, ManifestDiff, ManifestEntry};
 use super::{
     manifest::{
         self, CommandManifest, Format, OP_ADD_REPO, OP_APPLY, OP_APPLY_CHECK, OP_APPLY_PRUNE,
-        OP_DEFAULT_CONFIG, OP_INFO, OP_INSTALL, OP_LIST, OP_LIST_INSTALLED, OP_LIST_REPOS,
-        OP_LIST_UPDATES, OP_PATHS, OP_REMOVE, OP_REMOVE_REPO, OP_SEARCH, OP_SET_REPO_ENABLED,
-        OP_SYNC, OP_UPDATE, Op, Setting, SettingKind,
+        OP_DEFAULT_CONFIG, OP_INFO, OP_INFO_INSTALLED, OP_INSTALL, OP_LIST, OP_LIST_INSTALLED,
+        OP_LIST_REPOS, OP_LIST_UPDATES, OP_PATHS, OP_REMOVE, OP_REMOVE_REPO, OP_SEARCH,
+        OP_SET_REPO_ENABLED, OP_SYNC, OP_UPDATE, Op, Setting, SettingKind,
     },
     output, version,
 };
@@ -248,6 +248,62 @@ impl CommandAdapter {
         })
         .await
         .map_err(|e| AdapterError::Other(format!("could not wait for the run: {e}")))?
+    }
+
+    /// Fill in what an installed listing left out, for a manager that names
+    /// its packages and little else.
+    ///
+    /// This costs one run per package, so it is only done for the fields the
+    /// listing actually left empty, and not at all unless the manifest says
+    /// the manager can be asked.
+    async fn fill_from_installed_detail(&self, listed: &mut [InstalledPackage], mode: PackageMode) {
+        let Some(op) = self.manifest.op(OP_INFO_INSTALLED) else {
+            return;
+        };
+
+        let wanted: Vec<&InstalledPackage> = listed
+            .iter()
+            .filter(|entry| entry.package.version.is_empty())
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+
+        let mut found: HashMap<String, Value> = HashMap::new();
+        for entry in wanted {
+            let selector = entry.package.id.clone();
+            let values = Values::from([("selector".to_string(), selector.clone())]);
+            match self.query(OP_INFO_INSTALLED, values, mode).await {
+                Ok(records) => {
+                    if let Some(record) = records.into_iter().next() {
+                        found.insert(selector, record);
+                    }
+                }
+                // One package that will not answer is not worth failing the
+                // whole listing over: it keeps what the listing gave it.
+                Err(e) => log::warn!("{} could not detail {selector}: {e}", self.info.id),
+            }
+        }
+
+        for entry in listed.iter_mut() {
+            let Some(record) = found.get(&entry.package.id) else {
+                continue;
+            };
+
+            if let Some(version) = output::text(record, &op.fields, "version") {
+                entry.package.version = version;
+            }
+            if entry.package.description.is_none() {
+                entry.package.description = output::text(record, &op.fields, "description");
+            }
+            if entry.install_size == 0 {
+                entry.install_size = output::number(record, &op.fields, "size").unwrap_or(0);
+            }
+            if entry.installed_at.is_empty() {
+                entry.installed_at =
+                    output::text(record, &op.fields, "installed_at").unwrap_or_default();
+            }
+        }
     }
 
     /// Read the records a query operation printed.
@@ -528,7 +584,7 @@ impl Adapter for CommandAdapter {
         let records = self.query(OP_LIST_INSTALLED, Values::new(), mode).await?;
         let fields = &self.op(OP_LIST_INSTALLED)?.fields;
 
-        Ok(records
+        let mut listed: Vec<InstalledPackage> = records
             .iter()
             .filter_map(|record| {
                 let mut package = self.to_package(record, fields)?;
@@ -545,7 +601,11 @@ impl Adapter for CommandAdapter {
                     package,
                 })
             })
-            .collect())
+            .collect();
+
+        self.fill_from_installed_detail(&mut listed, mode).await;
+
+        Ok(listed)
     }
 
     async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
@@ -1750,6 +1810,16 @@ case "$1" in
   paths)
     printf '{"config":"%s.config.toml","packages_config":"%s.packages.toml"}\n' "$0" "$0"
     ;;
+  installed-thin)
+    # Names and nothing else, the way a manager with a bare listing answers.
+    echo '{"items":[{"name":"cat"},{"name":"dog"}],"total":2}'
+    ;;
+  detail)
+    echo "name: $2"
+    echo "version: 2.0"
+    echo "description: about $2"
+    echo "size: 1.5 MB"
+    ;;
   terminal)
     # Gives up without a terminal, the way a manager that reads the
     # terminal's settings does.
@@ -2225,6 +2295,48 @@ fields = {{ config = "config", packages_config = "packages_config" }}
             "{}",
             ran.printed
         );
+    }
+
+    #[test]
+    fn a_thin_installed_listing_is_filled_in_one_package_at_a_time() {
+        let program = fake_manager("thin");
+        let manifest = manifest(&format!(
+            r#"
+schema_version = 1
+id = "demo"
+name = "Demo"
+selector = ["{{name}}"]
+
+[detect]
+command = "{}"
+
+[ops.list_installed]
+args = ["installed-thin"]
+output = {{ format = "json", select = "$.items[*]" }}
+fields = {{ name = "name" }}
+
+[ops.info_installed]
+args = ["detail", "{{selector}}"]
+output = {{ format = "keyvalue" }}
+fields = {{ name = "name", version = "version", description = "description", size = "size" }}
+"#,
+            program.display()
+        ));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        let listed = block_on(adapter.list_installed(PackageMode::User)).expect("should list");
+        assert_eq!(listed.len(), 2);
+
+        // The listing gave a name and nothing else, so each of these came
+        // from asking about that package on its own.
+        for entry in &listed {
+            assert_eq!(entry.package.version, "2.0", "{:?}", entry.package.name);
+            assert_eq!(
+                entry.package.description.as_deref(),
+                Some(format!("about {}", entry.package.name).as_str())
+            );
+            assert_eq!(entry.install_size, 1_500_000);
+        }
     }
 
     #[test]

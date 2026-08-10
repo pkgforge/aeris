@@ -23,6 +23,9 @@ pub const OP_LIST_INSTALLED: &str = "list_installed";
 pub const OP_LIST_UPDATES: &str = "list_updates";
 pub const OP_SEARCH: &str = "search";
 pub const OP_INFO: &str = "info";
+/// Detail about a package as installed, for a manager whose installed listing
+/// is thinner than what it knows.
+pub const OP_INFO_INSTALLED: &str = "info_installed";
 pub const OP_INSTALL: &str = "install";
 pub const OP_REMOVE: &str = "remove";
 pub const OP_UPDATE: &str = "update";
