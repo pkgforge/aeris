@@ -78,3 +78,72 @@ pub struct InstallResult {
     pub success: bool,
     pub error: Option<String>,
 }
+
+/// What went wrong across results that report a package at a time, or nothing
+/// when every one of them went through.
+///
+/// An operation can answer without complaining and still have failed for each
+/// package it was handed, so this is what decides whether it worked. Reading
+/// the outer result alone would call a failed install a success.
+pub fn failure_among(results: &[InstallResult]) -> Option<String> {
+    let failed: Vec<&InstallResult> = results.iter().filter(|r| !r.success).collect();
+    let first = failed.first()?;
+    let reason = first
+        .error
+        .clone()
+        .unwrap_or_else(|| "it gave no reason".to_string());
+
+    Some(if failed.len() == 1 {
+        format!("{}: {reason}", first.package_name)
+    } else {
+        format!(
+            "{} of {} failed. {}: {reason}",
+            failed.len(),
+            results.len(),
+            first.package_name
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InstallResult, failure_among};
+
+    fn result(name: &str, success: bool, error: Option<&str>) -> InstallResult {
+        InstallResult {
+            package_name: name.to_string(),
+            package_id: name.to_string(),
+            version: "1.0".into(),
+            success,
+            error: error.map(ToString::to_string),
+        }
+    }
+
+    #[test]
+    fn an_operation_that_answered_can_still_have_failed() {
+        assert_eq!(failure_among(&[]), None);
+        assert_eq!(failure_among(&[result("fd", true, None)]), None);
+
+        // The whole point: the call returned without complaining, and the
+        // package still did not go in.
+        assert_eq!(
+            failure_among(&[result("firefox-bin", false, Some("bwrap: not permitted"))]).as_deref(),
+            Some("firefox-bin: bwrap: not permitted")
+        );
+
+        assert_eq!(
+            failure_among(&[result("fd", false, None)]).as_deref(),
+            Some("fd: it gave no reason")
+        );
+
+        assert_eq!(
+            failure_among(&[
+                result("fd", true, None),
+                result("firefox-bin", false, Some("no")),
+                result("jq", false, Some("also no")),
+            ])
+            .as_deref(),
+            Some("2 of 3 failed. firefox-bin: no")
+        );
+    }
+}

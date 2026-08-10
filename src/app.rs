@@ -10,8 +10,8 @@ use crate::{
     adapters::command::{self, CommandAdapter},
     config::AerisConfig,
     core::{
-        adapter::Adapter, adapter_manager::AdapterManager, privilege::PackageMode,
-        registry::PluginEntry,
+        adapter::Adapter, adapter_manager::AdapterManager, package::failure_among,
+        privilege::PackageMode, registry::PluginEntry,
     },
     styles, theme, views,
 };
@@ -1334,7 +1334,15 @@ impl App {
                                 .update(&pkgs, Some(progress_sender.clone()), mode)
                                 .await
                             {
-                                Ok(_) => log::info!("Updated packages for {adapter_id}"),
+                                Ok(results) => {
+                                    // Answering is not the same as
+                                    // having worked: each package
+                                    // carries its own outcome.
+                                    if let Some(why) = failure_among(&results) {
+                                        log::error!("Update failed for {adapter_id}: {why}");
+                                        errors.push(why);
+                                    }
+                                }
                                 Err(e) => {
                                     log::error!("Update failed for {adapter_id}: {e}");
                                     errors.push(format!("{e}"));
@@ -1427,7 +1435,17 @@ impl App {
                                 .update(&pkgs, Some(progress_sender.clone()), mode)
                                 .await
                             {
-                                Ok(_) => log::info!("Updated selected packages for {adapter_id}"),
+                                Ok(results) => {
+                                    // Answering is not the same as
+                                    // having worked: each package
+                                    // carries its own outcome.
+                                    if let Some(why) = failure_among(&results) {
+                                        log::error!(
+                                            "Update selected failed for {adapter_id}: {why}"
+                                        );
+                                        errors.push(why);
+                                    }
+                                }
                                 Err(e) => {
                                     log::error!("Update selected failed for {adapter_id}: {e}");
                                     errors.push(format!("{e}"));
@@ -1502,7 +1520,7 @@ impl App {
 
         cx.spawn(
             async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                crate::tokio_spawn(async move {
+                let errors = crate::tokio_spawn(async move {
                     let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
                         HashMap::new();
                     for pkg in &packages {
@@ -1512,6 +1530,7 @@ impl App {
                             .push(pkg.clone());
                     }
 
+                    let mut errors: Vec<String> = Vec::new();
                     for (adapter_id, pkgs) in by_adapter {
                         if let Some(adapter) =
                             manager_adapters.iter().find(|a| a.info().id == adapter_id)
@@ -1520,13 +1539,22 @@ impl App {
                                 .install(&pkgs, Some(progress_sender.clone()), mode)
                                 .await
                             {
-                                Ok(_) => log::info!("Installed selected packages for {adapter_id}"),
+                                Ok(results) => {
+                                    if let Some(why) = failure_among(&results) {
+                                        log::error!(
+                                            "Install selected failed for {adapter_id}: {why}"
+                                        );
+                                        errors.push(why);
+                                    }
+                                }
                                 Err(e) => {
-                                    log::error!("Install selected failed for {adapter_id}: {e}")
+                                    log::error!("Install selected failed for {adapter_id}: {e}");
+                                    errors.push(format!("{e}"));
                                 }
                             }
                         }
                     }
+                    errors
                 })
                 .await
                 .unwrap_or_default();
@@ -1535,21 +1563,31 @@ impl App {
                     this.update(cx, |app, cx| {
                         app.browse_state.installing = None;
                         app.browse_state.selected.clear();
-                        // Mark installed in search results
-                        for p in &mut app.browse_state.search_results {
-                            if package_ids.contains(&p.id) {
-                                p.installed = true;
+
+                        // Only what actually went through is marked, and the
+                        // reason is worth more than the count when it did not.
+                        if errors.is_empty() {
+                            for p in &mut app.browse_state.search_results {
+                                if package_ids.contains(&p.id) {
+                                    p.installed = true;
+                                }
                             }
+                            app.add_toast(
+                                ToastLevel::Success,
+                                format!("Installed {} packages", package_ids.len()),
+                            );
+                        } else {
+                            app.add_toast(
+                                ToastLevel::Error,
+                                format!("Install failed. {}", errors.join("; ")),
+                            );
                         }
+
                         for key in &progress_keys {
                             app.browse_state.package_progress.remove(key);
                         }
                         app.browse_state.result_version += 1;
                         app.installed_state.loaded = false;
-                        app.add_toast(
-                            ToastLevel::Success,
-                            format!("Installed {} packages", package_ids.len()),
-                        );
                         cx.notify();
                     })
                 });
@@ -4086,16 +4124,31 @@ impl App {
                         this.update(cx, |app, cx| {
                             app.browse_state.installing = None;
                             match result {
-                                Ok(Ok(_)) => {
-                                    app.mark_installed(&adapter_id, &package_id, true);
-                                    app.browse_state.package_progress.remove(&progress_key);
-                                    app.add_toast(
-                                        ToastLevel::Success,
-                                        format!("Installed {pkg_name}"),
-                                    );
-                                    // Refresh installed list
-                                    app.installed_state.loaded = false;
-                                }
+                                // An install that answered still has to say it
+                                // worked: the manager reports each package,
+                                // and a failed one comes back this way too.
+                                Ok(Ok(results)) => match failure_among(&results) {
+                                    Some(why) => {
+                                        app.browse_state.package_progress.insert(
+                                            progress_key.clone(),
+                                            OperationStatus::Failed(why.clone()),
+                                        );
+                                        app.add_toast(
+                                            ToastLevel::Error,
+                                            format!("Failed to install {pkg_name}. {why}"),
+                                        );
+                                    }
+                                    None => {
+                                        app.mark_installed(&adapter_id, &package_id, true);
+                                        app.browse_state.package_progress.remove(&progress_key);
+                                        app.add_toast(
+                                            ToastLevel::Success,
+                                            format!("Installed {pkg_name}"),
+                                        );
+                                        // Refresh installed list
+                                        app.installed_state.loaded = false;
+                                    }
+                                },
                                 Ok(Err(e)) => {
                                     app.browse_state.package_progress.insert(
                                         progress_key.clone(),
@@ -4219,12 +4272,16 @@ impl App {
                             app.updates_state.updating = None;
                             app.updates_state.result_version += 1;
                             match result {
-                                Ok(Ok(_)) => {
-                                    app.add_toast(
+                                Ok(Ok(results)) => match failure_among(&results) {
+                                    Some(why) => app.add_toast(
+                                        ToastLevel::Error,
+                                        format!("Failed to update {pkg_name}. {why}"),
+                                    ),
+                                    None => app.add_toast(
                                         ToastLevel::Success,
                                         format!("Updated {pkg_name}"),
-                                    );
-                                }
+                                    ),
+                                },
                                 Ok(Err(e)) => {
                                     app.add_toast(
                                         ToastLevel::Error,
@@ -4285,7 +4342,15 @@ impl App {
                                 .install(&pkgs, Some(progress_sender.clone()), mode)
                                 .await
                             {
-                                Ok(_) => log::info!("Batch install completed for {adapter_id}"),
+                                Ok(results) => {
+                                    // Answering is not the same as
+                                    // having worked: each package
+                                    // carries its own outcome.
+                                    if let Some(why) = failure_among(&results) {
+                                        log::error!("Batch install failed for {adapter_id}: {why}");
+                                        errors.push(why);
+                                    }
+                                }
                                 Err(e) => {
                                     log::error!("Batch install failed for {adapter_id}: {e}");
                                     errors.push(format!("{e}"));
@@ -4433,7 +4498,15 @@ impl App {
                                 .update(&pkgs, Some(progress_sender.clone()), mode)
                                 .await
                             {
-                                Ok(_) => log::info!("Batch update completed for {adapter_id}"),
+                                Ok(results) => {
+                                    // Answering is not the same as
+                                    // having worked: each package
+                                    // carries its own outcome.
+                                    if let Some(why) = failure_among(&results) {
+                                        log::error!("Batch update failed for {adapter_id}: {why}");
+                                        errors.push(why);
+                                    }
+                                }
                                 Err(e) => {
                                     log::error!("Batch update failed for {adapter_id}: {e}");
                                     errors.push(format!("{e}"));

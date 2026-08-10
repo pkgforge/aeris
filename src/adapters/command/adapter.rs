@@ -230,6 +230,7 @@ impl CommandAdapter {
                     &program,
                     &args,
                     manifest.strip_ansi,
+                    manifest.failure_pattern.as_deref(),
                     context.as_ref(),
                     elevate,
                 );
@@ -244,7 +245,13 @@ impl CommandAdapter {
                 )));
             }
 
-            run_on_terminal(&program, &args, manifest.strip_ansi, context.as_ref())
+            run_on_terminal(
+                &program,
+                &args,
+                manifest.strip_ansi,
+                manifest.failure_pattern.as_deref(),
+                context.as_ref(),
+            )
         })
         .await
         .map_err(|e| AdapterError::Other(format!("could not wait for the run: {e}")))?
@@ -371,6 +378,7 @@ impl CommandAdapter {
             self.program()?,
             &fill_args(op, &Values::new())?,
             false,
+            self.manifest.failure_pattern.as_deref(),
             None,
             false,
         )?
@@ -1123,6 +1131,19 @@ struct Progress {
     pattern: Option<String>,
 }
 
+/// The line where a manager said it had failed, cleaned of the decoration it
+/// was written with, or nothing when it said no such thing.
+fn complaint(text: &str, pattern: &str) -> Option<String> {
+    let found = text.lines().find(|line| line.contains(pattern))?;
+    let found = found.trim();
+
+    Some(if found.is_empty() {
+        pattern.to_string()
+    } else {
+        found.to_string()
+    })
+}
+
 /// What a run left behind: its answer, and whatever it said beside it.
 struct Ran {
     printed: String,
@@ -1138,6 +1159,7 @@ fn run_on_terminal(
     program: &Path,
     args: &[String],
     strip_ansi: bool,
+    failure: Option<&str>,
     progress: Option<&Progress>,
 ) -> Result<Ran> {
     let pty = portable_pty::native_pty_system()
@@ -1199,6 +1221,14 @@ fn run_on_terminal(
         AdapterError::Other(format!("could not wait for {}: {e}", program.display()))
     })?;
 
+    if let Some(said) = failure.and_then(|pattern| complaint(&printed, pattern)) {
+        return Err(AdapterError::Other(format!(
+            "{} {} failed: {said}",
+            program.display(),
+            args.join(" ")
+        )));
+    }
+
     if !status.success() {
         return Err(AdapterError::Other(format!(
             "{} {} failed: {}",
@@ -1218,6 +1248,7 @@ fn run(
     program: &Path,
     args: &[String],
     strip_ansi: bool,
+    failure: Option<&str>,
     progress: Option<&Progress>,
     elevate: bool,
 ) -> Result<Ran> {
@@ -1283,7 +1314,26 @@ fn run(
     let status = child.wait().map_err(|e| {
         AdapterError::Other(format!("could not wait for {}: {e}", program.display()))
     })?;
+
+    // Diagnostics are as colourful as the rest, and this text ends up in
+    // front of someone.
     let errors = draining.join().unwrap_or_default();
+    let errors = if strip_ansi {
+        output::strip_ansi(&errors)
+    } else {
+        errors
+    };
+
+    // A manager that says it failed has failed, whatever it exited with.
+    if let Some(said) = failure
+        .and_then(|pattern| complaint(&printed, pattern).or_else(|| complaint(&errors, pattern)))
+    {
+        return Err(AdapterError::Other(format!(
+            "{} {} failed: {said}",
+            program.display(),
+            args.join(" ")
+        )));
+    }
 
     if !status.success() {
         return Err(AdapterError::Other(format!(
@@ -1820,6 +1870,11 @@ case "$1" in
     echo "description: about $2"
     echo "size: 1.5 MB"
     ;;
+  says-no)
+    # Complains and exits as though all was well, the way some managers do.
+    echo "SKULL ERROR: \"$2\" is not in the database"
+    exit 0
+    ;;
   terminal)
     # Gives up without a terminal, the way a manager that reads the
     # terminal's settings does.
@@ -2287,9 +2342,9 @@ fields = {{ config = "config", packages_config = "packages_config" }}
 
         // That it fails on a pipe is what makes the terminal the thing under
         // test rather than an ornament.
-        assert!(run(&program, &args, false, None, false).is_err());
+        assert!(run(&program, &args, false, None, None, false).is_err());
 
-        let ran = run_on_terminal(&program, &args, false, None).expect("should answer");
+        let ran = run_on_terminal(&program, &args, false, None, None).expect("should answer");
         assert!(
             ran.printed.contains("answered on a terminal"),
             "{}",
@@ -2337,6 +2392,54 @@ fields = {{ name = "name", version = "version", description = "description", siz
             );
             assert_eq!(entry.install_size, 1_500_000);
         }
+    }
+
+    #[test]
+    fn a_manager_that_fails_in_words_has_failed() {
+        let program = fake_manager("says-no");
+        let manifest = manifest(&format!(
+            r#"
+schema_version = 1
+id = "demo"
+name = "Demo"
+selector = ["{{name}}"]
+failure_pattern = "SKULL"
+
+[detect]
+command = "{}"
+
+[ops.install]
+args = ["says-no", "{{selector}}"]
+output = {{ format = "lines" }}
+"#,
+            program.display()
+        ));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        let package = Package {
+            id: "firefox-bin".into(),
+            name: "firefox-bin".into(),
+            version: String::new(),
+            adapter_id: "demo".into(),
+            description: None,
+            size: None,
+            homepage: None,
+            license: None,
+            installed: false,
+            update_available: false,
+            category: None,
+            tags: Vec::new(),
+            icon_url: None,
+        };
+
+        // The command exited cleanly, so only what it said can give it away.
+        let results = block_on(adapter.install(&[package], None, PackageMode::User))
+            .expect("the call itself goes through");
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success, "{:?}", results[0]);
+
+        let why = crate::core::package::failure_among(&results).expect("should name the failure");
+        assert!(why.contains("not in the database"), "{why}");
     }
 
     #[test]

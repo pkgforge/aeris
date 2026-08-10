@@ -55,6 +55,11 @@ pub struct CommandManifest {
     /// read. This is a property of the manager rather than of an operation.
     #[serde(default)]
     pub strip_ansi: bool,
+    /// What a line looks like when the manager has failed, for one that says
+    /// so in words and still exits as though nothing went wrong. Matching it
+    /// fails the run whatever the exit status was.
+    #[serde(default)]
+    pub failure_pattern: Option<String>,
     /// How a package is named back to the manager, most specific first. The
     /// first template whose placeholders are all filled is used, so a manager
     /// that can qualify a name uses the qualified form and falls back to the
