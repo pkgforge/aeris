@@ -892,9 +892,9 @@ impl App {
             });
 
             let label = match (&waiting_for, crate::core::registry::update_for(entry)) {
-                // Already added; what it drives is what is missing, so the
-                // useful thing to offer is another look once that is there.
-                (Some(command), _) => format!("Waiting for {command}"),
+                // Already added, so the thing to offer is another look once
+                // the missing command has been installed.
+                (Some(_), _) => "Check again".to_string(),
                 (None, Some(newer)) => format!("Update to {newer}"),
                 (None, None) => "Install".to_string(),
             };
@@ -914,7 +914,7 @@ impl App {
                 .child(label)
         };
 
-        div()
+        let mut card = div()
             .p(px(styles::spacing::LG))
             .rounded(px(styles::radius::LG))
             .bg(surface)
@@ -925,7 +925,21 @@ impl App {
             .flex_col()
             .gap(px(styles::spacing::SM))
             .child(header)
-            .child(desc)
+            .child(desc);
+
+        // What is missing is worth a sentence rather than a cramped label.
+        if let Some(command) = &waiting_for {
+            card = card.child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(theme.warning)
+                    .child(format!(
+                        "Added, but the {command} command is not installed yet"
+                    )),
+            );
+        }
+
+        card
             // In a column every child is stretched to the full width, so the
             // button needs a row of its own to be only as wide as its label.
             .child(div().flex().flex_row().child(action))
