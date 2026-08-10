@@ -1056,6 +1056,12 @@ fn run(
     let mut base = Command::new(program);
     base.args(args);
 
+    // There is no terminal here, and `dumb` is the name for that. Without it
+    // a manager asking a terminal what it can do gets no answer at all, and
+    // elevation makes it worse: sudo hands on `unknown`, which is not a
+    // terminal any more than nothing is.
+    base.env("TERM", "dumb");
+
     // Asking through the desktop's own prompt is the only way a window can
     // ask for a password. Without it the manager would sit waiting on a
     // terminal that is not there.
