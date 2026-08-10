@@ -216,7 +216,38 @@ pub fn text(record: &Value, fields: &HashMap<String, String>, key: &str) -> Opti
 
 pub fn number(record: &Value, fields: &HashMap<String, String>, key: &str) -> Option<u64> {
     let name = fields.get(key)?;
-    record.get(name)?.as_u64()
+    let value = record.get(name)?;
+    value.as_u64().or_else(|| value.as_str().and_then(size))
+}
+
+/// Read a size a manager wrote out for a person, such as `247.54 KiB`.
+///
+/// Only the JSON formats carry a real number; a line or a key and its value
+/// are text, and a manager writing those has usually already turned the size
+/// into something readable. A bare number is taken to be bytes.
+fn size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let end = text
+        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != ',')
+        .unwrap_or(text.len());
+    let (amount, unit) = text.split_at(end);
+    let amount: f64 = amount.replace(',', "").parse().ok()?;
+
+    let scale = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" | "byte" | "bytes" => 1.0,
+        "k" | "kib" => 1024.0,
+        "kb" => 1e3,
+        "m" | "mib" => 1024.0 * 1024.0,
+        "mb" => 1e6,
+        "g" | "gib" => 1024.0 * 1024.0 * 1024.0,
+        "gb" => 1e9,
+        "t" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        "tb" => 1e12,
+        _ => return None,
+    };
+
+    let bytes = amount * scale;
+    (bytes.is_finite() && bytes >= 0.0).then(|| bytes.round() as u64)
 }
 
 pub fn flag(record: &Value, fields: &HashMap<String, String>, key: &str) -> Option<bool> {
@@ -429,6 +460,36 @@ output = { format = "keyvalue" }"#);
         assert_eq!(
             fill("no placeholder", &values).as_deref(),
             Some("no placeholder")
+        );
+    }
+
+    #[test]
+    fn a_size_written_for_a_person_is_read_as_bytes() {
+        assert_eq!(size("247.54 KiB"), Some(253_481));
+        assert_eq!(size("2.17 MiB"), Some(2_275_410));
+        assert_eq!(size("1GiB"), Some(1_073_741_824));
+        assert_eq!(size("1 kB"), Some(1_000));
+        assert_eq!(size("512"), Some(512));
+        assert_eq!(size("1,024 bytes"), Some(1_024));
+        assert_eq!(size("unknown"), None);
+        assert_eq!(size("-"), None);
+        assert_eq!(size("12 parsecs"), None);
+    }
+
+    #[test]
+    fn a_number_field_reads_both_a_number_and_a_written_size() {
+        let fields = HashMap::from([("size".to_string(), "size".to_string())]);
+        assert_eq!(
+            number(&serde_json::json!({"size": 4096}), &fields, "size"),
+            Some(4096)
+        );
+        assert_eq!(
+            number(&serde_json::json!({"size": "247.54 KiB"}), &fields, "size"),
+            Some(253_481)
+        );
+        assert_eq!(
+            number(&serde_json::json!({"size": "unknown"}), &fields, "size"),
+            None
         );
     }
 }
