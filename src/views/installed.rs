@@ -57,7 +57,7 @@ impl App {
         let syncing = self.adapter_view.syncing.is_some();
         let sync_label = if syncing { "Syncing..." } else { "Sync" };
 
-        let title_block = div()
+        let mut title_block = div()
             .flex()
             .flex_col()
             .gap(px(styles::spacing::XXS))
@@ -73,6 +73,15 @@ impl App {
                     .text_color(text_muted)
                     .child(subtitle),
             );
+
+        if let Some(note) = crate::app::scope_note(&self.adapter_manager.outside_mode(mode), mode) {
+            title_block = title_block.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(note),
+            );
+        }
 
         let header = div()
             .flex()

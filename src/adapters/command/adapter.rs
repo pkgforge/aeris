@@ -2154,6 +2154,23 @@ fields = {{ config = "config", packages_config = "packages_config" }}
     }
 
     #[test]
+    fn a_system_only_manager_has_no_user_packages_to_offer() {
+        let program = fake_manager("scope");
+        let manifest = manifest(&format!(
+            "system_only = true\n{}\n[system]\nelevate = true\n",
+            manifest_for(&program, "1.0.0")
+        ));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+        let capabilities = *adapter.capabilities();
+
+        // It still answers when asked, which is why the asking has to be the
+        // thing that stops: its answer would be system packages under the
+        // user's name.
+        assert!(!capabilities.works_in(PackageMode::User));
+        assert!(capabilities.works_in(PackageMode::System));
+    }
+
+    #[test]
     fn an_operation_a_manifest_does_not_declare_is_not_supported() {
         let program = fake_manager("undeclared");
         let manifest = manifest(&manifest_for(&program, "1.0.0"));

@@ -5,7 +5,7 @@ use std::{
 
 use super::{
     adapter::{Adapter, AdapterId, AdapterInfo, ProgressSender, Result},
-    package::{InstallResult, InstalledPackage, Package, Update},
+    package::{InstallResult, Package},
     privilege::PackageMode,
 };
 
@@ -67,69 +67,22 @@ impl AdapterManager {
         self.adapters.keys().any(|id| self.is_enabled(id))
     }
 
+    /// The enabled managers that have nothing to say in this scope, named so
+    /// a view can account for what it is not showing rather than leave the
+    /// packages looking lost.
+    pub fn outside_mode(&self, mode: PackageMode) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .adapters
+            .values()
+            .filter(|a| self.is_enabled(&a.info().id) && !a.capabilities().works_in(mode))
+            .map(|a| a.info().name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
     pub fn get_adapter(&self, id: &str) -> Option<Arc<dyn Adapter>> {
         self.adapters.get(id).cloned()
-    }
-
-    pub async fn search(
-        &self,
-        query: &str,
-        sources: &[String],
-        mode: PackageMode,
-    ) -> Result<Vec<Package>> {
-        let mut results = Vec::new();
-        let adapters: Vec<_> = if sources.is_empty() {
-            self.adapters
-                .values()
-                .filter(|a| self.is_enabled(&a.info().id) && a.capabilities().can_search)
-                .cloned()
-                .collect()
-        } else {
-            sources
-                .iter()
-                .filter_map(|id| self.adapters.get(id).cloned())
-                .filter(|a| self.is_enabled(&a.info().id) && a.capabilities().can_search)
-                .collect()
-        };
-
-        for adapter in adapters {
-            match adapter.search(query, None, mode).await {
-                Ok(pkgs) => results.extend(pkgs),
-                Err(e) => log::warn!("Search failed for {}: {e}", adapter.info().id),
-            }
-        }
-
-        Ok(results)
-    }
-
-    pub async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {
-        let mut results = Vec::new();
-        for adapter in self
-            .adapters
-            .values()
-            .filter(|a| self.is_enabled(&a.info().id))
-        {
-            match adapter.list_installed(mode).await {
-                Ok(pkgs) => results.extend(pkgs),
-                Err(e) => log::warn!("List failed for {}: {e}", adapter.info().id),
-            }
-        }
-        Ok(results)
-    }
-
-    pub async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
-        let mut results = Vec::new();
-        for adapter in self
-            .adapters
-            .values()
-            .filter(|a| self.is_enabled(&a.info().id))
-        {
-            match adapter.list_updates(mode).await {
-                Ok(updates) => results.extend(updates),
-                Err(e) => log::warn!("Update check failed for {}: {e}", adapter.info().id),
-            }
-        }
-        Ok(results)
     }
 
     pub async fn install(

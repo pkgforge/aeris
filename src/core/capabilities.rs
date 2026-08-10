@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::privilege::PackageMode;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capabilities {
@@ -25,4 +27,17 @@ pub struct Capabilities {
 
     pub supports_user_packages: bool,
     pub supports_system_packages: bool,
+}
+
+impl Capabilities {
+    /// Whether this manager works in the given scope at all.
+    ///
+    /// A manager that only installs system wide has no user packages, so
+    /// asking it for them would answer with system ones under the wrong name.
+    pub fn works_in(&self, mode: PackageMode) -> bool {
+        match mode {
+            PackageMode::User => self.supports_user_packages,
+            PackageMode::System => self.supports_system_packages,
+        }
+    }
 }

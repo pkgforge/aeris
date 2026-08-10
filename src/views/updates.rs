@@ -49,7 +49,7 @@ impl App {
 
         let is_busy = self.updates_state.updating.is_some() || self.updates_state.loading;
 
-        let title_block = div()
+        let mut title_block = div()
             .flex()
             .flex_col()
             .gap(px(styles::spacing::XXS))
@@ -65,6 +65,15 @@ impl App {
                     .text_color(text_muted)
                     .child(subtitle),
             );
+
+        if let Some(note) = crate::app::scope_note(&self.adapter_manager.outside_mode(mode), mode) {
+            title_block = title_block.child(
+                div()
+                    .text_size(px(styles::font_size::CAPTION))
+                    .text_color(text_muted)
+                    .child(note),
+            );
+        }
 
         let mut header_buttons = div().flex().flex_row().gap(px(styles::spacing::SM));
 
