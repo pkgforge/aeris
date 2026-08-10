@@ -151,6 +151,16 @@ pub struct Op {
     /// manager surface what it knows without aeris having a name for it.
     #[serde(default)]
     pub extra: Vec<Extra>,
+    /// Whether this operation only works with a terminal on the other end.
+    /// Some managers hide a cursor or read the terminal's settings even when
+    /// all they are doing is answering a question, and give up without one.
+    #[serde(default)]
+    pub needs_terminal: bool,
+    /// Whether to ask for privilege for this operation in particular. Left
+    /// unset, the scope decides, which is right for anything that writes and
+    /// wrong for a question that happens to be asked of a system manager.
+    #[serde(default)]
+    pub elevate: Option<bool>,
 }
 
 /// One more thing a manager reports, and what to call it.
