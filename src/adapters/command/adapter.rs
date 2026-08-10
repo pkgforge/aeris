@@ -128,7 +128,7 @@ impl CommandAdapter {
         let program = which::which(command)
             .map_err(|_| AdapterError::PluginError(format!("{command} is not installed")))?;
 
-        let printed = Command::new(&program)
+        let printed = crate::bundle::command(&program)
             .args(args)
             .stdin(Stdio::null())
             .output()
@@ -1270,6 +1270,13 @@ fn run_on_terminal(
 
     let mut command = portable_pty::CommandBuilder::new(program);
     command.args(args);
+
+    for (name, value) in crate::bundle::outside(crate::bundle::root().as_deref()) {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        }
+    }
     // A manager that asks for a terminal usually wants to drive one, so this
     // has to name a terminal that can do what it asks of it.
     command.env("TERM", "xterm-256color");
@@ -1414,7 +1421,7 @@ fn run(
     progress: Option<&Progress>,
     elevate: bool,
 ) -> Result<Ran> {
-    let mut base = Command::new(program);
+    let mut base = crate::bundle::command(program);
     base.args(args);
 
     // There is no terminal here, and `dumb` is the name for that. Without it
@@ -1672,7 +1679,7 @@ fn detect_version(program: &Path, manifest: &CommandManifest) -> Option<String> 
         return None;
     }
 
-    let printed = match Command::new(program)
+    let printed = match crate::bundle::command(program)
         .args(&manifest.detect.version)
         .stdin(Stdio::null())
         .output()

@@ -2529,7 +2529,7 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("binary")
             .to_string();
-        match std::process::Command::new(path).spawn() {
+        match crate::bundle::command(path).spawn() {
             Ok(child) => {
                 let id = self.next_run_id;
                 self.next_run_id = self.next_run_id.wrapping_add(1);

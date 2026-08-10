@@ -1,5 +1,6 @@
 mod adapters;
 mod app;
+mod bundle;
 mod components;
 mod config;
 mod core;
