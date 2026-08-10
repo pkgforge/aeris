@@ -28,6 +28,9 @@ pub fn bind_app_keys(cx: &mut gpui::App) {
 }
 
 pub const APP_NAME: &str = "Aeris";
+
+/// The manager aeris ships knowing about.
+pub const SOAR_ID: &str = "soar";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -287,6 +290,8 @@ pub struct App {
     pub(crate) aeris_config: AerisConfig,
     /// The manager aeris drives, absent when none could be reached.
     pub(crate) adapter: Option<Arc<dyn Adapter>>,
+    /// Why soar could not be used, for the adapters page to explain.
+    pub(crate) soar_problem: Option<String>,
     /// Where the manager keeps its files, read once at startup. Aeris edits
     /// some of them directly rather than through a command for every field.
     pub(crate) paths: HashMap<String, String>,
@@ -453,13 +458,17 @@ impl App {
         let startup_view = aeris_config.startup_view();
 
         let mut adapter_manager = AdapterManager::new();
-        let mut startup_problem = None;
+        let mut soar_problem = None;
         let mut paths = HashMap::new();
 
-        // Soar describes itself, so aeris drives whichever one is installed
-        // rather than the one it was built against.
-        let adapter: Option<Arc<dyn Adapter>> =
-            match CommandAdapter::from_command("soar", command::DESCRIBE_ARGS)
+        // Turned off means left alone: no looking for it, and nothing said
+        // about not finding it.
+        let adapter: Option<Arc<dyn Adapter>> = if aeris_config.is_adapter_disabled(SOAR_ID) {
+            None
+        } else {
+            // Soar describes itself, so aeris drives whichever one is
+            // installed rather than the one it was built against.
+            match CommandAdapter::from_command(SOAR_ID, command::DESCRIBE_ARGS)
                 .map(CommandAdapter::as_builtin)
             {
                 Ok(soar) => {
@@ -473,12 +482,19 @@ impl App {
                     adapter_manager.register(adapter.clone());
                     Some(adapter)
                 }
+                // Said on the adapters page instead of thrown as a message,
+                // so it can be read once and turned off rather than met at
+                // every start.
                 Err(e) => {
-                    log::error!("Soar is unavailable: {e}");
-                    startup_problem = Some(format!("Soar is unavailable: {e}"));
+                    log::warn!("Soar is unavailable: {e}");
+                    soar_problem = Some(match &e {
+                        crate::core::adapter::AdapterError::PluginError(said) => said.clone(),
+                        other => other.to_string(),
+                    });
                     None
                 }
-            };
+            }
+        };
 
         for result in crate::adapters::command::load_all() {
             match result {
@@ -536,6 +552,7 @@ impl App {
             sidebar_expanded: false,
             aeris_config,
             adapter,
+            soar_problem,
             paths,
             last_self_write: std::cell::Cell::new(None),
             adapter_manager,
@@ -547,18 +564,7 @@ impl App {
             active_operation: None,
             package_progress: HashMap::new(),
             next_operation_id: 1,
-            toasts: startup_problem
-                .into_iter()
-                .map(|message| Toast {
-                    id: 0,
-                    level: ToastLevel::Error,
-                    message,
-                    created_at: Instant::now(),
-                    // Long enough to read, since nothing else explains why the
-                    // window is empty.
-                    duration: Duration::from_secs(30),
-                })
-                .collect(),
+            toasts: Vec::new(),
             next_toast_id: 1,
             batch_progress: None,
             progress_sender,
@@ -1660,29 +1666,59 @@ impl App {
     /// These exist as far as the person who added them is concerned, so the
     /// page has to account for them rather than leave them nowhere.
     pub fn unusable_adapters(&self) -> Vec<(crate::core::adapter::AdapterInfo, String)> {
-        crate::adapters::command::manifest::discover()
-            .into_iter()
-            .filter(|(_, manifest)| self.adapter_manager.get_adapter(&manifest.id).is_none())
-            .map(|(path, manifest)| {
-                let capabilities = crate::adapters::command::adapter::capabilities_from(&manifest);
-                let missing = manifest.detect.command.clone();
+        let mut unusable = Vec::new();
 
-                (
-                    crate::core::adapter::AdapterInfo {
-                        id: manifest.id,
-                        name: manifest.name,
-                        version: manifest.version,
-                        capabilities,
-                        enabled: false,
-                        is_builtin: false,
-                        plugin_path: Some(path),
-                        description: manifest.description,
-                        icon: manifest.icon,
-                    },
-                    missing,
-                )
-            })
-            .collect()
+        // Soar has a place on this page whether or not it can run, so there
+        // is always something to turn back on.
+        if self.adapter_manager.get_adapter(SOAR_ID).is_none() {
+            let missing = self
+                .soar_problem
+                .clone()
+                .unwrap_or_else(|| "soar is not installed".to_string());
+
+            unusable.push((
+                crate::core::adapter::AdapterInfo {
+                    id: SOAR_ID.to_string(),
+                    name: "Soar".to_string(),
+                    version: String::new(),
+                    capabilities: Default::default(),
+                    enabled: false,
+                    is_builtin: true,
+                    plugin_path: None,
+                    description: "Fast package manager for static binaries".to_string(),
+                    icon: None,
+                },
+                missing,
+            ));
+        }
+
+        unusable.extend(
+            crate::adapters::command::manifest::discover()
+                .into_iter()
+                .filter(|(_, manifest)| self.adapter_manager.get_adapter(&manifest.id).is_none())
+                .map(|(path, manifest)| {
+                    let capabilities =
+                        crate::adapters::command::adapter::capabilities_from(&manifest);
+                    let missing = manifest.detect.command.clone();
+
+                    (
+                        crate::core::adapter::AdapterInfo {
+                            id: manifest.id,
+                            name: manifest.name,
+                            version: manifest.version,
+                            capabilities,
+                            enabled: false,
+                            is_builtin: false,
+                            plugin_path: Some(path),
+                            description: manifest.description,
+                            icon: manifest.icon,
+                        },
+                        missing,
+                    )
+                }),
+        );
+
+        unusable
     }
 
     /// Try again to use an adapter whose command was missing, now that it

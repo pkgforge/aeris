@@ -879,6 +879,17 @@ impl App {
             app.forget_adapter(forgetting.clone(), cx);
         });
 
+        // Turning it off is what stops aeris looking for something that is
+        // not there, so this has to work whether or not it does.
+        let disabled = !self.adapter_manager.is_enabled(id);
+        let toggling = id.to_string();
+        let toggle = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.adapter_manager.set_adapter_enabled(&toggling, disabled);
+            app.aeris_config.set_adapter_disabled(&toggling, !disabled);
+            let _ = app.aeris_config.save();
+            cx.notify();
+        });
+
         /// Both buttons look the same and differ only in what they do.
         type Clicked = Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App)>;
 
@@ -908,8 +919,8 @@ impl App {
             .flex()
             .flex_col()
             .gap(px(styles::spacing::SM))
-            .child(
-                div()
+            .child({
+                let mut header = div()
                     .flex()
                     .flex_row()
                     .gap(px(styles::spacing::SM))
@@ -917,20 +928,51 @@ impl App {
                     .child(
                         div()
                             .text_size(px(styles::font_size::HEADING))
-                            .child(id.to_string()),
-                    )
-                    .child(self.badge_neutral("unavailable", theme)),
-            )
+                            .child(info.name.clone()),
+                    );
+
+                if !info.version.is_empty() {
+                    header = header.child(self.badge_neutral(&format!("v{}", info.version), theme));
+                }
+
+                let kind = if info.is_builtin {
+                    "Built-in"
+                } else {
+                    "Plugin"
+                };
+
+                header
+                    .child(self.badge_neutral(kind, theme))
+                    .child(self.badge_neutral("unavailable", theme))
+            })
             .child(
+                div()
+                    .text_size(px(styles::font_size::BODY))
+                    .child(info.description.clone()),
+            )
+            .child({
+                // Turned off is a choice; missing is a problem. They should
+                // not read the same.
+                let (colour, said) = if disabled {
+                    (
+                        theme.text_muted,
+                        "Turned off, so aeris does not look for it".to_string(),
+                    )
+                } else {
+                    (
+                        theme.warning,
+                        format!("Needs the {command} command, which is not installed"),
+                    )
+                };
+
                 div()
                     .text_size(px(styles::font_size::SMALL))
-                    .text_color(theme.warning)
-                    .child(format!(
-                        "Needs the {command} command, which is not installed"
-                    )),
-            )
-            .child(
-                div()
+                    .text_color(colour)
+                    .child(said)
+            })
+            .child(self.render_capabilities(info.capabilities, theme))
+            .child({
+                let mut actions = div()
                     .flex()
                     .flex_row()
                     .gap(px(styles::spacing::SM))
@@ -939,8 +981,20 @@ impl App {
                         format!("retry-{id}"),
                         Box::new(retry),
                     ))
-                    .child(button("Remove", format!("forget-{id}"), Box::new(forget))),
-            )
+                    .child(button(
+                        if disabled { "Enable" } else { "Disable" },
+                        format!("toggle-missing-{id}"),
+                        Box::new(toggle),
+                    ));
+
+                // What aeris ships with stays; only what was added can go.
+                if !info.is_builtin {
+                    actions =
+                        actions.child(button("Remove", format!("forget-{id}"), Box::new(forget)));
+                }
+
+                actions
+            })
     }
 
     fn render_registry_card(
