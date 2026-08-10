@@ -28,6 +28,8 @@ impl App {
             self.load_repos(cx);
         }
 
+        self.consider_registry(cx);
+
         let mut adapters = self.adapter_manager.list_adapters_with_status();
         adapters.sort_by(|(a, _), (b, _)| b.is_builtin.cmp(&a.is_builtin));
         let installed_ids: Vec<String> = adapters.iter().map(|(info, _)| info.id.clone()).collect();
@@ -120,7 +122,11 @@ impl App {
             let mut has_available = false;
 
             for entry in self.adapter_view.registry_plugins.clone() {
-                if installed_ids.iter().any(|id| id == &entry.id) {
+                // An adapter already added is shown again only when the
+                // registry offers a newer manifest than the one on disk.
+                if installed_ids.iter().any(|id| id == &entry.id)
+                    && crate::core::registry::update_for(&entry).is_none()
+                {
                     continue;
                 }
                 has_available = true;
@@ -872,6 +878,11 @@ impl App {
                 app.install_plugin(wanted.clone(), cx);
             });
 
+            let label = match crate::core::registry::update_for(entry) {
+                Some(newer) => format!("Update to {newer}"),
+                None => "Install".to_string(),
+            };
+
             div()
                 .id(SharedString::from(format!("install-plugin-{}", entry.id)))
                 .px(px(styles::spacing::SM))
@@ -882,7 +893,7 @@ impl App {
                 .text_size(px(styles::font_size::SMALL))
                 .cursor_pointer()
                 .on_click(install_listener)
-                .child("Install")
+                .child(label)
         };
 
         div()

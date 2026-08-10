@@ -3,6 +3,13 @@ use std::{fmt::Write, path::PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+/// The registry format this build reads.
+///
+/// Same bargain as a manifest's schema version: a listing written to a newer
+/// shape is refused rather than half understood. It says nothing about the
+/// adapters listed, so adding or updating one leaves it alone.
+pub const REGISTRY_VERSION: u32 = 1;
+
 pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/pkgforge/aeris-registry/main/registry.toml";
 
@@ -43,6 +50,56 @@ fn adapter_path(id: &str) -> PathBuf {
         .join(format!("{id}.toml"))
 }
 
+/// Where the last registry that was read is kept.
+///
+/// This is a copy of something fetchable, so it belongs with the caches:
+/// losing it costs one request, not any state.
+fn cache_path() -> PathBuf {
+    crate::xdg::cache_home().join("aeris").join("registry.toml")
+}
+
+/// The registry as it was last read, and when that was.
+///
+/// A listing from yesterday beats an empty page, so long as it is clear it
+/// is from yesterday.
+pub fn cached_registry() -> Option<(Registry, std::time::SystemTime)> {
+    let path = cache_path();
+    let text = std::fs::read_to_string(&path).ok()?;
+    let registry: Registry = toml::from_str(&text).ok()?;
+    if registry.registry.version > REGISTRY_VERSION {
+        return None;
+    }
+
+    let read_at = std::fs::metadata(&path).ok()?.modified().ok()?;
+
+    Some((registry, read_at))
+}
+
+/// Whether the copy on disk is old enough to be worth replacing.
+///
+/// No copy at all counts as stale, and so does one whose age cannot be told.
+pub fn cache_is_stale(within: std::time::Duration) -> bool {
+    let Some((_, read_at)) = cached_registry() else {
+        return true;
+    };
+
+    read_at.elapsed().map(|age| age > within).unwrap_or(true)
+}
+
+fn write_cache(text: &str) {
+    let path = cache_path();
+    let wrote = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .transpose()
+        .and_then(|_| std::fs::write(&path, text));
+
+    if let Err(e) = wrote {
+        // Worth saying, but not worth failing over: the listing was read.
+        log::warn!("could not keep a copy of the registry: {e}");
+    }
+}
+
 /// Read the registry from an HTTP(S) URL or a local path, falling back to
 /// the built-in default when no source is given.
 pub fn fetch_registry(url: Option<&str>) -> Result<Registry, String> {
@@ -51,6 +108,15 @@ pub fn fetch_registry(url: Option<&str>) -> Result<Registry, String> {
     let body = read_text(url)?;
     let registry: Registry =
         toml::from_str(&body).map_err(|e| format!("Failed to parse registry: {e}"))?;
+
+    if registry.registry.version > REGISTRY_VERSION {
+        return Err(format!(
+            "the registry is written in version {}, and this aeris reads up to {REGISTRY_VERSION}",
+            registry.registry.version
+        ));
+    }
+
+    write_cache(&body);
 
     Ok(registry)
 }
@@ -99,6 +165,19 @@ pub fn remove_plugin(id: &str) -> Result<(), String> {
     }
 
     std::fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {e}", path.display()))
+}
+
+/// The newer version an installed adapter could be updated to, if any.
+///
+/// Versions are compared the way a manager's own are, since a registry says
+/// whatever the manager says about itself.
+pub fn update_for(entry: &PluginEntry) -> Option<String> {
+    let installed = installed_plugin_version(&entry.id)?;
+
+    (!entry.version.is_empty()
+        && entry.version != installed
+        && crate::adapters::command::version::at_least(&entry.version, &installed))
+    .then(|| entry.version.clone())
 }
 
 pub fn installed_plugin_version(id: &str) -> Option<String> {
@@ -161,6 +240,55 @@ fn verify_checksum(data: &[u8], expected_hex: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn offered(id: &str, version: &str) -> PluginEntry {
+        PluginEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            version: version.to_string(),
+            description: String::new(),
+            manifest_url: String::new(),
+            manifest_checksum_sha256: String::new(),
+            repo_url: String::new(),
+        }
+    }
+
+    fn install(id: &str, body: &str) {
+        let path = adapter_path(id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn manifest_saying(id: &str, version: &str) -> String {
+        format!(
+            r#"schema_version = 1
+id = "{id}"
+name = "Test"
+version = "{version}"
+
+[detect]
+command = "true"
+"#
+        )
+    }
+
+    #[test]
+    fn an_adapter_nobody_has_is_not_an_update() {
+        assert_eq!(update_for(&offered("absent-adapter-test", "2.0")), None);
+    }
+
+    #[test]
+    fn a_newer_version_in_the_registry_is_offered() {
+        let id = "update-check-test";
+        install(id, &manifest_saying(id, "1.0"));
+
+        assert_eq!(update_for(&offered(id, "1.1")).as_deref(), Some("1.1"));
+        // The same version, and an older one, are both nothing to do.
+        assert_eq!(update_for(&offered(id, "1.0")), None);
+        assert_eq!(update_for(&offered(id, "0.9")), None);
+
+        let _ = std::fs::remove_file(adapter_path(id));
+    }
 
     #[test]
     fn http_is_remote_and_a_path_is_not() {

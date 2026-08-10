@@ -260,6 +260,11 @@ pub struct AdapterViewState {
     pub registry_plugins: Vec<PluginEntry>,
     pub registry_loading: bool,
     pub registry_error: Option<String>,
+    /// When the listing on show was read, so the page can say how old it is.
+    pub registry_read_at: Option<std::time::SystemTime>,
+    /// Set once the page has looked, so a listing that comes back empty or
+    /// fails is not requested again on every frame.
+    pub registry_considered: bool,
     pub installing_plugin: Option<String>,
     pub removing_plugin: Option<String>,
     pub repos_by_adapter: HashMap<String, Vec<RepoInfo>>,
@@ -1649,6 +1654,29 @@ impl App {
         }
     }
 
+    /// Show whatever was read last, and read again if that was long enough
+    /// ago. Called when the adapters page is opened.
+    pub fn consider_registry(&mut self, cx: &mut Context<Self>) {
+        if self.adapter_view.registry_considered {
+            return;
+        }
+        self.adapter_view.registry_considered = true;
+
+        if let Some((registry, read_at)) = crate::core::registry::cached_registry() {
+            self.adapter_view.registry_plugins = registry.plugins;
+            self.adapter_view.registry_read_at = Some(read_at);
+        }
+
+        // `never` leaves reading it again to whoever asks.
+        let Some(within) = self.aeris_config.registry_sync_interval() else {
+            return;
+        };
+
+        if crate::core::registry::cache_is_stale(within) {
+            self.fetch_registry(cx);
+        }
+    }
+
     pub fn fetch_registry(&mut self, cx: &mut Context<Self>) {
         self.adapter_view.registry_loading = true;
         self.adapter_view.registry_error = None;
@@ -1664,6 +1692,8 @@ impl App {
                         match result {
                             Ok(registry) => {
                                 app.adapter_view.registry_plugins = registry.plugins;
+                                app.adapter_view.registry_read_at =
+                                    Some(std::time::SystemTime::now());
                             }
                             Err(e) => {
                                 app.adapter_view.registry_error = Some(e);

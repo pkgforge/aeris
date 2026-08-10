@@ -12,6 +12,11 @@ pub fn data_home() -> PathBuf {
     home_relative("XDG_DATA_HOME", ".local/share")
 }
 
+/// Where things that can be fetched again go, honouring `XDG_CACHE_HOME`.
+pub fn cache_home() -> PathBuf {
+    home_relative("XDG_CACHE_HOME", ".cache")
+}
+
 /// An absolute override wins; anything else falls back under the home
 /// directory, and a missing home leaves the relative path to be resolved
 /// against wherever aeris was started.
