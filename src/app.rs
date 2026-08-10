@@ -1654,6 +1654,80 @@ impl App {
         }
     }
 
+    /// Adapters whose manifest is on disk but which cannot be used, with the
+    /// command each is missing.
+    ///
+    /// These exist as far as the person who added them is concerned, so the
+    /// page has to account for them rather than leave them nowhere.
+    pub fn unusable_adapters(&self) -> Vec<(crate::core::adapter::AdapterInfo, String)> {
+        crate::adapters::command::manifest::discover()
+            .into_iter()
+            .filter(|(_, manifest)| self.adapter_manager.get_adapter(&manifest.id).is_none())
+            .map(|(path, manifest)| {
+                let capabilities = crate::adapters::command::adapter::capabilities_from(&manifest);
+                let missing = manifest.detect.command.clone();
+
+                (
+                    crate::core::adapter::AdapterInfo {
+                        id: manifest.id,
+                        name: manifest.name,
+                        version: manifest.version,
+                        capabilities,
+                        enabled: false,
+                        is_builtin: false,
+                        plugin_path: Some(path),
+                        description: manifest.description,
+                        icon: manifest.icon,
+                    },
+                    missing,
+                )
+            })
+            .collect()
+    }
+
+    /// Try again to use an adapter whose command was missing, now that it
+    /// might not be.
+    pub fn retry_adapter(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some((path, manifest)) = crate::adapters::command::manifest::discover()
+            .into_iter()
+            .find(|(_, manifest)| manifest.id == id)
+        else {
+            return;
+        };
+
+        let name = manifest.name.clone();
+        match CommandAdapter::new(manifest, Some(path)) {
+            Ok(adapter) => {
+                register_new(&mut self.adapter_manager, Arc::new(adapter));
+                self.add_toast(ToastLevel::Success, format!("{name} is ready"));
+            }
+            Err(e) => {
+                use crate::core::adapter::AdapterError;
+
+                let reason = match &e {
+                    AdapterError::PluginError(said) => said.clone(),
+                    other => other.to_string(),
+                };
+                self.add_toast(
+                    ToastLevel::Error,
+                    format!("{name} still cannot run: {reason}"),
+                );
+            }
+        }
+
+        cx.notify();
+    }
+
+    /// Forget an adapter that was added but never worked.
+    pub fn forget_adapter(&mut self, id: String, cx: &mut Context<Self>) {
+        match crate::core::registry::remove_plugin(&id) {
+            Ok(()) => self.add_toast(ToastLevel::Success, format!("Removed {id}")),
+            Err(e) => self.add_toast(ToastLevel::Error, format!("Could not remove {id}: {e}")),
+        }
+
+        cx.notify();
+    }
+
     /// Show whatever was read last, and read again if that was long enough
     /// ago. Called when the adapters page is opened.
     pub fn consider_registry(&mut self, cx: &mut Context<Self>) {

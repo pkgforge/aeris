@@ -905,7 +905,9 @@ fn names(record: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
+/// What a manifest says the manager can do, which is knowable without the
+/// manager being installed.
+pub fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
     let has = |name: &str| manifest.op(name).is_some();
 
     Capabilities {

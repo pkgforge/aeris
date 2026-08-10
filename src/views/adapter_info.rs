@@ -32,7 +32,17 @@ impl App {
 
         let mut adapters = self.adapter_manager.list_adapters_with_status();
         adapters.sort_by(|(a, _), (b, _)| b.is_builtin.cmp(&a.is_builtin));
-        let installed_ids: Vec<String> = adapters.iter().map(|(info, _)| info.id.clone()).collect();
+
+        // Added but not usable, because whatever they drive is missing. They
+        // belong with the installed ones: that is where someone who added
+        // them will look.
+        let unusable = self.unusable_adapters();
+
+        let installed_ids: Vec<String> = adapters
+            .iter()
+            .map(|(info, _)| info.id.clone())
+            .chain(unusable.iter().map(|(info, _)| info.id.clone()))
+            .collect();
 
         let header = div()
             .text_size(px(styles::font_size::TITLE))
@@ -71,6 +81,10 @@ impl App {
 
         // Separator
         content = content.child(div().w_full().h(px(2.0)).bg(border));
+
+        for (info, command) in &unusable {
+            content = content.child(self.render_unusable_card(info, command, theme, cx));
+        }
 
         // Available plugins section
         content = content.child(
@@ -839,6 +853,93 @@ impl App {
                     .text_size(px(styles::font_size::SMALL))
                     .on_click(sync_listener)
                     .child(sync_label),
+            )
+    }
+
+    /// An adapter that was added but cannot run, and what it is missing.
+    fn render_unusable_card(
+        &self,
+        info: &AdapterInfo,
+        command: &str,
+        theme: &theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = info.id.as_str();
+        let surface = theme.surface;
+        let border = theme.border;
+        let hover = theme.hover;
+
+        let retrying = id.to_string();
+        let retry = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.retry_adapter(retrying.clone(), cx);
+        });
+
+        let forgetting = id.to_string();
+        let forget = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+            app.forget_adapter(forgetting.clone(), cx);
+        });
+
+        /// Both buttons look the same and differ only in what they do.
+        type Clicked = Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App)>;
+
+        let button = |label: &str, element_id: String, listener: Clicked| {
+            div()
+                .id(SharedString::from(element_id))
+                .px(px(styles::spacing::SM))
+                .py(px(styles::spacing::XS))
+                .rounded(px(styles::radius::MD))
+                .bg(surface)
+                .border_1()
+                .border_color(border)
+                .cursor_pointer()
+                .text_size(px(styles::font_size::SMALL))
+                .hover(move |s| s.bg(hover))
+                .on_click(listener)
+                .child(label.to_string())
+        };
+
+        div()
+            .p(px(styles::spacing::LG))
+            .rounded(px(styles::radius::LG))
+            .bg(surface)
+            .border_1()
+            .border_color(border)
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(styles::spacing::SM))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(styles::spacing::SM))
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(styles::font_size::HEADING))
+                            .child(id.to_string()),
+                    )
+                    .child(self.badge_neutral("unavailable", theme)),
+            )
+            .child(
+                div()
+                    .text_size(px(styles::font_size::SMALL))
+                    .text_color(theme.warning)
+                    .child(format!(
+                        "Needs the {command} command, which is not installed"
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(styles::spacing::SM))
+                    .child(button(
+                        "Check again",
+                        format!("retry-{id}"),
+                        Box::new(retry),
+                    ))
+                    .child(button("Remove", format!("forget-{id}"), Box::new(forget))),
             )
     }
 
