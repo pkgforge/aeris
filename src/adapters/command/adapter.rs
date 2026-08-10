@@ -40,7 +40,11 @@ type Values = HashMap<String, String>;
 
 pub struct CommandAdapter {
     manifest: Arc<CommandManifest>,
-    program: PathBuf,
+    /// The binary for each scope, where one is installed. A manager shipping
+    /// one per scope may well have only one of them here, and works in that
+    /// scope alone.
+    user_program: Option<PathBuf>,
+    system_program: Option<PathBuf>,
     info: AdapterInfo,
     capabilities: Capabilities,
 }
@@ -49,9 +53,27 @@ impl CommandAdapter {
     /// Build an adapter from a manifest, refusing a manager that is missing or
     /// too old to speak the interface the manifest describes.
     pub fn new(manifest: CommandManifest, source: Option<PathBuf>) -> Result<Self> {
-        let program = which::which(&manifest.detect.command).map_err(|_| {
-            AdapterError::PluginError(format!("{} is not installed", manifest.detect.command))
-        })?;
+        let user_program = which::which(&manifest.detect.command).ok();
+
+        // A system mode naming no command of its own is the same binary with
+        // more arguments, so it stands or falls with that one.
+        let system_program = match &manifest.system {
+            Some(config) => match &config.command {
+                Some(named) => which::which(named).ok(),
+                None => user_program.clone(),
+            },
+            None => None,
+        };
+
+        let program = match (manifest.system_only, &user_program, &system_program) {
+            // Nothing installed for any scope this manager works in.
+            (_, None, None) | (true, _, None) => {
+                return Err(AdapterError::PluginError(missing(&manifest)));
+            }
+            (true, _, Some(system)) => system.clone(),
+            (false, Some(user), _) => user.clone(),
+            (false, None, Some(system)) => system.clone(),
+        };
 
         let found = detect_version(&program, &manifest);
         if let Some(required) = &manifest.detect.min_version {
@@ -72,7 +94,8 @@ impl CommandAdapter {
             }
         }
 
-        let capabilities = capabilities_from(&manifest);
+        let capabilities =
+            scoped_capabilities(&manifest, user_program.is_some(), system_program.is_some());
         let info = AdapterInfo {
             id: manifest.id.clone(),
             name: manifest.name.clone(),
@@ -89,7 +112,8 @@ impl CommandAdapter {
 
         Ok(Self {
             manifest: Arc::new(manifest),
-            program,
+            user_program,
+            system_program,
             info,
             capabilities,
         })
@@ -138,25 +162,34 @@ impl CommandAdapter {
     /// privileges the person running aeris does not have.
     fn invocation(&self, mode: PackageMode) -> Result<(PathBuf, Vec<String>, bool)> {
         let system = self.manifest.system_only || mode == PackageMode::System;
+
         if !system {
-            return Ok((self.program.clone(), Vec::new(), false));
+            let program = self
+                .user_program
+                .clone()
+                .ok_or(AdapterError::NotSupported)?;
+            return Ok((program, Vec::new(), false));
         }
 
         let Some(config) = &self.manifest.system else {
             return Err(AdapterError::NotSupported);
         };
 
-        let program = match &config.command {
-            Some(command) => which::which(command).map_err(|_| {
-                AdapterError::Other(format!(
-                    "{} acts system wide through {command}, which is not installed",
-                    self.info.id
-                ))
-            })?,
-            None => self.program.clone(),
-        };
+        let program = self
+            .system_program
+            .clone()
+            .ok_or(AdapterError::NotSupported)?;
 
         Ok((program, config.args.clone(), config.elevate))
+    }
+
+    /// Whichever binary is there, for the things that are the same in any
+    /// scope: asking its version, asking where its files are.
+    fn program(&self) -> Result<&PathBuf> {
+        self.user_program
+            .as_ref()
+            .or(self.system_program.as_ref())
+            .ok_or(AdapterError::NotSupported)
     }
 
     fn op(&self, name: &str) -> Result<&Op> {
@@ -263,7 +296,7 @@ impl CommandAdapter {
     pub fn file_paths(&self) -> Result<HashMap<String, String>> {
         let op = self.op(OP_PATHS)?;
         let printed = run(
-            &self.program,
+            self.program()?,
             &fill_args(op, &Values::new())?,
             false,
             None,
@@ -914,9 +947,37 @@ fn names(record: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Says which command is missing, naming both where a manager ships one per
+/// scope.
+fn missing(manifest: &CommandManifest) -> String {
+    let system = manifest
+        .system
+        .as_ref()
+        .and_then(|config| config.command.as_deref());
+
+    match system {
+        Some(other) if other != manifest.detect.command => {
+            format!(
+                "neither {} nor {other} is installed",
+                manifest.detect.command
+            )
+        }
+        _ => format!("{} is not installed", manifest.detect.command),
+    }
+}
+
 /// What a manifest says the manager can do, which is knowable without the
 /// manager being installed.
 pub fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
+    scoped_capabilities(manifest, true, true)
+}
+
+/// What the manager can do given which of its binaries are installed.
+fn scoped_capabilities(
+    manifest: &CommandManifest,
+    user_available: bool,
+    system_available: bool,
+) -> Capabilities {
     let has = |name: &str| manifest.op(name).is_some();
 
     Capabilities {
@@ -936,10 +997,10 @@ pub fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
             .ops
             .values()
             .any(|op| op.fields.contains_key("size")),
-        // A manager that only ever acts system wide has no user mode to
-        // offer, and one that says nothing about system mode has no other.
-        supports_user_packages: !manifest.system_only,
-        supports_system_packages: manifest.system_only || manifest.system.is_some(),
+        // A scope is offered only when this manager works that way and the
+        // binary it works with is here.
+        supports_user_packages: !manifest.system_only && user_available,
+        supports_system_packages: manifest.system.is_some() && system_available,
         ..Default::default()
     }
 }
@@ -1259,7 +1320,8 @@ progress = { event = "type", current = "current", total = "total", message = "pk
                 icon: None,
             },
             manifest: Arc::new(manifest),
-            program: PathBuf::from("demo"),
+            user_program: Some(PathBuf::from("demo")),
+            system_program: None,
             capabilities,
         }
     }
@@ -1792,6 +1854,56 @@ fields = {{ config = "config", packages_config = "packages_config" }}
         assert_eq!(binary, program);
         assert!(before.is_empty());
         assert!(!elevate);
+    }
+
+    #[test]
+    fn a_manager_shipping_one_binary_per_scope_works_with_either_alone() {
+        let user_only = fake_manager("user-half");
+        let absent = user_only.parent().unwrap().join("not-installed-at-all");
+
+        // Only the per-user half is here, so only that scope is offered.
+        let user_half = manifest(&format!(
+            "{}\n[system]\ncommand = \"{}\"\n",
+            manifest_for(&user_only, "1.0.0"),
+            absent.display()
+        ));
+        let adapter = CommandAdapter::new(user_half, None).expect("should still be usable");
+        assert!(adapter.capabilities().supports_user_packages);
+        assert!(!adapter.capabilities().supports_system_packages);
+        assert!(adapter.invocation(PackageMode::User).is_ok());
+        assert!(matches!(
+            adapter.invocation(PackageMode::System),
+            Err(AdapterError::NotSupported)
+        ));
+
+        // Now the other way round: only the system half exists.
+        let system_only = fake_manager("system-half");
+        let other_way = manifest(&format!(
+            "{}\n[system]\ncommand = \"{}\"\n",
+            manifest_for(&absent, "1.0.0"),
+            system_only.display()
+        ));
+        let adapter = CommandAdapter::new(other_way, None).expect("should still be usable");
+        assert!(!adapter.capabilities().supports_user_packages);
+        assert!(adapter.capabilities().supports_system_packages);
+
+        let (binary, _, _) = adapter.invocation(PackageMode::System).expect("system");
+        assert_eq!(binary, system_only);
+    }
+
+    #[test]
+    fn a_manager_with_neither_binary_is_refused_naming_both() {
+        let here = std::env::temp_dir();
+        let manifest = manifest(&format!(
+            "{}\n[system]\ncommand = \"{}\"\n",
+            manifest_for(&here.join("no-such-user-half"), "1.0.0"),
+            here.join("no-such-system-half").display()
+        ));
+
+        let Err(e) = CommandAdapter::new(manifest, None) else {
+            panic!("should refuse when nothing is installed");
+        };
+        assert!(e.to_string().contains("neither"), "{e}");
     }
 
     #[test]
