@@ -474,7 +474,21 @@ impl App {
             .items_center();
 
         if !pkg.installed {
+            // Choosing a package and looking at one are different intentions,
+            // so the box answers for itself and leaves the row alone.
+            let ticking = pkg.id.clone();
+            let tick = cx.listener(move |app, _: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
+
+                if !app.browse_state.selected.remove(&ticking) {
+                    app.browse_state.selected.insert(ticking.clone());
+                }
+
+                cx.notify();
+            });
+
             let checkbox = div()
+                .id(SharedString::from(format!("select-pkg-{idx}")))
                 .size(px(18.0))
                 .rounded(px(styles::radius::SM))
                 .border_1()
@@ -483,6 +497,8 @@ impl App {
                 .flex()
                 .items_center()
                 .justify_center()
+                .cursor_pointer()
+                .on_click(tick)
                 .child(if is_selected {
                     div()
                         .text_size(px(12.0))
@@ -507,17 +523,10 @@ impl App {
             border
         };
 
-        let pkg_id = pkg.id.clone();
         let pkg_clone = pkg.clone();
-        let is_installed = pkg.installed;
+        // The row itself only opens the package. Choosing it belongs to the
+        // box, and installing to the button, both of which stop here.
         let card_listener = cx.listener(move |app, _: &ClickEvent, _window, cx| {
-            if !is_installed {
-                if app.browse_state.selected.contains(&pkg_id) {
-                    app.browse_state.selected.remove(&pkg_id);
-                } else {
-                    app.browse_state.selected.insert(pkg_id.clone());
-                }
-            }
             app.browse_state.selected_package = Some(pkg_clone.clone());
             app.load_package_detail(pkg_clone.clone(), cx);
         });
@@ -597,8 +606,20 @@ impl App {
                     ),
             );
 
-        // Version badge
-        if !pkg.version.is_empty() {
+        // Version badge. Some managers only say which version a package is
+        // when asked about that one package, so the detail fills this in when
+        // the listing could not.
+        let version = if pkg.version.is_empty() {
+            self.browse_state
+                .selected_detail
+                .as_ref()
+                .map(|detail| detail.package.version.clone())
+                .unwrap_or_default()
+        } else {
+            pkg.version.clone()
+        };
+
+        if !version.is_empty() {
             content = content.child(
                 div()
                     .px(px(styles::spacing::SM))
@@ -608,7 +629,7 @@ impl App {
                     .border_1()
                     .border_color(primary.opacity(0.4))
                     .text_size(px(styles::font_size::SMALL))
-                    .child(pkg.version.clone()),
+                    .child(version),
             );
         }
 

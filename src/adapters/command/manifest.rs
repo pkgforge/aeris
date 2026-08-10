@@ -159,6 +159,10 @@ pub struct Output {
     /// Lines to drop before reading, for a manager that prints a header.
     #[serde(default)]
     pub skip_header: usize,
+    /// What separates a name from its value, for the `keyvalue` format.
+    /// Defaults to a colon.
+    #[serde(default)]
+    pub separator: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -170,6 +174,9 @@ pub enum Format {
     Ndjson,
     /// Plain text, read with `pattern`.
     Lines,
+    /// Plain text describing one thing, a name and a value to a line. What a
+    /// manager prints when asked about a single package.
+    KeyValue,
 }
 
 impl CommandManifest {

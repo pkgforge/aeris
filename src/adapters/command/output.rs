@@ -106,6 +106,7 @@ pub fn records(op: &Op, stdout: &str, strip: bool) -> Result<Vec<Value>, String>
             .filter(|line| !line.trim().is_empty())
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect()),
+        Format::KeyValue => Ok(key_value(op, stdout).into_iter().collect()),
         Format::Lines => {
             let pattern = op
                 .pattern
@@ -121,6 +122,45 @@ pub fn records(op: &Op, stdout: &str, strip: bool) -> Result<Vec<Value>, String>
                 .collect())
         }
     }
+}
+
+/// Read a block of named values as the one thing it describes.
+///
+/// A name given more than once, as a manager listing several dependencies
+/// would, is kept as a list rather than the last one winning.
+fn key_value(op: &Op, printed: &str) -> Option<Value> {
+    let separator = op.output.separator.as_deref().unwrap_or(":");
+    let mut record = Map::new();
+
+    for line in printed.lines().skip(op.output.skip_header) {
+        let Some((name, value)) = line.split_once(separator) else {
+            continue;
+        };
+
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+
+        match record.remove(name) {
+            Some(Value::Array(mut seen)) => {
+                seen.push(Value::String(value.to_string()));
+                record.insert(name.to_string(), Value::Array(seen));
+            }
+            Some(first) => {
+                record.insert(
+                    name.to_string(),
+                    Value::Array(vec![first, Value::String(value.to_string())]),
+                );
+            }
+            None => {
+                record.insert(name.to_string(), Value::String(value.to_string()));
+            }
+        }
+    }
+
+    (!record.is_empty()).then_some(Value::Object(record))
 }
 
 fn captures(pattern: &regex::Regex, line: &str) -> Option<Value> {
@@ -317,6 +357,55 @@ pattern = "^(?P<name>\\S+)$""#);
         // The string terminator is as valid an ending as a bell.
         let linked = "\u{1b}]8;;https://example.invalid\u{1b}\\name\u{1b}]8;;\u{1b}\\";
         assert_eq!(strip_ansi(linked), "name");
+    }
+
+    #[test]
+    fn a_block_of_named_values_reads_as_one_thing() {
+        let op = op(r#"args = ["x"]
+output = { format = "keyvalue", separator = "=" }"#);
+
+        // As pacstall prints it, tabs and repeated names and all.
+        let printed = concat!(
+            "--- github:pacstall/pacstall-programs ---\n",
+            "pkgbase = hello-rhino-bin\n",
+            "\tgives = hello-rhino\n",
+            "\tpkgver = 2025.2\n",
+            "\tpkgdesc = Rhino Linux Welcome Screen\n",
+            "\tdepends = libssl-dev\n",
+            "\tdepends = gettext\n"
+        );
+
+        let found = records(&op, printed, false).expect("should read");
+        assert_eq!(found.len(), 1, "a block describes one thing");
+        assert_eq!(found[0]["pkgver"], "2025.2");
+        assert_eq!(found[0]["pkgdesc"], "Rhino Linux Welcome Screen");
+        // The line with no separator is not a named value.
+        assert!(found[0].get("--- github").is_none());
+        // Named twice, so kept as both.
+        assert_eq!(
+            found[0]["depends"],
+            serde_json::json!(["libssl-dev", "gettext"])
+        );
+    }
+
+    #[test]
+    fn a_colon_is_what_separates_a_name_by_default() {
+        let op = op(r#"args = ["x"]
+output = { format = "keyvalue" }"#);
+
+        let found =
+            records(&op, "name: hello\nversion: 1.2\nempty:\n", false).expect("should read");
+        assert_eq!(found[0]["version"], "1.2");
+        // Nothing after the separator is nothing to record.
+        assert!(found[0].get("empty").is_none());
+    }
+
+    #[test]
+    fn nothing_named_reads_as_nothing() {
+        let op = op(r#"args = ["x"]
+output = { format = "keyvalue" }"#);
+
+        assert!(records(&op, "no names here\n", false).unwrap().is_empty());
     }
 
     #[test]

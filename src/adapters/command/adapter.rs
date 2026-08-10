@@ -1118,9 +1118,9 @@ impl<'a> Reporter<'a> {
 
                 Some(Value::Object(record))
             }
-            // A document is only whole once the run ends, so it says nothing
-            // while the work is still going.
-            Format::Json => None,
+            // Neither is whole until the run ends, so they say nothing while
+            // the work is still going.
+            Format::Json | Format::KeyValue => None,
         }
     }
 
