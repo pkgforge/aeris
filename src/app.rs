@@ -510,7 +510,24 @@ impl App {
             aeris_config.disabled_adapters.iter().cloned().collect();
         adapter_manager.set_disabled(disabled);
 
-        let default_mode = PackageMode::User;
+        // Whichever scope the adapters actually work in. A manager that only
+        // ever acts system wide would otherwise have its packages counted and
+        // labelled as the user's.
+        let default_mode = if adapter_manager
+            .list_adapters()
+            .iter()
+            .any(|info| info.capabilities.supports_user_packages)
+        {
+            PackageMode::User
+        } else if adapter_manager
+            .list_adapters()
+            .iter()
+            .any(|info| info.capabilities.supports_system_packages)
+        {
+            PackageMode::System
+        } else {
+            PackageMode::User
+        };
         let (progress_sender, progress_receiver) = tokio::sync::mpsc::unbounded_channel();
 
         let settings_state = match adapter.as_ref() {
@@ -1671,7 +1688,8 @@ impl App {
         // Soar has a place on this page whether or not it can run, so there
         // is always something to turn back on.
         if self.adapter_manager.get_adapter(SOAR_ID).is_none() {
-            let missing = self
+            // Already a whole sentence, since detection is what produced it.
+            let reason = self
                 .soar_problem
                 .clone()
                 .unwrap_or_else(|| "soar is not installed".to_string());
@@ -1688,7 +1706,7 @@ impl App {
                     description: "Fast package manager for static binaries".to_string(),
                     icon: None,
                 },
-                missing,
+                reason,
             ));
         }
 
@@ -1699,7 +1717,9 @@ impl App {
                 .map(|(path, manifest)| {
                     let capabilities =
                         crate::adapters::command::adapter::capabilities_from(&manifest);
-                    let missing = manifest.detect.command.clone();
+                    // Nothing is run from here, so the command being absent is
+                    // the reason worth assuming and the one worth saying.
+                    let reason = format!("{} is not installed", manifest.detect.command);
 
                     (
                         crate::core::adapter::AdapterInfo {
@@ -1713,7 +1733,7 @@ impl App {
                             description: manifest.description,
                             icon: manifest.icon,
                         },
-                        missing,
+                        reason,
                     )
                 }),
         );
@@ -3800,10 +3820,9 @@ impl App {
 
         // Offered only where the manager says it can act system wide, which
         // needs privileges nothing here knows how to ask for otherwise.
-        if !self
-            .adapter
-            .as_ref()
-            .is_some_and(|adapter| adapter.capabilities().supports_system_packages)
+        // Worth offering only when there is more than one way to work.
+        if !(self.any_adapter_works_in(PackageMode::User)
+            && self.any_adapter_works_in(PackageMode::System))
         {
             return header;
         }
@@ -3827,11 +3846,29 @@ impl App {
         )
     }
 
+    /// Whether any adapter in use works in the given scope.
+    pub(crate) fn any_adapter_works_in(&self, mode: PackageMode) -> bool {
+        self.adapter_manager.list_adapters().iter().any(|info| {
+            self.adapter_manager.is_enabled(&info.id)
+                && match mode {
+                    PackageMode::User => info.capabilities.supports_user_packages,
+                    PackageMode::System => info.capabilities.supports_system_packages,
+                }
+        })
+    }
+
     pub(crate) fn toggle_mode(&mut self, cx: &mut Context<Self>) {
-        self.current_mode = match self.current_mode {
+        let wanted = match self.current_mode {
             PackageMode::User => PackageMode::System,
             PackageMode::System => PackageMode::User,
         };
+
+        // Nothing works that way, so there is nothing to switch to.
+        if !self.any_adapter_works_in(wanted) {
+            return;
+        }
+
+        self.current_mode = wanted;
         // Invalidate per-view caches so they reload for the new mode
         self.installed_state.loaded = false;
         self.installed_state.packages.clear();

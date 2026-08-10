@@ -82,8 +82,8 @@ impl App {
         // Separator
         content = content.child(div().w_full().h(px(2.0)).bg(border));
 
-        for (info, command) in &unusable {
-            content = content.child(self.render_unusable_card(info, command, theme, cx));
+        for (info, reason) in &unusable {
+            content = content.child(self.render_unusable_card(info, reason, theme, cx));
         }
 
         // Available plugins section
@@ -860,7 +860,7 @@ impl App {
     fn render_unusable_card(
         &self,
         info: &AdapterInfo,
-        command: &str,
+        reason: &str,
         theme: &theme::Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -960,8 +960,10 @@ impl App {
                     )
                 } else {
                     (
+                        // Already a sentence, from whoever worked out that it
+                        // could not run.
                         theme.warning,
-                        format!("Needs the {command} command, which is not installed"),
+                        reason.to_string(),
                     )
                 };
 
