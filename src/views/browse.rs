@@ -310,7 +310,10 @@ impl App {
         let hover = theme.hover;
         let text_muted = theme.text_muted;
 
-        let is_selected = self.browse_state.selected.contains(&pkg.id);
+        let is_selected = self
+            .browse_state
+            .selected
+            .contains(&crate::core::adapter::package_key(&pkg.adapter_id, &pkg.id));
         let pkey = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
         let is_installing = self.browse_state.installing.is_some()
             && (self.browse_state.installing.as_deref() == Some(&pkg.id)
@@ -476,7 +479,7 @@ impl App {
         if !pkg.installed {
             // Choosing a package and looking at one are different intentions,
             // so the box answers for itself and leaves the row alone.
-            let ticking = pkg.id.clone();
+            let ticking = crate::core::adapter::package_key(&pkg.adapter_id, &pkg.id);
             let tick = cx.listener(move |app, _: &ClickEvent, _window, cx| {
                 cx.stop_propagation();
 

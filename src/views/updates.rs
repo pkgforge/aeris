@@ -290,7 +290,13 @@ impl App {
         let warning = theme.warning;
         let text_muted = theme.text_muted;
 
-        let is_selected = self.updates_state.selected.contains(&update.package.id);
+        let is_selected = self
+            .updates_state
+            .selected
+            .contains(&crate::core::adapter::package_key(
+                &update.package.adapter_id,
+                &update.package.id,
+            ));
         let pkey =
             crate::core::adapter::progress_key(&update.package.adapter_id, &update.package.id);
         let pkg_status = self.updates_state.package_progress.get(&pkey);
@@ -465,7 +471,8 @@ impl App {
             border
         };
 
-        let toggle_key = update.package.id.clone();
+        let toggle_key =
+            crate::core::adapter::package_key(&update.package.adapter_id, &update.package.id);
         let card_listener = cx.listener(move |app, _: &ClickEvent, _window, _cx| {
             if app.updates_state.selected.contains(&toggle_key) {
                 app.updates_state.selected.remove(&toggle_key);

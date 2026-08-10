@@ -1281,7 +1281,12 @@ impl App {
             .updates_state
             .updates
             .iter()
-            .filter(|u| selected.contains(&u.package.id))
+            .filter(|u| {
+                selected.contains(&crate::core::adapter::package_key(
+                    &u.package.adapter_id,
+                    &u.package.id,
+                ))
+            })
             .map(|u| u.package.clone())
             .collect();
         for pkg in &packages {
@@ -1369,7 +1374,10 @@ impl App {
             .browse_state
             .search_results
             .iter()
-            .filter(|p| selected.contains(&p.id) && !p.installed)
+            .filter(|p| {
+                selected.contains(&crate::core::adapter::package_key(&p.adapter_id, &p.id))
+                    && !p.installed
+            })
             .cloned()
             .collect();
         let pkg_ids: Vec<String> = packages.iter().map(|p| p.id.clone()).collect();

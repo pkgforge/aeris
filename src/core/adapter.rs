@@ -49,9 +49,18 @@ pub enum ProgressEvent {
     },
 }
 
-/// Composite key for tracking per-package progress: "adapter_id:package_id"
-pub fn progress_key(adapter_id: &str, package_id: &str) -> String {
+/// Tells one manager's package from another's of the same name.
+///
+/// Package ids are only unique within the manager that named them, so two
+/// managers offering `neofetch` would otherwise be the same package as far
+/// as anything keyed by id is concerned.
+pub fn package_key(adapter_id: &str, package_id: &str) -> String {
     format!("{adapter_id}:{package_id}")
+}
+
+/// Composite key for tracking per-package progress.
+pub fn progress_key(adapter_id: &str, package_id: &str) -> String {
+    package_key(adapter_id, package_id)
 }
 
 #[derive(Debug, thiserror::Error)]

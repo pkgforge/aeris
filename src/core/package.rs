@@ -48,7 +48,11 @@ pub struct InstalledPackage {
 impl InstalledPackage {
     /// Unique key for selection/tracking, distinguishing different installs of the same package.
     pub fn unique_key(&self) -> String {
-        format!("{}@{}", self.package.id, self.package.version)
+        format!(
+            "{}@{}",
+            super::adapter::package_key(&self.package.adapter_id, &self.package.id),
+            self.package.version
+        )
     }
 }
 
