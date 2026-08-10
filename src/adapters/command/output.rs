@@ -16,14 +16,36 @@ pub fn strip_ansi(text: &str) -> String {
             out.push(c);
             continue;
         }
-        // A control sequence opens with `[` and runs until a byte in the @ to
-        // ~ range ends it. Any other escape takes only the byte after it.
-        if chars.next() == Some('[') {
-            for next in chars.by_ref() {
-                if ('@'..='~').contains(&next) {
-                    break;
+
+        match chars.next() {
+            // A control sequence runs until a byte in the @ to ~ range.
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
                 }
             }
+            // An operating system command carries a payload of its own, such
+            // as the target of a hyperlink, and ends at a bell or at the
+            // string terminator. Everything in between is addressed to the
+            // terminal, not to the reader.
+            Some(']') => {
+                while let Some(next) = chars.next() {
+                    match next {
+                        '\u{7}' => break,
+                        '\u{1b}' => {
+                            // The string terminator is ESC followed by \.
+                            if chars.next() == Some('\\') {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Any other escape takes only the byte after it.
+            _ => {}
         }
     }
 
@@ -271,6 +293,30 @@ pattern = "^(?P<name>\\S+)$""#);
         assert_eq!(text(&record, &fields, "single").as_deref(), Some("MIT"));
         // Nothing to show is not the same as an empty list to show.
         assert_eq!(text(&record, &fields, "license"), None);
+    }
+
+    #[test]
+    fn a_hyperlink_leaves_only_the_words_it_wrapped() {
+        // Pacstall marks up its repository names as clickable links, and the
+        // address is addressed to the terminal rather than to a reader.
+        let linked = concat!(
+            "\u{1b}[0;32mneofetch \u{1b}[0;35m@ \u{1b}[0;36m",
+            "\u{1b}]8;;https://github.com/pacstall/pacstall-programs/tree/master\u{7}",
+            "github:pacstall/pacstall-programs",
+            "\u{1b}]8;;\u{7} \u{1b}[0m"
+        );
+
+        assert_eq!(
+            strip_ansi(linked).trim(),
+            "neofetch @ github:pacstall/pacstall-programs"
+        );
+    }
+
+    #[test]
+    fn a_hyperlink_closed_the_other_way_is_understood_too() {
+        // The string terminator is as valid an ending as a bell.
+        let linked = "\u{1b}]8;;https://example.invalid\u{1b}\\name\u{1b}]8;;\u{1b}\\";
+        assert_eq!(strip_ansi(linked), "name");
     }
 
     #[test]

@@ -59,6 +59,14 @@ pub struct CommandManifest {
     #[serde(default)]
     pub selector: Vec<String>,
     pub detect: Detect,
+    /// How the manager acts on packages for everyone rather than for the
+    /// person running it. Absent means it cannot, and the mode is not
+    /// offered.
+    pub system: Option<SystemMode>,
+    /// Set when every operation acts system wide, as it does for a manager
+    /// that has no per-user notion at all.
+    #[serde(default)]
+    pub system_only: bool,
     /// The settings the manager can be configured with, named as they appear
     /// in its own configuration file.
     #[serde(default)]
@@ -95,6 +103,23 @@ pub enum SettingKind {
     Number,
     Select,
     PathList,
+}
+
+/// What changes when acting system wide.
+///
+/// Managers differ in how they say it: one takes a flag, another is a
+/// different binary altogether, and a third only ever works this way.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SystemMode {
+    /// A different binary to run, for a manager that ships one per scope.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Arguments put before the ones an operation names.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Whether this needs privileges the person running aeris does not have.
+    #[serde(default)]
+    pub elevate: bool,
 }
 
 /// What decides whether the manager is usable at all.

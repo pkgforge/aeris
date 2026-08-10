@@ -136,6 +136,32 @@ impl CommandAdapter {
         self
     }
 
+    /// What to run for an operation in the given mode: the binary, whatever
+    /// goes before the operation's own arguments, and whether it needs
+    /// privileges the person running aeris does not have.
+    fn invocation(&self, mode: PackageMode) -> Result<(PathBuf, Vec<String>, bool)> {
+        let system = self.manifest.system_only || mode == PackageMode::System;
+        if !system {
+            return Ok((self.program.clone(), Vec::new(), false));
+        }
+
+        let Some(config) = &self.manifest.system else {
+            return Err(AdapterError::NotSupported);
+        };
+
+        let program = match &config.command {
+            Some(command) => which::which(command).map_err(|_| {
+                AdapterError::Other(format!(
+                    "{} acts system wide through {command}, which is not installed",
+                    self.info.id
+                ))
+            })?,
+            None => self.program.clone(),
+        };
+
+        Ok((program, config.args.clone(), config.elevate))
+    }
+
     fn op(&self, name: &str) -> Result<&Op> {
         self.manifest.op(name).ok_or(AdapterError::NotSupported)
     }
@@ -147,14 +173,16 @@ impl CommandAdapter {
         values: Values,
         progress: Option<ProgressSender>,
         package_id: String,
+        mode: PackageMode,
     ) -> Result<Ran> {
         let op = self.op(op_name)?.clone();
         let manifest = self.manifest.clone();
-        let program = self.program.clone();
+        let (program, before, elevate) = self.invocation(mode)?;
         let adapter_id = self.info.id.clone();
 
         tokio::task::spawn_blocking(move || {
-            let args = fill_args(&op, &values)?;
+            let mut args = before;
+            args.extend(fill_args(&op, &values)?);
             let context = progress.map(|sender| Progress {
                 sender,
                 adapter_id,
@@ -164,15 +192,21 @@ impl CommandAdapter {
                 pattern: op.pattern.clone(),
             });
 
-            run(&program, &args, manifest.strip_ansi, context.as_ref())
+            run(
+                &program,
+                &args,
+                manifest.strip_ansi,
+                context.as_ref(),
+                elevate,
+            )
         })
         .await
         .map_err(|e| AdapterError::Other(format!("could not wait for the run: {e}")))?
     }
 
     /// Read the records a query operation printed.
-    async fn query(&self, op_name: &str, values: Values) -> Result<Vec<Value>> {
-        let ran = self.run(op_name, values, None, String::new()).await?;
+    async fn query(&self, op_name: &str, values: Values, mode: PackageMode) -> Result<Vec<Value>> {
+        let ran = self.run(op_name, values, None, String::new(), mode).await?;
 
         // A question that goes unanswered is a failure however the manager
         // exited, and what it complained about says more than the empty
@@ -231,7 +265,14 @@ impl CommandAdapter {
     /// an event loop to wait on.
     pub fn file_paths(&self) -> Result<HashMap<String, String>> {
         let op = self.op(OP_PATHS)?;
-        let printed = run(&self.program, &fill_args(op, &Values::new())?, false, None)?.printed;
+        let printed = run(
+            &self.program,
+            &fill_args(op, &Values::new())?,
+            false,
+            None,
+            false,
+        )?
+        .printed;
 
         let records = output::records(op, &printed, self.manifest.strip_ansi)
             .map_err(AdapterError::ParseError)?;
@@ -281,11 +322,12 @@ impl CommandAdapter {
         op_name: &str,
         packages: &[Package],
         progress: Option<ProgressSender>,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
         let op = self.op(op_name)?;
 
         if !takes_a_package(op) {
-            self.run(op_name, Values::new(), progress, String::new())
+            self.run(op_name, Values::new(), progress, String::new(), mode)
                 .await?;
             return Ok(Vec::new());
         }
@@ -305,6 +347,7 @@ impl CommandAdapter {
                     self.values_for(package),
                     progress.clone(),
                     package.id.clone(),
+                    mode,
                 )
                 .await;
 
@@ -349,10 +392,10 @@ impl Adapter for CommandAdapter {
         &self,
         query: &str,
         limit: Option<usize>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<Vec<Package>> {
         let values = Values::from([("query".into(), query.to_string())]);
-        let records = self.query(OP_SEARCH, values).await?;
+        let records = self.query(OP_SEARCH, values, mode).await?;
         let fields = &self.op(OP_SEARCH)?.fields;
 
         let found = records
@@ -370,7 +413,7 @@ impl Adapter for CommandAdapter {
             ("selector".into(), package_id.to_string()),
             ("name".into(), package_id.to_string()),
         ]);
-        let records = self.query(OP_INFO, values).await?;
+        let records = self.query(OP_INFO, values, PackageMode::User).await?;
         let fields = &self.op(OP_INFO)?.fields;
 
         let record = records
@@ -393,18 +436,18 @@ impl Adapter for CommandAdapter {
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
-        self.run_over(OP_INSTALL, packages, progress).await
+        self.run_over(OP_INSTALL, packages, progress, mode).await
     }
 
     async fn remove(
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<()> {
-        let results = self.run_over(OP_REMOVE, packages, progress).await?;
+        let results = self.run_over(OP_REMOVE, packages, progress, mode).await?;
 
         match results.iter().find(|r| !r.success) {
             Some(failed) => {
@@ -420,13 +463,13 @@ impl Adapter for CommandAdapter {
         &self,
         packages: &[Package],
         progress: Option<ProgressSender>,
-        _mode: PackageMode,
+        mode: PackageMode,
     ) -> Result<Vec<InstallResult>> {
-        self.run_over(OP_UPDATE, packages, progress).await
+        self.run_over(OP_UPDATE, packages, progress, mode).await
     }
 
-    async fn list_installed(&self, _mode: PackageMode) -> Result<Vec<InstalledPackage>> {
-        let records = self.query(OP_LIST_INSTALLED, Values::new()).await?;
+    async fn list_installed(&self, mode: PackageMode) -> Result<Vec<InstalledPackage>> {
+        let records = self.query(OP_LIST_INSTALLED, Values::new(), mode).await?;
         let fields = &self.op(OP_LIST_INSTALLED)?.fields;
 
         Ok(records
@@ -449,8 +492,8 @@ impl Adapter for CommandAdapter {
             .collect())
     }
 
-    async fn list_updates(&self, _mode: PackageMode) -> Result<Vec<Update>> {
-        let records = self.query(OP_LIST_UPDATES, Values::new()).await?;
+    async fn list_updates(&self, mode: PackageMode) -> Result<Vec<Update>> {
+        let records = self.query(OP_LIST_UPDATES, Values::new(), mode).await?;
         let fields = &self.op(OP_LIST_UPDATES)?.fields;
 
         Ok(records
@@ -474,13 +517,19 @@ impl Adapter for CommandAdapter {
     }
 
     async fn sync(&self, progress: Option<ProgressSender>) -> Result<()> {
-        self.run(OP_SYNC, Values::new(), progress, String::new())
-            .await?;
+        self.run(
+            OP_SYNC,
+            Values::new(),
+            progress,
+            String::new(),
+            PackageMode::User,
+        )
+        .await?;
         Ok(())
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
-        let count = match self.query(OP_LIST, Values::new()).await {
+        let count = match self.query(OP_LIST, Values::new(), PackageMode::User).await {
             Ok(records) => Some(records.len() as u64),
             Err(AdapterError::NotSupported) => None,
             Err(e) => {
@@ -502,7 +551,9 @@ impl Adapter for CommandAdapter {
     }
 
     async fn list_repositories(&self) -> Result<Vec<Repository>> {
-        let records = self.query(OP_LIST_REPOS, Values::new()).await?;
+        let records = self
+            .query(OP_LIST_REPOS, Values::new(), PackageMode::User)
+            .await?;
         let fields = &self.op(OP_LIST_REPOS)?.fields;
 
         Ok(records
@@ -523,33 +574,47 @@ impl Adapter for CommandAdapter {
             ("name".into(), repo.name.clone()),
             ("url".into(), repo.url.clone()),
         ]);
-        self.run(OP_ADD_REPO, values, None, repo.name.clone())
-            .await?;
+        self.run(
+            OP_ADD_REPO,
+            values,
+            None,
+            repo.name.clone(),
+            PackageMode::User,
+        )
+        .await?;
 
         Ok(())
     }
 
     async fn remove_repository(&self, repo_name: &str) -> Result<()> {
         let values = Values::from([("name".into(), repo_name.to_string())]);
-        self.run(OP_REMOVE_REPO, values, None, repo_name.to_string())
-            .await?;
+        self.run(
+            OP_REMOVE_REPO,
+            values,
+            None,
+            repo_name.to_string(),
+            PackageMode::User,
+        )
+        .await?;
 
         Ok(())
     }
 
-    async fn set_repo_enabled(&self, name: &str, enabled: bool, _mode: PackageMode) -> Result<()> {
+    async fn set_repo_enabled(&self, name: &str, enabled: bool, mode: PackageMode) -> Result<()> {
         let values = Values::from([
             ("name".into(), name.to_string()),
             ("enabled".into(), enabled.to_string()),
         ]);
-        self.run(OP_SET_REPO_ENABLED, values, None, name.to_string())
+        self.run(OP_SET_REPO_ENABLED, values, None, name.to_string(), mode)
             .await?;
 
         Ok(())
     }
 
     async fn paths(&self) -> Result<HashMap<String, String>> {
-        let records = self.query(OP_PATHS, Values::new()).await?;
+        let records = self
+            .query(OP_PATHS, Values::new(), PackageMode::User)
+            .await?;
         let fields = &self.op(OP_PATHS)?.fields;
         let record = records
             .first()
@@ -623,8 +688,14 @@ impl Adapter for CommandAdapter {
         // writing one from nothing would leave out whatever the manager needs
         // but never offered. Ask it for a whole one first.
         if !Path::new(&path).exists() && self.op(OP_DEFAULT_CONFIG).is_ok() {
-            self.run(OP_DEFAULT_CONFIG, Values::new(), None, String::new())
-                .await?;
+            self.run(
+                OP_DEFAULT_CONFIG,
+                Values::new(),
+                None,
+                String::new(),
+                PackageMode::User,
+            )
+            .await?;
         }
 
         let mut document = std::fs::read_to_string(&path)
@@ -672,7 +743,9 @@ impl Adapter for CommandAdapter {
     }
 
     async fn declarative_diff(&self) -> Result<ManifestDiff> {
-        let records = self.query(OP_APPLY_CHECK, Values::new()).await?;
+        let records = self
+            .query(OP_APPLY_CHECK, Values::new(), PackageMode::User)
+            .await?;
         let record = records
             .first()
             .ok_or_else(|| AdapterError::Other("the manager reported no diff".into()))?;
@@ -694,7 +767,13 @@ impl Adapter for CommandAdapter {
     ) -> Result<ManifestApplyReport> {
         let op_name = if prune { OP_APPLY_PRUNE } else { OP_APPLY };
         let printed = self
-            .run(op_name, Values::new(), progress, String::new())
+            .run(
+                op_name,
+                Values::new(),
+                progress,
+                String::new(),
+                PackageMode::User,
+            )
             .await?
             .printed;
 
@@ -849,7 +928,10 @@ fn capabilities_from(manifest: &CommandManifest) -> Capabilities {
             .ops
             .values()
             .any(|op| op.fields.contains_key("size")),
-        supports_user_packages: true,
+        // A manager that only ever acts system wide has no user mode to
+        // offer, and one that says nothing about system mode has no other.
+        supports_user_packages: !manifest.system_only,
+        supports_system_packages: manifest.system_only || manifest.system.is_some(),
         ..Default::default()
     }
 }
@@ -900,9 +982,21 @@ fn run(
     args: &[String],
     strip_ansi: bool,
     progress: Option<&Progress>,
+    elevate: bool,
 ) -> Result<Ran> {
-    let mut child = Command::new(program)
-        .args(args)
+    let mut base = Command::new(program);
+    base.args(args);
+
+    // Asking through the desktop's own prompt is the only way a window can
+    // ask for a password. Without it the manager would sit waiting on a
+    // terminal that is not there.
+    if elevate {
+        base = crate::core::privilege::PrivilegeManager::new()
+            .prepare_command(PackageMode::System, base)
+            .map_err(|e| AdapterError::PermissionDenied(e.to_string()))?;
+    }
+
+    let mut child = base
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1616,7 +1710,7 @@ fields = {{ config = "config", packages_config = "packages_config" }}
             .expect("should read the written file");
         assert_eq!(config.values.get("limit"), Some(&ConfigValue::Integer(9)));
         assert!(
-            config.values.get("parallel").is_none(),
+            !config.values.contains_key("parallel"),
             "the manifest default should not be folded in"
         );
 
@@ -1649,6 +1743,66 @@ fields = {{ config = "config", packages_config = "packages_config" }}
         );
         assert!(written.contains("# hand written"), "{written}");
         assert!(written.contains("limit = 7"), "{written}");
+    }
+
+    #[test]
+    fn a_manager_with_no_system_mode_refuses_to_act_in_one() {
+        let program = fake_manager("user-only");
+        let manifest = manifest(&manifest_for(&program, "1.0.0"));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        assert!(adapter.capabilities().supports_user_packages);
+        assert!(!adapter.capabilities().supports_system_packages);
+        assert!(matches!(
+            adapter.invocation(PackageMode::System),
+            Err(AdapterError::NotSupported)
+        ));
+    }
+
+    #[test]
+    fn acting_system_wide_can_mean_a_different_binary_and_more_arguments() {
+        let program = fake_manager("two-scoped");
+        let elsewhere = fake_manager("two-scoped-system");
+        let manifest = manifest(&format!(
+            "{}\n[system]\ncommand = \"{}\"\nargs = [\"--system\"]\nelevate = false\n",
+            manifest_for(&program, "1.0.0"),
+            elsewhere.display()
+        ));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        assert!(adapter.capabilities().supports_system_packages);
+
+        let (binary, before, elevate) = adapter
+            .invocation(PackageMode::System)
+            .expect("system mode");
+        assert_eq!(binary, elsewhere);
+        assert_eq!(before, ["--system"]);
+        assert!(!elevate);
+
+        // The user mode is untouched by any of that.
+        let (binary, before, elevate) = adapter.invocation(PackageMode::User).expect("user mode");
+        assert_eq!(binary, program);
+        assert!(before.is_empty());
+        assert!(!elevate);
+    }
+
+    #[test]
+    fn a_manager_that_only_acts_system_wide_says_so() {
+        let program = fake_manager("system-only");
+        // `system_only` is a top level key, so it has to come before any
+        // table header or TOML reads it as part of that table.
+        let manifest = manifest(&format!(
+            "system_only = true\n{}\n[system]\nelevate = true\n",
+            manifest_for(&program, "1.0.0")
+        ));
+        let adapter = CommandAdapter::new(manifest, None).expect("should accept");
+
+        assert!(!adapter.capabilities().supports_user_packages);
+        assert!(adapter.capabilities().supports_system_packages);
+
+        // Even asked for the user mode, there is only the one way it works.
+        let (_, _, elevate) = adapter.invocation(PackageMode::User).expect("only mode");
+        assert!(elevate);
     }
 
     #[test]
