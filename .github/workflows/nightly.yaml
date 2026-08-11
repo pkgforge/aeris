@@ -63,7 +63,7 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          pacman -Syu --noconfirm --needed \
+          pacman -Syu --disable-sandbox --noconfirm --needed \
             base-devel git curl tar xz b3sum rust patchelf pkgconf \
             libxcb libxkbcommon libxkbcommon-x11 \
             wayland mesa vulkan-icd-loader \
@@ -76,7 +76,10 @@ jobs:
         id: version
         shell: bash
         run: |
-          echo "version=nightly-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          # Not `git rev-parse`: the workspace is checked out by the runner
+          # and this step runs as root inside the container, so git refuses it
+          # as dubiously owned and the name collapses to a bare "nightly-".
+          echo "version=nightly-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: cargo build --release --locked --jobs "$(($(nproc)+1))"
@@ -107,7 +110,7 @@ jobs:
           for pkg in ${{ matrix.build.DEBLOATED }}; do
             curl -fsSL -O "$base/${pkg}-${{ matrix.build.ARCH }}.${{ matrix.build.PKG_EXT }}"
           done
-          pacman -U --noconfirm ./*.${{ matrix.build.PKG_EXT }}
+          pacman -U --disable-sandbox --noconfirm ./*.${{ matrix.build.PKG_EXT }}
 
       - name: Fetch onelf
         shell: bash

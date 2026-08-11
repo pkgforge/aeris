@@ -51,7 +51,7 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          pacman -Syu --noconfirm --needed \
+          pacman -Syu --disable-sandbox --noconfirm --needed \
             base-devel git curl tar xz b3sum rust patchelf pkgconf \
             libxcb libxkbcommon libxkbcommon-x11 \
             wayland mesa vulkan-icd-loader \
@@ -89,7 +89,7 @@ jobs:
           for pkg in ${{ matrix.build.DEBLOATED }}; do
             curl -fsSL -O "$base/${pkg}-${{ matrix.build.ARCH }}.${{ matrix.build.PKG_EXT }}"
           done
-          pacman -U --noconfirm ./*.${{ matrix.build.PKG_EXT }}
+          pacman -U --disable-sandbox --noconfirm ./*.${{ matrix.build.PKG_EXT }}
 
       - name: Fetch onelf
         shell: bash
