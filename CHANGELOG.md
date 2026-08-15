@@ -1,4 +1,19 @@
 
+## [0.2.1](https://github.com/pkgforge/aeris/compare/v0.2.0...v0.2.1) - 2026-08-15
+
+### ⛰️  Features
+
+- *(icons)* Take stacked packaging suffixes off a name - ([7edbb88](https://github.com/pkgforge/aeris/commit/7edbb885e4dfaf4e9ba89cb686fd0d30bb006586))
+- *(icons)* Draw the icon a package is - ([c453b36](https://github.com/pkgforge/aeris/commit/c453b36fc124540ecad4168148a7c516c118ddf9))
+
+### 🐛 Bug Fixes
+
+- *(icons)* Ask for an icon wherever a package is listed - ([edf8d3e](https://github.com/pkgforge/aeris/commit/edf8d3e20a8e797fae560390ff8afe4d45200f6d))
+
+### ⚡ Performance
+
+- *(views)* Draw only the rows that are on screen - ([ca88ded](https://github.com/pkgforge/aeris/commit/ca88ded170151e441135e39debcbd9ba4d7d211f))
+
 ## [0.2.0](https://github.com/pkgforge/aeris/compare/v0.1.0...v0.2.0) - 2026-08-15
 
 ### ⛰️  Features
