@@ -1,4 +1,52 @@
 
+## [0.2.0](https://github.com/pkgforge/aeris/compare/v0.1.0...v0.2.0) - 2026-08-15
+
+### ⛰️  Features
+
+- *(adapters)* Run, ask on a terminal, and fill in a thin listing ([#36](https://github.com/pkgforge/aeris/pull/36)) - ([958055e](https://github.com/pkgforge/aeris/commit/958055e42659abe7f7a5cbe6ea158ca84ac66e4b))
+- *(adapters)* Read a block of named values as one package ([#34](https://github.com/pkgforge/aeris/pull/34)) - ([f97604f](https://github.com/pkgforge/aeris/commit/f97604f9dd3639900688914cc630f8a39d981935))
+- *(adapters)* Act system wide the way each manager expects ([#31](https://github.com/pkgforge/aeris/pull/31)) - ([69e9988](https://github.com/pkgforge/aeris/commit/69e9988dc4b614d92f31129bb96b7ca5d5c1cd5d))
+- *(adapters)* Add manifest-driven command adapter, drop WASM and linked soar ([#30](https://github.com/pkgforge/aeris/pull/30)) - ([74ffa63](https://github.com/pkgforge/aeris/commit/74ffa63f7176411227f42fefd1ebdad43c64e8e1))
+- *(browse)* Search only the managers you pick - ([5c82eb3](https://github.com/pkgforge/aeris/commit/5c82eb3f16761621b396e9dbd17ae6f8ac648813))
+- *(desktop)* Give aeris an icon and a launcher entry - ([bd5a159](https://github.com/pkgforge/aeris/commit/bd5a159b9a6a40fe31777007a948faadeaf2987c))
+- *(progress)* Keep what a manager wrote, not just its last line - ([4b4666a](https://github.com/pkgforge/aeris/commit/4b4666a375a8b97d1278c42845a5debe7bd297e9))
+- *(registry)* Read adapters from more than one registry - ([beef04f](https://github.com/pkgforge/aeris/commit/beef04f45c896ed724e92657da32dec64936dbf5))
+- *(registry)* Keep a copy, refresh on an interval, offer updates ([#32](https://github.com/pkgforge/aeris/pull/32)) - ([17901cd](https://github.com/pkgforge/aeris/commit/17901cdf831bc949926ffcd870b5ff06459c39bd))
+- *(search)* Rank results by relevance, not by manager ([#37](https://github.com/pkgforge/aeris/pull/37)) - ([0c8f65c](https://github.com/pkgforge/aeris/commit/0c8f65c6fc70539525e34dec5a17aecea2df42ce))
+- *(settings)* Edit the list of registries - ([dbc1d87](https://github.com/pkgforge/aeris/commit/dbc1d87e785dff1c61a4db4af05177af9c7af8f5))
+- *(update)* Show what a manager says while it updates everything - ([fff6756](https://github.com/pkgforge/aeris/commit/fff675687c0f46b455036aa01e5447c01f0d9444))
+- *(update)* Tell each manager apart by what it can update - ([13434ea](https://github.com/pkgforge/aeris/commit/13434ea8fa2023d2abee9a476081eb525ad104c2))
+- *(window)* Draw our own controls where the compositor will not ([#43](https://github.com/pkgforge/aeris/pull/43)) - ([2b3c07f](https://github.com/pkgforge/aeris/commit/2b3c07fbc3de6be2975b4d5f629e53e880168da7))
+
+### 🐛 Bug Fixes
+
+- *(adapters)* Show which manifest version is held - ([136e2c6](https://github.com/pkgforge/aeris/commit/136e2c69a1306b9d431a558347bf175e96eb396d))
+- *(adapters)* Tell a manager version from its manifest version - ([0ccc9fa](https://github.com/pkgforge/aeris/commit/0ccc9fac31dc7cf21cc2f635f8c7b95f6cca23c1))
+- *(adapters)* Work in whichever scope a manager is installed for ([#35](https://github.com/pkgforge/aeris/pull/35)) - ([9b80f24](https://github.com/pkgforge/aeris/commit/9b80f244f8d12969f4e1fbb5aa6c319f0bd86a7b))
+- *(adapters)* Say what a manager needs and what it could do ([#33](https://github.com/pkgforge/aeris/pull/33)) - ([3bd263e](https://github.com/pkgforge/aeris/commit/3bd263e8718068f893f2aef1a19a8f68670e11a1))
+- *(browse)* Say a package is held when the manager will not - ([1416ab3](https://github.com/pkgforge/aeris/commit/1416ab30c09bcb82903acbab8c1a9e456500ac63))
+- *(browse)* Keep the manager chips on the Sync row - ([d859c16](https://github.com/pkgforge/aeris/commit/d859c16503238941c906b11d667e9365a0d8dc91))
+- *(install)* Treat a package that did not go in as a failure ([#38](https://github.com/pkgforge/aeris/pull/38)) - ([639a3fc](https://github.com/pkgforge/aeris/commit/639a3fcd4c9df9683e873ed2f0190db504d40f81))
+- *(progress)* Stop an answer coming back as the manager speaking - ([a1bb0e3](https://github.com/pkgforge/aeris/commit/a1bb0e3b924e37ec9284985fc97ec87c85aa76db))
+- *(update)* Only claim an update when the version changed - ([c0796bc](https://github.com/pkgforge/aeris/commit/c0796bca502020714dc872ba1db44dda65be5a9a))
+- *(update)* Say what is happening while a package updates - ([973d558](https://github.com/pkgforge/aeris/commit/973d55874e33066328ea5e94cdc83cad7bc39246))
+- *(window)* Let the window say what it is called - ([993b3fc](https://github.com/pkgforge/aeris/commit/993b3fcaf2b967484327a50d3748f732a6cabe72))
+- *(window)* Draw our own controls, since none may be offered - ([10b47de](https://github.com/pkgforge/aeris/commit/10b47de80c3d9be9ce317ecde3d8e2dfdcdfbab2))
+- *(xdg)* Search every shared data directory for adapters - ([c543865](https://github.com/pkgforge/aeris/commit/c5438654b11faf1603465047580a9d28816d5f99))
+
+### 📚 Documentation
+
+- Describe registries and the config file - ([8332021](https://github.com/pkgforge/aeris/commit/83320218aec6ecde95a772922bc8a9e5d1ee341b))
+- Say what aeris is for, not what it is - ([7554369](https://github.com/pkgforge/aeris/commit/75543695f23be05cb33bc954ad83d74265b6bb70))
+- Describe the adapters aeris actually drives ([#40](https://github.com/pkgforge/aeris/pull/40)) - ([d6c124d](https://github.com/pkgforge/aeris/commit/d6c124d3d059945f2d57ddd640ca64ae0765a8ac))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(nightly)* Build only when there is something new to build - ([18c3d3c](https://github.com/pkgforge/aeris/commit/18c3d3c756c2f6e2bfae873654297d1a66ea8f54))
+- Slim the nightly build and unbreak its publish ([#44](https://github.com/pkgforge/aeris/pull/44)) - ([22eae0b](https://github.com/pkgforge/aeris/commit/22eae0ba384b3f30a0e9b1492404d0e62ed2b3a8))
+- Slim the graphics stack in the release bundle ([#41](https://github.com/pkgforge/aeris/pull/41)) - ([fa41fe3](https://github.com/pkgforge/aeris/commit/fa41fe3afb2321f487d509dd62b1b88914720cff))
+- Publish both tar.xz and onelf on nightly and release - ([011fd01](https://github.com/pkgforge/aeris/commit/011fd015bfc0e86fa989c4efb1b5bd8c245e233b))
+
 ## [0.1.0](https://github.com/pkgforge/aeris/compare/v0.0.0...v0.1.0) - 2026-07-01
 
 ### ⛰️  Features
