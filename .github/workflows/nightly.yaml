@@ -184,7 +184,7 @@ jobs:
 
       - name: Attest build provenance
         if: ${{ !env.ACT }}
-        uses: actions/attest-build-provenance@v3.0.0
+        uses: actions/attest-build-provenance@v4.2.2
         with:
           subject-path: |
             aeris-${{ matrix.build.NAME }}.tar.xz
