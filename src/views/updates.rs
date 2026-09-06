@@ -95,7 +95,8 @@ impl App {
 
         if !self.updates_state.updates.is_empty() && !is_busy {
             let update_all_listener = cx.listener(|app, _: &ClickEvent, _window, cx| {
-                app.update_all(cx);
+                app.confirm_dialog = Some(crate::app::ConfirmAction::UpdateAll(app.current_mode));
+                cx.notify();
             });
             header_buttons = header_buttons.child(
                 div()
