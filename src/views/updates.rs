@@ -368,7 +368,9 @@ impl App {
         if !self.updates_state.selected.is_empty() {
             let count = self.updates_state.selected.len();
             let update_selected = cx.listener(|app, _: &ClickEvent, _window, cx| {
-                app.update_selected(cx);
+                let count = app.updates_state.selected.len();
+                app.confirm_dialog = Some(crate::app::ConfirmAction::BatchUpdate { count });
+                cx.notify();
             });
             let clear_selection = cx.listener(|app, _: &ClickEvent, _window, _cx| {
                 app.updates_state.selected.clear();

@@ -1793,11 +1793,14 @@ impl App {
             })
             .map(|u| u.package.clone())
             .collect();
-        for pkg in &packages {
-            let key = crate::core::adapter::progress_key(&pkg.adapter_id, &pkg.id);
+        let progress_keys: Vec<String> = packages
+            .iter()
+            .map(|p| crate::core::adapter::progress_key(&p.adapter_id, &p.id))
+            .collect();
+        for key in &progress_keys {
             self.updates_state
                 .package_progress
-                .insert(key, OperationStatus::Starting);
+                .insert(key.clone(), OperationStatus::Starting);
         }
         let mode = self.current_mode;
         let progress_sender = self.progress_sender.clone();
@@ -1858,6 +1861,11 @@ impl App {
                     this.update(cx, |app, cx| {
                         app.updates_state.updating = None;
                         app.updates_state.selected.clear();
+                        // Left behind, these would read as in progress the next
+                        // time a batch runs, whatever that batch actually holds.
+                        for key in &progress_keys {
+                            app.updates_state.package_progress.remove(key);
+                        }
                         app.updates_state.result_version += 1;
                         if errors.is_empty() {
                             app.add_toast(ToastLevel::Success, format!("Updated {count} packages"));
@@ -1894,7 +1902,6 @@ impl App {
             })
             .cloned()
             .collect();
-        let package_ids: Vec<String> = packages.iter().map(|p| p.id.clone()).collect();
         let progress_keys: Vec<String> = packages
             .iter()
             .map(|p| crate::core::adapter::progress_key(&p.adapter_id, &p.id))
@@ -1963,14 +1970,18 @@ impl App {
                         // Only what actually went through is marked, and the
                         // reason is worth more than the count when it did not.
                         if errors.is_empty() {
+                            // By manager as well as name: two of them can offer
+                            // the same package, and only one was installed.
                             for p in &mut app.browse_state.search_results {
-                                if package_ids.contains(&p.id) {
+                                let key =
+                                    crate::core::adapter::progress_key(&p.adapter_id, &p.id);
+                                if progress_keys.contains(&key) {
                                     p.installed = true;
                                 }
                             }
                             app.add_toast(
                                 ToastLevel::Success,
-                                format!("Installed {} packages", package_ids.len()),
+                                format!("Installed {} packages", progress_keys.len()),
                             );
                         } else {
                             app.add_toast(
@@ -3613,9 +3624,6 @@ impl Render for App {
                 ConfirmAction::Install(pkg, mode) => {
                     format!("Install {}?{}", pkg.name, mode_suffix(mode))
                 }
-                ConfirmAction::Remove(pkg, mode) => {
-                    format!("Remove {}?{}", pkg.name, mode_suffix(mode))
-                }
                 ConfirmAction::Update(pkg, mode) => {
                     format!("Update {}?{}", pkg.name, mode_suffix(mode))
                 }
@@ -3628,14 +3636,17 @@ impl Render for App {
                     "Update everything {adapter_name} holds?{} It cannot update one package on its own.",
                     mode_suffix(mode)
                 ),
-                ConfirmAction::BatchInstall(pkgs, mode) => {
-                    format!("Install {} packages?{}", pkgs.len(), mode_suffix(mode))
+                ConfirmAction::BatchInstall { count } => {
+                    format!(
+                        "Install {count} packages?{}",
+                        mode_suffix(&self.current_mode)
+                    )
                 }
-                ConfirmAction::BatchRemove(pkgs, mode) => {
-                    format!("Remove {} packages?{}", pkgs.len(), mode_suffix(mode))
-                }
-                ConfirmAction::BatchUpdate(pkgs, mode) => {
-                    format!("Update {} packages?{}", pkgs.len(), mode_suffix(mode))
+                ConfirmAction::BatchUpdate { count } => {
+                    format!(
+                        "Update {count} packages?{}",
+                        mode_suffix(&self.current_mode)
+                    )
                 }
                 ConfirmAction::RemoveInstalled { pkg, mode, .. } => {
                     format!("Remove {}?{}", pkg.name, mode_suffix(mode))
@@ -4753,9 +4764,6 @@ impl App {
             ConfirmAction::Install(pkg, mode) => {
                 self.install_package(pkg, mode, cx);
             }
-            ConfirmAction::Remove(pkg, mode) => {
-                self.remove_package(pkg, mode, cx);
-            }
             ConfirmAction::Update(pkg, mode) => {
                 self.update_package(pkg, mode, cx);
             }
@@ -4769,14 +4777,11 @@ impl App {
             } => {
                 self.update_everything_in(adapter_id, adapter_name, mode, cx);
             }
-            ConfirmAction::BatchInstall(pkgs, mode) => {
-                self.batch_install(pkgs, mode, cx);
+            ConfirmAction::BatchInstall { .. } => {
+                self.install_selected_browse(cx);
             }
-            ConfirmAction::BatchRemove(pkgs, mode) => {
-                self.batch_remove(pkgs, mode, cx);
-            }
-            ConfirmAction::BatchUpdate(pkgs, mode) => {
-                self.batch_update(pkgs, mode, cx);
+            ConfirmAction::BatchUpdate { .. } => {
+                self.update_selected(cx);
             }
             ConfirmAction::RemoveInstalled {
                 pkg,
@@ -4901,15 +4906,6 @@ impl App {
             )
             .detach();
         }
-    }
-
-    pub(crate) fn remove_package(
-        &mut self,
-        pkg: crate::core::package::Package,
-        mode: PackageMode,
-        cx: &mut Context<Self>,
-    ) {
-        self.remove_installed_package(pkg.clone(), pkg.id.clone(), mode, cx);
     }
 
     /// Remove from installed view — uses unique_key so duplicate package names
@@ -5118,243 +5114,6 @@ impl App {
                                 app.add_toast(
                                     ToastLevel::Error,
                                     format!("Failed to update {pkg_name}: {e}"),
-                                );
-                            }
-                        }
-                        app.installed_state.loaded = false;
-                        cx.notify();
-                    })
-                });
-            },
-        )
-        .detach();
-    }
-
-    fn batch_install(
-        &mut self,
-        pkgs: Vec<crate::core::package::Package>,
-        mode: PackageMode,
-        cx: &mut Context<Self>,
-    ) {
-        let count = pkgs.len();
-        self.browse_state.installing = Some("__batch__".to_string());
-        let progress_sender = self.progress_sender.clone();
-        let manager_adapters: Vec<Arc<dyn Adapter>> = self
-            .adapter_manager
-            .list_adapters()
-            .iter()
-            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
-            .collect();
-
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let errors = crate::tokio_spawn(async move {
-                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
-                        HashMap::new();
-                    for pkg in pkgs {
-                        by_adapter
-                            .entry(pkg.adapter_id.clone())
-                            .or_default()
-                            .push(pkg);
-                    }
-
-                    let mut errors: Vec<String> = Vec::new();
-                    for (adapter_id, pkgs) in by_adapter {
-                        if let Some(adapter) =
-                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
-                        {
-                            match adapter
-                                .install(&pkgs, Some(progress_sender.clone()), mode)
-                                .await
-                            {
-                                Ok(results) => {
-                                    // Answering is not the same as
-                                    // having worked: each package
-                                    // carries its own outcome.
-                                    if let Some(why) = failure_among(&results) {
-                                        log::error!("Batch install failed for {adapter_id}: {why}");
-                                        errors.push(why);
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("Batch install failed for {adapter_id}: {e}");
-                                    errors.push(format!("{e}"));
-                                }
-                            }
-                        }
-                    }
-                    errors
-                })
-                .await
-                .unwrap_or_default();
-
-                let _ = cx.update(|cx| {
-                    this.update(cx, |app, cx| {
-                        app.browse_state.installing = None;
-                        app.browse_state.result_version += 1;
-                        if errors.is_empty() {
-                            app.add_toast(
-                                ToastLevel::Success,
-                                format!("Installed {count} packages"),
-                            );
-                        } else {
-                            for err in &errors {
-                                app.add_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to install: {err}"),
-                                );
-                            }
-                        }
-                        app.installed_state.loaded = false;
-                        cx.notify();
-                    })
-                });
-            },
-        )
-        .detach();
-    }
-
-    fn batch_remove(
-        &mut self,
-        pkgs: Vec<crate::core::package::Package>,
-        mode: PackageMode,
-        cx: &mut Context<Self>,
-    ) {
-        self.installed_state.removing = Some("__batch__".to_string());
-        let progress_sender = self.progress_sender.clone();
-        let manager_adapters: Vec<Arc<dyn Adapter>> = self
-            .adapter_manager
-            .list_adapters()
-            .iter()
-            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
-            .collect();
-
-        let count = pkgs.len();
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let errors = crate::tokio_spawn(async move {
-                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
-                        HashMap::new();
-                    for pkg in pkgs {
-                        by_adapter
-                            .entry(pkg.adapter_id.clone())
-                            .or_default()
-                            .push(pkg);
-                    }
-
-                    let mut errors: Vec<String> = Vec::new();
-                    for (adapter_id, pkgs) in by_adapter {
-                        if let Some(adapter) =
-                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
-                        {
-                            match adapter
-                                .remove(&pkgs, Some(progress_sender.clone()), mode)
-                                .await
-                            {
-                                Ok(_) => log::info!("Batch remove completed for {adapter_id}"),
-                                Err(e) => {
-                                    log::error!("Batch remove failed for {adapter_id}: {e}");
-                                    errors.push(format!("{e}"));
-                                }
-                            }
-                        }
-                    }
-                    errors
-                })
-                .await
-                .unwrap_or_default();
-
-                let _ = cx.update(|cx| {
-                    this.update(cx, |app, cx| {
-                        app.installed_state.removing = None;
-                        app.installed_state.result_version += 1;
-                        if errors.is_empty() {
-                            app.add_toast(ToastLevel::Success, format!("Removed {count} packages"));
-                        } else {
-                            for err in &errors {
-                                app.add_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to remove: {err}"),
-                                );
-                            }
-                        }
-                        app.load_installed(cx);
-                    })
-                });
-            },
-        )
-        .detach();
-    }
-
-    fn batch_update(
-        &mut self,
-        pkgs: Vec<crate::core::package::Package>,
-        mode: PackageMode,
-        cx: &mut Context<Self>,
-    ) {
-        self.updates_state.updating = Some("__batch__".to_string());
-        let progress_sender = self.progress_sender.clone();
-        let manager_adapters: Vec<Arc<dyn Adapter>> = self
-            .adapter_manager
-            .list_adapters()
-            .iter()
-            .filter_map(|info| self.adapter_manager.get_adapter(&info.id))
-            .collect();
-
-        let count = pkgs.len();
-        cx.spawn(
-            async move |this: WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-                let errors = crate::tokio_spawn(async move {
-                    let mut by_adapter: HashMap<String, Vec<crate::core::package::Package>> =
-                        HashMap::new();
-                    for pkg in pkgs {
-                        by_adapter
-                            .entry(pkg.adapter_id.clone())
-                            .or_default()
-                            .push(pkg);
-                    }
-
-                    let mut errors: Vec<String> = Vec::new();
-                    for (adapter_id, pkgs) in by_adapter {
-                        if let Some(adapter) =
-                            manager_adapters.iter().find(|a| a.info().id == adapter_id)
-                        {
-                            match adapter
-                                .update(&pkgs, Some(progress_sender.clone()), mode)
-                                .await
-                            {
-                                Ok(results) => {
-                                    // Answering is not the same as
-                                    // having worked: each package
-                                    // carries its own outcome.
-                                    if let Some(why) = failure_among(&results) {
-                                        log::error!("Batch update failed for {adapter_id}: {why}");
-                                        errors.push(why);
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("Batch update failed for {adapter_id}: {e}");
-                                    errors.push(format!("{e}"));
-                                }
-                            }
-                        }
-                    }
-                    errors
-                })
-                .await
-                .unwrap_or_default();
-
-                let _ = cx.update(|cx| {
-                    this.update(cx, |app, cx| {
-                        app.updates_state.updating = None;
-                        app.updates_state.result_version += 1;
-                        if errors.is_empty() {
-                            app.add_toast(ToastLevel::Success, format!("Updated {count} packages"));
-                        } else {
-                            for err in &errors {
-                                app.add_toast(
-                                    ToastLevel::Error,
-                                    format!("Failed to update: {err}"),
                                 );
                             }
                         }

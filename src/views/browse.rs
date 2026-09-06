@@ -281,7 +281,9 @@ impl App {
         if !self.browse_state.selected.is_empty() {
             let count = self.browse_state.selected.len();
             let install_selected = cx.listener(|app, _: &ClickEvent, _window, cx| {
-                app.install_selected_browse(cx);
+                let count = app.browse_state.selected.len();
+                app.confirm_dialog = Some(crate::app::ConfirmAction::BatchInstall { count });
+                cx.notify();
             });
             let clear_selection = cx.listener(|app, _: &ClickEvent, _window, _cx| {
                 app.browse_state.selected.clear();

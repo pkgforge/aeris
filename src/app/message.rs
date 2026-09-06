@@ -3,7 +3,6 @@ use crate::core::{package::Package, privilege::PackageMode};
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
     Install(Package, PackageMode),
-    Remove(Package, PackageMode),
     Update(Package, PackageMode),
     UpdateAll(PackageMode),
     /// Update everything one manager holds, for a manager that cannot be
@@ -13,9 +12,14 @@ pub enum ConfirmAction {
         adapter_name: String,
         mode: PackageMode,
     },
-    BatchInstall(Vec<Package>, PackageMode),
-    BatchRemove(Vec<Package>, PackageMode),
-    BatchUpdate(Vec<Package>, PackageMode),
+    /// Install the current selection in the Browse view.
+    BatchInstall {
+        count: usize,
+    },
+    /// Update the current selection in the Updates view.
+    BatchUpdate {
+        count: usize,
+    },
     /// Remove a specific installed entry, disambiguated by unique_key.
     RemoveInstalled {
         pkg: Package,
