@@ -27,9 +27,10 @@ where
 }
 
 fn main() {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    // `default_filter_or` rather than `filter_level`, which would undo the
+    // whole point: it inserts the same unnamed directive `RUST_LOG=debug`
+    // parses into, and the later one wins.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     log::info!("Starting {}", app::APP_NAME);
 
