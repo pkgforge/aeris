@@ -1,4 +1,21 @@
 
+## [0.2.2](https://github.com/pkgforge/aeris/compare/v0.2.1...v0.2.2) - 2026-10-03
+
+### ⛰️  Features
+
+- *(batch)* Ask before installing or updating a selection - ([50ed4af](https://github.com/pkgforge/aeris/commit/50ed4af3c475e3bf751e000c48cac89cd56c3089))
+
+### 🐛 Bug Fixes
+
+- *(logging)* Let RUST_LOG raise the level again - ([0eaf57b](https://github.com/pkgforge/aeris/commit/0eaf57bd31dc0fa4e268700324bf3d85a3bd44d1))
+- *(privilege)* Say what happened when elevation is refused - ([9d127ef](https://github.com/pkgforge/aeris/commit/9d127efc2af073a8fd12b92279169707305c8fb0))
+- *(updates)* Ask before updating everything - ([622ed3b](https://github.com/pkgforge/aeris/commit/622ed3b4076befc332a887fdb20d1cfced1947b0))
+- *(views)* Key in-progress rows by manager as well as name - ([3b39a20](https://github.com/pkgforge/aeris/commit/3b39a202656fbb014547e23968602920a9059a47))
+
+### Build
+
+- *(onelf)* Stay out of a user namespace for setuid - ([548ddaf](https://github.com/pkgforge/aeris/commit/548ddaf43560b97773a135ba2db4b5264318c03e))
+
 ## [0.2.1](https://github.com/pkgforge/aeris/compare/v0.2.0...v0.2.1) - 2026-08-15
 
 ### ⛰️  Features
