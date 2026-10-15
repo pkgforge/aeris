@@ -24,7 +24,7 @@ jobs:
       changed: ${{ steps.check.outputs.changed }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # Before the tag is removed, since the tag is what says which commit was
       # last released.
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Remove existing nightly tag
         run: |
@@ -105,7 +105,7 @@ jobs:
             ${{ matrix.build.VULKAN_DRIVERS }}
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Get version info
         id: version
