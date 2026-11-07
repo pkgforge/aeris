@@ -34,7 +34,7 @@ jobs:
               IMAGE: "archlinux:latest",
               ONELF: onelf-x86_64-linux,
               VULKAN_DRIVERS: "vulkan-swrast vulkan-radeon vulkan-intel vulkan-nouveau",
-              DEBLOATED: "llvm-libs-nano mesa-nano vulkan-radeon-nano vulkan-intel-nano vulkan-nouveau-nano libxml2-iculess",
+              DEBLOATED: "mesa-nano vulkan-radeon-nano vulkan-intel-nano vulkan-nouveau-nano libxml2-iculess",
               PKG_EXT: "pkg.tar.zst",
             }
           - {
